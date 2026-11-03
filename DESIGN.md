@@ -68,7 +68,9 @@ These are facts from AOSP `main`, not assumptions.
    may be restarted by init and breaks USB debugging.
 8. **`usb:` only removes TCP if `is_usb` is true.**
    `usb:` sets `service.adb.tcp.port=0`; adbd falls back to 5555 when the USB
-   gadget endpoint is absent (`main.cpp:293-296`).
+   gadget endpoint is absent (`main.cpp:293-296`). `is_usb` is evaluated once at
+   adbd startup by `access("/dev/usb-ffs/adb/ep0", F_OK)`, not from the live
+   cable state; the app infers it by probing 5555 after `usb:`.
 9. **The TLS port is readable by the app.**
    `service.adb.tls.port` is `adbd_prop`; `getprop` returns it to an
    unprivileged process. mDNS is a fallback, not the only source.
@@ -165,6 +167,8 @@ The app's foreground service keeps the system adbd in USB mode.
 - Probe `127.0.0.1:5555` and `127.0.0.1:<portA>`.
 - If `5555` is open, connect with the app key and send `usb:`. The connection
   dies; that is expected.
+- `usb:` is evaluated at the adbd restart. If the cable is unplugged and the
+  gadget is unbound, `usb:` falls back to 5555; probe and move to a random port.
 - If `<portA>` is down, restart the patched adbd through the system adbd if it is
   reachable, otherwise notify the user.
 - Backoff and hysteresis; never fight an explicit user "off".
