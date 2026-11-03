@@ -130,6 +130,14 @@ All in `daemon/`:
 | `services.cpp`: policy hook on `OPEN`/`WRTE` | Per-key and per-service allow/deny, structured logs |
 | `auth.cpp`: reload key file on change | Key provisioning without restart |
 
+Multi-listener is not a large patch. `setup_adb` already loops over the address
+list and `init_transport_socket_server` starts one thread per address
+(`main.cpp:205-208`, `transport_socket_server.cpp:89-92`). The comma-separated
+list already exists in `service.adb.listen_addrs` (`main.cpp:272-303`). The patch
+only changes where the list comes from and skips USB, vsock, and mDNS; the listener
+count itself is free. The large work is the cross-compile, deployment, key
+provisioning, and policy, not the number of listeners.
+
 Build targets: `arm64-v8a`, `armeabi-v7a`, `x86_64`. Bundle in the APK as assets.
 AOSP `adbd` is Apache 2.0; ship `NOTICE` and the source offer.
 
