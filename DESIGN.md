@@ -180,7 +180,18 @@ confirming. Replay is limited by `issued_at` and by removing the key.
 ### Port behavior
 
 Wireless debugging toggles only the TLS listener; it does not touch the plain
-TCP listener.
+TCP listener. The two are separate features with separate controls:
+
+| Feature | Listener | Control | mDNS | Since |
+|---|---|---|---|---|
+| Legacy `adb tcpip` | plain TCP `0.0.0.0:<port>` | `service.adb.tcp.port` via `adb tcpip` / `adb usb` | `_adb._tcp` | before Android 11 |
+| Wireless debugging | TLS `0.0.0.0:<random>` | `persist.adb.tls_server.enable` via the Settings toggle | `_adb-tls-connect._tcp` | Android 11 |
+| USB debugging | USB only | `ADB_ENABLED` | none | always |
+
+The Settings toggle was added for the TLS feature; it was never wired to the
+legacy listener. That is why turning it off leaves `adb tcpip` running. The app
+never calls `adb tcpip` on the system adbd, so the legacy listener should be
+absent unless the device or a previous tool set it.
 
 Enabling (`ADB_WIFI_ENABLED=1`):
 
