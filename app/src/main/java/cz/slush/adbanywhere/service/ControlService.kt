@@ -326,14 +326,20 @@ class ControlService : Service() {
             }.onFailure {
                 Log.i("AdbAnywhere", "setup cleanup cannot stop the daemon: ${it.message}")
             }.isSuccess
+            // The shell may be gone because the daemon already died; the port
+            // is the authority on whether anything still runs.
+            val daemonListening = runCatching {
+                Socket().use { it.connect(InetSocketAddress("127.0.0.1", prefs.loopbackPort), 300) }
+                true
+            }.getOrDefault(false)
             val wifiOff = SystemSettings.setAdbWifiEnabled(context, false) &&
                 SystemSettings.adbWifiEnabled(context) == 0
             if (adbEnabledBefore >= 0) {
                 SystemSettings.setAdbEnabled(context, adbEnabledBefore == 1)
             }
-            Log.i("AdbAnywhere", "setup cleanup stopped=$stopped wifiOff=$wifiOff")
+            Log.i("AdbAnywhere", "setup cleanup stopped=$stopped listening=$daemonListening wifiOff=$wifiOff")
             val warnings = buildList {
-                if (!stopped) add("the patched adbd may still be running")
+                if (daemonListening) add("the patched adbd still listens on 127.0.0.1:${prefs.loopbackPort}")
                 if (!wifiOff) add("system wireless debugging is still on")
             }
             if (warnings.isEmpty()) {
