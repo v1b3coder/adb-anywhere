@@ -29,6 +29,7 @@ import androidx.core.app.RemoteInput
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import cz.slush.adbanywhere.MainActivity
+import cz.slush.adbanywhere.R
 import cz.slush.adbanywhere.adb.AdbManager
 import cz.slush.adbanywhere.adb.DaemonManager
 import cz.slush.adbanywhere.adb.Shell
@@ -592,7 +593,7 @@ class ControlService : Service() {
             else -> "Tap to open"
         }
         val builder = NotificationCompat.Builder(this, Notifications.CHANNEL_SERVICE)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
@@ -628,7 +629,7 @@ class ControlService : Service() {
             pairReplyPendingIntent(),
         ).addRemoteInput(input).build()
         val notification = NotificationCompat.Builder(this, Notifications.CHANNEL_PAIRING)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("Pair ADB Anywhere")
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
