@@ -89,7 +89,7 @@ These are facts from AOSP `main`, not assumptions.
 | D1 | Device support | Stock Android 12+, no root |
 | D2 | Data plane | One patched `adbd` instance with two listeners: `127.0.0.1:<portA>` for the app, `<vpn-ip>:<portB>` for developer machines |
 | D3 | App key | Ephemeral RSA keypair generated on first run; private key in app-private storage; public key in the patched adbd key file |
-| D4 | Developer machine pairing | QR shown by the developer machine, scanned by the app; no pairing listener on the phone |
+| D4 | Developer machine pairing | QR or pasted public key from the developer machine; app confirms the fingerprint; user labels the machine; no pairing listener on the phone |
 | D5 | System adbd hardening | `ADB_WIFI_ENABLED=0` always after the patched adbd is running; `ADB_ENABLED=0` only with "Keep system adb off" (default off; restore the original value when unchecked) |
 | D6 | Watchdog | Keeps the D5 state; probes 5555 only when "Keep system adb off" is on; restarts the patched adbd |
 | D7 | Policy | Patched adbd enforces per-key and per-service rules; VPN ACL is the outer boundary |
@@ -97,7 +97,7 @@ These are facts from AOSP `main`, not assumptions.
 | D9 | Bootstrap pairing | Notification `RemoteInput` with `code:port` |
 | D10 | Patched adbd transports | TCP only; USB and vsock disabled |
 | D11 | Settings UI | "Keep system adb off" checkbox; shows the current ADB state and the residual |
-| D12 | Failure policy | Explicit error and recovery steps; no silent fallback |
+| D12 | Failure policy | Explicit error and recovery steps; no silent fallback and no random-port redirect |
 
 ## 6. Architecture
 
@@ -148,30 +148,34 @@ AOSP `adbd` is Apache 2.0; ship `NOTICE` and the source offer.
   it starts.
 - The patched adbd key file contains only the app key at startup, so the app is the
   only entity accepted.
-- Developer machine keys are added by QR pairing. Each key has a label and a role:
+- Developer machine keys are added by QR or pasted public key. Each key has a label and a role:
   `app` (full access) or `developer` (policy).
 - The app rewrites the key file through the patched adbd's `shell:`. It never needs
   a second listener.
 - On reinstall, the app generates a new keypair and rewrites the key file. Old keys
   are removed.
 
-### QR pairing
+### Developer machine pairing
 
-The developer machine displays a QR; the app scans it. No listener is opened on the
-phone.
+The developer machine shows a QR with the raw public key; the app scans it or
+accepts a paste. No companion app is needed.
 
-1. Companion CLI on the developer machine reads `~/.android/adbkey.pub`.
-2. It generates a nonce and signs it with `~/.android/adbkey`.
-3. It prints a QR containing `pubkey`, `nonce`, `signature`, `label`, `issued_at`.
-4. The app scans the QR, verifies the signature with the public key, shows the key
-   fingerprint and label, and asks the user to confirm.
-5. On confirm, the app appends the key to the patched adbd key file with role
+1. The developer machine runs `qrencode -t ansiutf8 < ~/.android/adbkey.pub`, or
+   any QR generator, and shows the QR.
+2. The app scans the QR, or the user pastes the contents of
+   `~/.android/adbkey.pub`. If the file is binary, the user pastes its base64
+   encoding.
+3. The app decodes the base64 DER, validates it as an RSA public key, and shows
+   the SHA-256 fingerprint.
+4. The user confirms the fingerprint and labels the machine.
+5. The app appends the key to the patched adbd key file with the label and role
    `developer`.
 6. The developer machine runs `adb connect <vpn-name>:<portB>` with its private key.
 
-This is out-of-band, one-time, and has no listening socket. A malicious QR can only
-add the key it proves possession of, and the user sees the fingerprint before
-confirming. Replay is limited by `issued_at` and by removing the key.
+The public key is public; no signature or nonce is needed to add it. The defense is
+the fingerprint confirmation and the label. A malicious QR can only add the key it
+contains, and the user sees the fingerprint before confirming. Replay is harmless
+because the key is idempotent; removing the key revokes it.
 
 ### System adbd control
 
@@ -249,8 +253,8 @@ has no TCP listener, so there is nothing to monitor or turn off.
 - Register `UsbManager.ACTION_USB_STATE` (sticky) and
   `ConnectivityManager.NetworkCallback`.
 - Backoff and hysteresis; never fight an explicit user "off".
-- If `ADB_ENABLED=0` does not stop adbd, move it to a random port with
-  `tcpip:<random>` and record the residual.
+- If `ADB_ENABLED=0` does not stop adbd, show an explicit error and stop;
+  no random-port redirect.
 
 ## 7. Flows
 
@@ -312,8 +316,7 @@ has no TCP listener, so there is nothing to monitor or turn off.
 1. `ACTION_USB_STATE` fires.
 2. The system adbd stays on USB; the patched adbd is unaffected.
 3. If the system adbd returns to TCP, the watchdog sets `ADB_ENABLED=0`.
-4. If that does not stop it, move the system adbd to a random port with
-   `tcpip:<random>` and log the residual.
+4. If that does not stop it, show an explicit error; no random-port redirect.
 
 ## 8. Security model
 
@@ -328,7 +331,8 @@ has no TCP listener, so there is nothing to monitor or turn off.
   `ADB_WIFI_ENABLED=0`.
 - **Residual**: on devices where the system adbd exposes 5555, set
   `ADB_ENABLED=0` only when "Keep system adb off" is on; otherwise show the
-  residual. If `ADB_ENABLED=0` fails, move it to a random port and document it.
+  residual. If `ADB_ENABLED=0` fails, show an explicit error; no random-port
+  redirect.
 - **Pairing**: QR is out-of-band, one-time, fingerprint-confirmed. No listener.
 - **Keys**: app key is ephemeral; developer keys are public only; private keys
   never leave their owners.
@@ -343,7 +347,7 @@ has no TCP listener, so there is nothing to monitor or turn off.
 |---|---|
 | Patched adbd dies | Restart via system adbd if reachable; otherwise show an explicit error with recovery steps |
 | System adbd returns to TCP | Watchdog sets `ADB_ENABLED=0` if "Keep system adb off" is on; otherwise shows the residual |
-| `ADB_ENABLED=0` does not stop adbd | Move to a random port, log residual, keep patched adbd as the stable endpoint |
+| `ADB_ENABLED=0` does not stop adbd | Show an explicit error; no random-port redirect |
 | VPN address changes | Restart patched adbd with the new address; loopback stays |
 | VPN down | Remove VPN listener; app still controls via loopback |
 | App key lost | Re-pair via notification; regenerate key; rewrite key file |
@@ -360,7 +364,7 @@ a different mode.
 
 ## 10. Testing
 
-- Unit: QR payload parser and signature verification, key file writer, policy
+- Unit: QR payload parser and public-key validation, key file writer, policy
   evaluator, address selection, watchdog state machine.
 - Integration: patched adbd on an emulator, two listeners, auth with two keys,
   `shell:`/`sync:`, policy allow/deny, key reload.
@@ -372,12 +376,12 @@ a different mode.
 
 - **Phase 0 — probes**: `pm grant`, `ADB_WIFI_ENABLED=0`, `ADB_ENABLED=0`,
   5555 at boot, `persist.adb.tcp.port`, TLS port on Wi-Fi, patched adbd as
-  shell, QR pairing, VPN bind/rebind. Output: a report, no production code.
+  shell, QR and paste pairing, VPN bind/rebind. Output: a report, no production code.
 - **Phase 1 — control plane**: stock system adbd for bootstrap, notification
   pairing, network gating, UI. Development milestone only; the app fails
   explicitly if the patched adbd is unavailable.
 - **Phase 2 — patched adbd**: build, bundle, deploy, two listeners, key
-  provisioning, QR pairing, policy and logs, watchdog.
+  provisioning, QR and paste pairing, policy and logs, watchdog.
 - **Phase 3 — depth**: per-service and per-command policy, connection log
   export, recovery hardening.
 
@@ -388,19 +392,20 @@ a different mode.
 - OEM blocks `pm grant WRITE_SECURE_SETTINGS`.
 - Plain listener remains when "Keep system adb off" is off and `is_usb=false`
   or `service.adb.tcp.port` is set; the app shows it as a residual.
-- `ADB_ENABLED=0` may not stop adbd on some OEMs; move the system adbd to a
-  random port and record the residual.
+- `ADB_ENABLED=0` may not stop adbd on some OEMs; show an explicit error;
+  no random-port redirect.
 - After reboot with `ADB_ENABLED=0`, the app must set `ADB_ENABLED=1` to start
   the system adbd for bootstrap; the TCP listener still depends on `is_usb`.
 - Patched adbd is killed by LMK/Doze; no restart path if the system adbd is
   USB-only.
 - No silent fallback: if the patched adbd cannot run, the app shows an explicit
-  error and stops instead of falling back to a proxy.
+  error and stops instead of falling back to a proxy or redirecting to a random
+port.
 - Android 15/16 foreground service limits.
 - AOSP adbd cross-compile and patch maintenance across releases.
 - VPN app excludes the app from the tunnel, so loopback still works but the VPN
   listener is unreachable.
-- QR pairing needs a companion CLI on the developer machine.
+- QR pairing needs a QR generator on the developer machine; `qrencode` is enough.
 
 ## 13. Provenance
 
