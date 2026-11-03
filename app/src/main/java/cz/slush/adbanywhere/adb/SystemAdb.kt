@@ -8,6 +8,7 @@ import android.content.Context
 import cz.slush.adbanywhere.data.AppKeyStore
 import cz.slush.adbanywhere.data.PairingCode
 import cz.slush.adbanywhere.data.Prefs
+import cz.slush.adbanywhere.data.WirelessDebuggingGuard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -73,6 +74,9 @@ class SystemAdb(
 
     fun settingsPut(key: String, value: String): Boolean =
         shell.exec("settings put global $key $value").ok
+
+    /** The system wireless debugging TLS port; null when adbd does not listen. */
+    fun tlsPort(): Int? = WirelessDebuggingGuard.parseTlsPort(readProp("service.adb.tls.port"))
 
     fun grantSelfPermission(): Boolean {
         val result = shell.exec(

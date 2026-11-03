@@ -40,6 +40,7 @@ import cz.slush.adbanywhere.data.DeveloperKey
 import cz.slush.adbanywhere.data.Endpoint
 import cz.slush.adbanywhere.data.PairingCode
 import cz.slush.adbanywhere.data.Prefs
+import cz.slush.adbanywhere.data.WirelessDebuggingGuard
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -450,11 +451,29 @@ class ControlService : Service() {
         }
     }
 
+    /**
+     * D5/D6: every call re-asserts adb_wifi_enabled=0 and verifies that the
+     * system TLS listener is gone, not only that the setting reads off.
+     */
+    private suspend fun ensureWifiDebuggingOff() = withContext(Dispatchers.IO) {
+        val context = this@ControlService
+        WirelessDebuggingGuard(
+            readSetting = { SystemSettings.adbWifiEnabled(context) },
+            writeDisabled = { SystemSettings.setAdbWifiEnabled(context, false) },
+            readTlsPort = { system.tlsPort() },
+            isPortOpen = { port ->
+                runCatching {
+                    Socket().use { it.connect(InetSocketAddress("127.0.0.1", port), 300) }
+                    true
+                }.getOrDefault(false)
+            },
+            pause = { Thread.sleep(WirelessDebuggingGuard.RETRY_DELAY_MS) },
+        ).ensureOff()
+    }
+
     private suspend fun harden() = withContext(Dispatchers.IO) {
         val context = this@ControlService
-        if (!SystemSettings.setAdbWifiEnabled(context, false)) {
-            throw IOException("Could not turn system wireless debugging off. Check WRITE_SECURE_SETTINGS.")
-        }
+        ensureWifiDebuggingOff()
         if (prefs.keepSystemAdbOff) {
             if (prefs.originalAdbEnabled.isEmpty()) {
                 prefs.originalAdbEnabled = SystemSettings.adbEnabled(context).toString()
@@ -521,6 +540,14 @@ class ControlService : Service() {
         if (!alive) {
             ControlBus.update { it.copy(message = "The daemon is down. Restarting…") }
             setup()
+            return
+        }
+        // D6: every tick keeps D5, not only the first setup.
+        try {
+            ensureWifiDebuggingOff()
+        } catch (e: IOException) {
+            fail(e.message ?: "System wireless debugging is still on.")
+            scheduleWatchdog()
             return
         }
         if (prefs.keepSystemAdbOff) {
