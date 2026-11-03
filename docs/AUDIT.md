@@ -839,7 +839,7 @@ Current automated coverage:
 
 | Area | App | Daemon |
 |---|---|---|
-| Public-key encode/decode/parse/fingerprint | Yes (7 tests) | Yes (auth tests) |
+| Public-key encode/decode/parse/fingerprint | Yes (8 tests) | Yes (auth tests) |
 | Key file/policy writer | Yes | Yes |
 | Pairing code parser | Yes | N/A |
 | Address selection | Yes | N/A |
