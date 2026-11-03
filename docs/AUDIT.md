@@ -661,7 +661,9 @@ Fix: use a Compose-compatible splash/theme and clean up unused resources.
   `ic_launcher.xml` now lives in `mipmap-anydpi`; lint no longer reports
   `ObsoleteSdkInt` for the folder.
 - The notification small icon is `android.R.drawable.ic_dialog_info`, not a proper
-  monochrome app icon.
+  monochrome app icon. **Status: fixed in `0591109`.** The service and pairing
+  notifications now use `R.drawable.ic_notification`, a white-on-transparent 24 dp
+  vector; the pairing action icon still uses the framework glyph.
 - `Docs/E2E.md` and `README.md` use future-dated evidence (2026-11-03); confirm the date
   is intentional.
 
