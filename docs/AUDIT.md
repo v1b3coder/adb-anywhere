@@ -202,8 +202,9 @@ gated on `prefs.setupComplete` and `Phase.Idle`). `ACTION_WATCHDOG` takes the sa
 path, because the 15-minute alarm is the other way a dead process is woken; it used
 to reach `watchdog()`, which returned on a non-`Running` phase and left no alarm
 scheduled. An explicit stop is unaffected: it returns `START_NOT_STICKY` and leaves
-`Phase.Stopped`. Compiles and the app unit tests pass; not verified on a device
-under Doze/LMK.
+`Phase.Stopped`. Compiles, the app unit tests pass, and `scripts/e2e-emulator.sh` kills
+the process and requires the service back in `Phase.Running`; Doze/LMK on a phone is
+still not covered.
 
 `ControlService.onStartCommand` returns `START_STICKY` (`ControlService.kt:126`),
 but when the system restarts the service with a null intent, the `when` has no
