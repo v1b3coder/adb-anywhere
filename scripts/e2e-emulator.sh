@@ -43,4 +43,32 @@ adb -s "$serial" shell "cat /data/local/tmp/adb-anywhere/adbd.log" | grep -q "e2
 adb -s "$serial" shell "cat /data/local/tmp/adb-anywhere/adb_keys" | grep -q "$host_key"
 adb -s "$serial" shell "uiautomator dump /sdcard/e2e.xml >/dev/null 2>&1"
 adb -s "$serial" shell "cat /sdcard/e2e.xml" | grep -q 'ADB is reachable'
+
+# A process kill must not end supervision. `force-stop` clears the sticky flag, so
+# kill the process: START_STICKY recreates the service and setup() resumes, which
+# brings the notification back to the Running phase. The activity must stay closed:
+# launching it sends ACTION_START and would mask a missing resume.
+pid_before=$(adb -s "$serial" shell pidof "$pkg" | tr -d '\r' | cut -d' ' -f1)
+[ -n "$pid_before" ]
+adb -s "$serial" shell "kill -9 $pid_before"
+pid_after=""
+i=0
+while [ "$i" -lt 30 ]; do
+    pid_after=$(adb -s "$serial" shell pidof "$pkg" | tr -d '\r' | cut -d' ' -f1)
+    [ -n "$pid_after" ] && [ "$pid_after" != "$pid_before" ] && break
+    sleep 1
+    i=$((i + 1))
+done
+[ -n "$pid_after" ] && [ "$pid_after" != "$pid_before" ]
+i=0
+while [ "$i" -lt 60 ]; do
+    adb -s "$serial" shell 'dumpsys notification --noredact' |
+        grep -q 'android.title=String (ADB Anywhere is running)' && break
+    sleep 1
+    i=$((i + 1))
+done
+adb -s "$serial" shell 'dumpsys notification --noredact' |
+    grep -q 'android.title=String (ADB Anywhere is running)'
+echo "sticky restart ok"
+
 echo "e2e ok"

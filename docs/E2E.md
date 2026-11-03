@@ -4,7 +4,9 @@
 
 `scripts/e2e-emulator.sh` runs the complete control plane on a rooted
 `emulator-5556`: install, permission grant, app start, app-key authorization,
-debug developer-key add, daemon deploy, host forward and a real `adb` shell.
+debug developer-key add, daemon deploy, host forward and a real `adb` shell. It then
+kills the app process, without `force-stop`, and fails unless the service comes back
+in the Running phase, which covers the `START_STICKY` restart.
 
 It deliberately uses a host forward because the emulator's loopback is not reachable
 from the host. On a phone the daemon's VPN listener is reached directly.
