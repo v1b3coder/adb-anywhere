@@ -99,6 +99,7 @@ class ControlService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
+            null -> resumeAfterRestart()
             ACTION_START, ACTION_APPLY_KEYS, ACTION_APPLY_SETTINGS -> {
                 scope.launch { setup() }
             }
@@ -109,7 +110,7 @@ class ControlService : Service() {
                 val code = intent.getStringExtra(EXTRA_CODE)
                 if (code != null) scope.launch { pair(code) }
             }
-            ACTION_WATCHDOG -> scope.launch { watchdog() }
+            ACTION_WATCHDOG -> if (!resumeAfterRestart()) scope.launch { watchdog() }
             ACTION_NETWORK -> scope.launch { networkChanged() }
             ACTION_LOGS -> scope.launch { refreshLogs() }
             ACTION_NOTIFY_PAIR -> postPairingNotification()
@@ -141,6 +142,18 @@ class ControlService : Service() {
             runCatching { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(it) }
         }
         super.onDestroy()
+    }
+
+    /**
+     * The system restarted the service after a process kill (sticky restart with a
+     * null intent, or a watchdog alarm): this process has no deployment yet, so run
+     * the full setup instead of idling until the next alarm. Returns true when the
+     * setup was started.
+     */
+    private fun resumeAfterRestart(): Boolean {
+        if (!prefs.setupComplete || ControlBus.state.value.phase != Phase.Idle) return false
+        scope.launch { setup() }
+        return true
     }
 
     private suspend fun setup(forceRestart: Boolean = false) {
