@@ -91,12 +91,12 @@ These are facts from AOSP `main`, not assumptions.
 | D3 | App key | Ephemeral RSA keypair generated on first run; private key in app-private storage; public key in the patched adbd key file |
 | D4 | Developer machine pairing | QR shown by the developer machine, scanned by the app; no pairing listener on the phone |
 | D5 | System `adbd` | Bootstrap only; left on USB; `ADB_WIFI_ENABLED=0` after the patched adbd is running |
-| D6 | Watchdog | App foreground service keeps `ADB_WIFI_ENABLED=0`; `ADB_ENABLED=0` only if a plain system listener is detected |
+| D6 | Watchdog | App foreground service keeps `ADB_WIFI_ENABLED=0`; probes 5555 once after boot or network change; `ADB_ENABLED=0` only if it is open |
 | D7 | Policy | Patched adbd enforces per-key and per-service rules; VPN ACL is the outer boundary |
 | D8 | Fallback | If the patched adbd cannot run, system adbd + network gating + TCP proxy |
 | D9 | UI | Kotlin, Jetpack Compose, Material 3; package `cz.slush.adbanywhere` |
 | D10 | Bootstrap pairing | Notification `RemoteInput` with `code:port` |
-| D11 | System adbd off | `ADB_WIFI_ENABLED=0` in steady state; `ADB_ENABLED=0` only if a plain TCP listener is detected |
+| D11 | System adbd off | `ADB_WIFI_ENABLED=0`; no system TCP listener when `is_usb=true` and `service.adb.tcp.port` is empty; `ADB_ENABLED=0` only if 5555 is open |
 | D12 | Wireless debugging | Off; the patched adbd ignores the toggle |
 | D13 | Patched adbd transports | TCP only; USB and vsock disabled |
 
@@ -177,24 +177,57 @@ confirming. Replay is limited by `issued_at` and by removing the key.
   starts; the app reads `service.adb.tls.port` and connects.
 - The patched adbd ignores both toggles.
 
+### Port behavior
+
+Wireless debugging toggles only the TLS listener; it does not touch the plain
+TCP listener.
+
+Enabling (`ADB_WIFI_ENABLED=1`):
+
+1. `AdbService` sets `persist.adb.tls_server.enable=1`.
+2. adbd starts `TlsServer(0)`.
+3. `TlsServer` binds `0.0.0.0:<random>` via `network_inaddr_any_server`.
+4. adbd registers `_adb-tls-connect._tcp` and publishes
+   `service.adb.tls.port`.
+5. The TLS listener is on all interfaces at a random port. No plain TCP
+   listener is created.
+
+Disabling (`ADB_WIFI_ENABLED=0`):
+
+1. `AdbService` sets `persist.adb.tls_server.enable=0`.
+2. adbd deletes `TlsServer`, closing the TLS listener.
+3. adbd unregisters `_adb-tls-connect._tcp` and kicks TLS transports.
+4. The TLS listener is gone. A plain TCP listener, if present, is unchanged.
+
+Plain TCP listener:
+
+- Created by `adb tcpip` (`service.adb.tcp.port=<port>`), bound to
+  `0.0.0.0:<port>`.
+- Fallback when `is_usb=false` and `service.adb.tcp.port` is empty:
+  `0.0.0.0:5555`.
+- Not created when `is_usb=true` and `service.adb.tcp.port` is empty.
+- Independent of `ADB_WIFI_ENABLED`.
+
+`ADB_ENABLED=0` stops adbd entirely: no TLS, no plain, no USB.
+
 ### Watchdog
 
-The app's foreground service keeps the system wireless debugging off and
-checks that the system adbd has no plain TCP listener.
+The app's foreground service keeps the system wireless debugging off. In the
+normal case (`is_usb=true`, `service.adb.tcp.port` empty) the system adbd has no
+TCP listener, so there is nothing to monitor or turn off.
 
 - Primary: set `ADB_WIFI_ENABLED=0`. The framework stops the system TLS server.
-- If `127.0.0.1:5555` is open, set `ADB_ENABLED=0`. `AdbService` stops adbd
-  and `UsbDeviceManager` removes ADB from the USB functions.
-- Register `UsbManager.ACTION_USB_STATE` (sticky) and
-  `ConnectivityManager.NetworkCallback`.
-- Poll every 60 s while the screen is on and every 15 min via
-  `AlarmManager.setExactAndAllowWhileIdle` otherwise.
-- Probe `127.0.0.1:5555` and `127.0.0.1:<portA>`.
+- Probe `127.0.0.1:5555` once after boot, after a network change, and after a
+  USB state change. If it is open, set `ADB_ENABLED=0`.
+- If `ADB_ENABLED=0` does not stop adbd, move it to a random port with
+  `tcpip:<random>` and record the residual.
+- Poll `127.0.0.1:<portA>` every 60 s while the screen is on and every 15 min
+  via `AlarmManager.setExactAndAllowWhileIdle` otherwise.
 - If `<portA>` is down, restart the patched adbd through the system adbd if it is
   reachable, otherwise notify the user.
+- Register `UsbManager.ACTION_USB_STATE` (sticky) and
+  `ConnectivityManager.NetworkCallback`.
 - Backoff and hysteresis; never fight an explicit user "off".
-- If `ADB_ENABLED=0` does not stop adbd on an OEM, move the system adbd to a
-  random port with `tcpip:<random>` and record the residual.
 
 ## 7. Flows
 
