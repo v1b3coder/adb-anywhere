@@ -18,7 +18,7 @@ production-ready until the P0 items below are fixed and the design is reconciled
 
 | Dimension | Rating | Main reason |
 |---|---|---|
-| Functional core | 7/10 | The real phone path works; Android 12 crashes; process-death recovery is broken. |
+| Functional core | 7/10 | The real phone path works; process-death recovery is broken. |
 | Security | 5/10 | Key auth and loopback are good; failure paths can leave the system listener on; revocation is not live; the boot receiver is exported. |
 | Reliability | 4/10 | No backoff, no log rotation, daemon DoS, no USB state, no exact alarm. |
 | Test coverage | 4/10 | Good daemon tests; missing app watchdog/policy tests, two-listener/two-key integration, CI, and device matrix. |
@@ -95,6 +95,11 @@ These are verified or strongly supported by the repository:
 ## 3. P0 blockers
 
 ### P0-1 — The app crashes on Android 12 (contradicts D1)
+
+**Status: fixed in `a21654d`.** `encode()` now uses
+`BigInteger.ONE.shiftLeft(MODULUS_SIZE * 8 * 2)`; `lintDebug` no longer reports
+`NewApi`, and `encodeReproducesAndroidFixtureBytes` pins the byte output. Not yet
+re-verified on an API 31/32 device or emulator.
 
 `AndroidPubKey.kt:40` uses `BigInteger.TWO`. The API database marks
 `java/math/BigInteger.TWO` as `since="33"`; lint reports it as an error against
@@ -670,7 +675,7 @@ Fix: use a Compose-compatible splash/theme and clean up unused resources.
 | §2 App is the only entity that controls the listener / decides who connects | **Partial** | App controls deployment, but shell can rewrite the key file; revocation does not close live sessions (P0-3); loopback can be spoofed (P1-14). |
 | §2 No root, no custom ROM, no permanent web server | **Met** | Daemon runs as shell; no web server. |
 | §4 Verified platform constraints | **Mostly met** | Implementation relies on `ADB_ENABLED`, `adb_wifi_enabled`, `service.adb.tls.port`, `pm grant`; §4.6 key file path is replaced by the daemon's key file. |
-| §5 D1 Android 12+ | **Not met at runtime** | `BigInteger.TWO` is API 33 (P0-1). |
+| §5 D1 Android 12+ | **Met in code** | `encode()` no longer uses the API-33 `BigInteger.TWO` (P0-1, fixed in `a21654d`); no API 31/32 runtime run yet. |
 | §5 D2 One patched adbd with two listeners | **Functional, not as designed** | Two listeners work, but the daemon is an independent implementation, not a patched AOSP adbd (P1-1). |
 | §5 D3 App key ephemeral, private in app storage, public in daemon key file | **Met** | `AppKeyStore`, `KeyFiles`, `DaemonManager`. |
 | §5 D4 QR/paste pairing, fingerprint confirmation, label, no listener | **Met** | `KeysScreen`, `AndroidPubKey`, `DeveloperKey`; no pairing listener. |
