@@ -115,6 +115,13 @@ Fix: `BigInteger.ONE.shiftLeft(MODULUS_SIZE * 8 * 2)` (or
 
 ### P0-2 — Setup failures can leave the system TLS listener on
 
+**Status: fixed in `a99716e`.** `setup()` now runs `abortSetup()` from a
+`finally` block whenever the attempt does not reach `Phase.Running`: it stops the
+patched daemon (daemon loopback shell, else the system shell), writes and verifies
+`adb_wifi_enabled=0`, and restores `ADB_ENABLED` to the value captured before
+the bootstrap. If the listener cannot be closed, the explicit setup error is
+extended with the reason and the manual recovery step. Not re-verified on a device.
+
 `ControlService.setup()` deliberately re-enables the bootstrap before it has a
 patched daemon: `setAdbEnabled(true)` when keep-off is on, and
 `setAdbWifiEnabled(true)` when Wi-Fi is connected (`ControlService.kt:183-186`).
@@ -674,7 +681,7 @@ Fix: use a Compose-compatible splash/theme and clean up unused resources.
 | DESIGN.md | Status | Evidence |
 |---|---|---|
 | §2 Goals: reachable across reboots/sleep/network, including mobile data over VPN | **Partial** | Daemon and VPN restart work; process-death recovery is broken (P0-4); OEM bootstrap limitation is documented. |
-| §2 Never expose plain ADB on an untrusted LAN | **Partial** | Daemon binds loopback + VPN only; system adbd can be left on 5555/TLS on failure paths (P0-2, P0-5, P0-6). |
+| §2 Never expose plain ADB on an untrusted LAN | **Partial** | Daemon binds loopback + VPN only; the system listener can still be left on by the pre-existing verification gaps (P0-5, P0-6); failed setup now closes it (P0-2, fixed in `a99716e`). |
 | §2 App is the only entity that controls the listener / decides who connects | **Partial** | App controls deployment, but shell can rewrite the key file; revocation does not close live sessions (P0-3); loopback can be spoofed (P1-14). |
 | §2 No root, no custom ROM, no permanent web server | **Met** | Daemon runs as shell; no web server. |
 | §4 Verified platform constraints | **Mostly met** | Implementation relies on `ADB_ENABLED`, `adb_wifi_enabled`, `service.adb.tls.port`, `pm grant`; §4.6 key file path is replaced by the daemon's key file. |
@@ -682,7 +689,7 @@ Fix: use a Compose-compatible splash/theme and clean up unused resources.
 | §5 D2 One patched adbd with two listeners | **Functional, not as designed** | Two listeners work, but the daemon is an independent implementation, not a patched AOSP adbd (P1-1). |
 | §5 D3 App key ephemeral, private in app storage, public in daemon key file | **Met** | `AppKeyStore`, `KeyFiles`, `DaemonManager`. |
 | §5 D4 QR/paste pairing, fingerprint confirmation, label, no listener | **Met** | `KeysScreen`, `AndroidPubKey`, `DeveloperKey`; no pairing listener. |
-| §5 D5 `ADB_WIFI_ENABLED=0` always; `ADB_ENABLED=0` only with keep-off; restore original | **Partial** | `harden()` sets both, but no verification (P0-5), no re-assert (P0-5), and failure paths leave bootstrap on (P0-2). |
+| §5 D5 `ADB_WIFI_ENABLED=0` always; `ADB_ENABLED=0` only with keep-off; restore original | **Partial** | `harden()` sets both, but no verification (P0-5) and no re-assert (P0-5); failed setup restores the bootstrap and the pre-bootstrap `ADB_ENABLED` (P0-2, fixed in `a99716e`). |
 | §5 D6 Watchdog keeps D5, probes 5555 only with keep-off, restarts daemon | **Partial** | Restarts daemon; probes 5555 only with keep-off; does not re-assert `ADB_WIFI_ENABLED=0`; no backoff; START_STICKY broken. |
 | §5 D7 Patched adbd per-key/per-service policy | **Partial** | Roles exist, but both allow all services (P1-11). |
 | §5 D8 Kotlin/Compose/Material 3/package | **Met** | App sources and manifest. |
@@ -696,12 +703,12 @@ Fix: use a Compose-compatible splash/theme and clean up unused resources.
 | §6 System adbd control: mandatory `ADB_WIFI_ENABLED=0`, optional `ADB_ENABLED=0` | **Partial** | Implemented but not verified/re-asserted (P0-5). |
 | §6 Port behavior: app never calls `adb tcpip` on system adbd | **Met** | No `tcpip` call in app. |
 | §6 Watchdog: 60 s screen-on / 15 min otherwise, exact alarm, USB + network callbacks, backoff/hysteresis | **Not met** | 60 s always, `setAndAllowWhileIdle`, no USB callback, no backoff (P1-4, P1-5, P1-6). |
-| §7 First run | **Met** | Implemented end-to-end (modulo P0-1/P0-2). |
+| §7 First run | **Met** | Implemented end-to-end (modulo P0-2 cleanup not re-verified on a device). |
 | §7 Port discovery: TLS primary, mDNS fallback, manual port, `tcpip:<port>` | **Partial** | TLS/mDNS/manual implemented; `tcpip:<port>` not (P1-12). |
 | §7 Boot: boot receiver, re-assert `adb_wifi_enabled` and `adb_allowed_connection_time=0`, probe, deploy, harden, manual recovery | **Partial** | Boot receiver and probe implemented; `adb_allowed_connection_time=0` missing (P1-2); `persist.adb.tcp.port` missing (P1-3). |
 | §7 Network change: VPN restart, VPN down, TLS switch | **Partial / contradicts D5** | VPN restart and VPN down implemented; TLS switch not implemented (P1-13). |
 | §7 USB: `ACTION_USB_STATE`, warning, `ADB_ENABLED=0` | **Not met** | No USB receiver; warning lost (P1-4, P0-6). |
-| §8 Security: VPN ACL outer, key file/policy inner, loopback app channel, system adbd off, residual warning, pairing, keys, revocation, no root | **Partial** | Key auth and loopback are good; residual warning lost; revocation not live; system adbd can remain on (P0-2, P0-3, P0-5, P0-6). |
+| §8 Security: VPN ACL outer, key file/policy inner, loopback app channel, system adbd off, residual warning, pairing, keys, revocation, no root | **Partial** | Key auth and loopback are good; residual warning lost; revocation not live; system adbd can remain on (P0-3, P0-5, P0-6). |
 | §9 Failure modes | **Partial** | Many are explicit; cleanup, revocation, sticky restart, and 5555 warning are missing. |
 | §10 Testing: unit (QR/key/policy/address/watchdog), integration (two listeners/two keys/policy/key reload), device matrix, CI | **Partial** | App tests 15; daemon tests 131 checks + integration; no policy/watchdog tests, no two-listener/two-key integration, no device matrix, no CI. |
 | §11 Phasing: Phase 0 report, Phase 1 control plane, Phase 2 patched adbd, Phase 3 depth | **Partial** | Phase 0 report absent; Phase 1/2 functional; Phase 3 not implemented. |
@@ -729,7 +736,9 @@ Fix: use a Compose-compatible splash/theme and clean up unused resources.
 
 ### Weaknesses
 
-- **Bootstrap exposure on failure** (P0-2): system TLS listener can stay on.
+- **Bootstrap exposure on failure** (P0-2, fixed in `a99716e`): `abortSetup()`
+  now closes the system listener and restores `ADB_ENABLED`; not re-verified on a
+  device.
 - **Revocation is not live** (P0-3): an existing connection survives key removal.
 - **System listener not re-asserted/verified** (P0-5, P1-9): the "off" claim is
   a setting write, not a verified closed port.
