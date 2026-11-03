@@ -103,7 +103,9 @@ class ControlService : Service() {
             ACTION_START, ACTION_APPLY_KEYS, ACTION_APPLY_SETTINGS -> {
                 scope.launch { setup() }
             }
-            ACTION_RESTART -> {
+            // A revocation must terminate sessions that were authenticated with the
+            // removed key, so it restarts the daemon like an explicit restart.
+            ACTION_RESTART, ACTION_REVOKE_KEYS -> {
                 scope.launch { setup(forceRestart = true) }
             }
             ACTION_PAIR -> {
@@ -254,7 +256,9 @@ class ControlService : Service() {
                     prefs.vpnPort != previous.vpnPort
                 val restart = forceRestart || !daemonAlive || vpnChanged || portsChanged
                 if (daemonAlive && !restart) {
-                    // The daemon reloads keys and policy on the next auth.
+                    // No key was revoked: the daemon reloads the key file on the
+                    // next auth. Revocation sends ACTION_REVOKE_KEYS instead, so
+                    // the restart above kills the sessions the key authenticated.
                     daemon.writeKeysAndPolicy(shell, appKey, developers)
                 } else if (daemonAlive) {
                     daemon.restartDetached(
@@ -798,6 +802,7 @@ class ControlService : Service() {
         const val ACTION_PAIR = "cz.slush.adbanywhere.PAIR"
         const val ACTION_PAIR_REPLY = "cz.slush.adbanywhere.PAIR_REPLY"
         const val ACTION_RESTART = "cz.slush.adbanywhere.RESTART"
+        const val ACTION_REVOKE_KEYS = "cz.slush.adbanywhere.REVOKE_KEYS"
         const val ACTION_WATCHDOG = "cz.slush.adbanywhere.WATCHDOG"
         const val ACTION_NETWORK = "cz.slush.adbanywhere.NETWORK"
         const val ACTION_LOGS = "cz.slush.adbanywhere.LOGS"

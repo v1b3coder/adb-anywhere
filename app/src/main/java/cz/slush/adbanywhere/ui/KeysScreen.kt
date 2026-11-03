@@ -118,7 +118,12 @@ fun KeysScreen(
         AlertDialog(
             onDismissRequest = { removeTarget = null },
             title = { Text("Remove ${target.label}?") },
-            text = { Text("The machine will no longer be able to connect until it is paired again.") },
+            text = {
+                Text(
+                    "The machine will no longer be able to connect until it is paired again. " +
+                        "The daemon restarts, so open connections drop.",
+                )
+            },
             confirmButton = {
                 TextButton(onClick = {
                     onRemove(target.fingerprint)

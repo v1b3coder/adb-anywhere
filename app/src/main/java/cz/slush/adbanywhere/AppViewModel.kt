@@ -74,7 +74,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val updated = _keys.value.filterNot { it.fingerprint == fingerprint }
         prefs.developerKeysJson = DeveloperKey.store(updated)
         _keys.value = updated
-        ControlService.start(getApplication(), ControlService.ACTION_APPLY_KEYS)
+        // Revocation must close live sessions, so the service restarts the daemon
+        // instead of only rewriting the key file (DESIGN.md §8).
+        ControlService.start(getApplication(), ControlService.ACTION_REVOKE_KEYS)
     }
 
     fun setKeepSystemAdbOff(enabled: Boolean) {
