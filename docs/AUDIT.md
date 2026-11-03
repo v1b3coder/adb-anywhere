@@ -1,0 +1,911 @@
+<!-- Production-readiness audit of adb-anywhere against DESIGN.md. -->
+# Production-readiness audit
+
+Date: 2026-11-03
+App commit: `0c54704`
+Daemon commit: `94dcaba` (`../adb-anywhere-adbd`)
+Scope: app, bundled daemon, build/release setup, tests, docs, and
+conformance with `DESIGN.md`.
+
+**Verdict: not production-ready.** The core path is real and was demonstrated
+end-to-end on a Samsung S23, and both the app and daemon test suites pass. But
+there are P0 correctness, security, and recovery defects, and the implementation
+has drifted substantially from the design. The app must not be described as
+production-ready until the P0 items below are fixed and the design is reconciled.
+
+
+## 0. Scorecard (informal)
+
+| Dimension | Rating | Main reason |
+|---|---|---|
+| Functional core | 7/10 | The real phone path works; Android 12 crashes; process-death recovery is broken. |
+| Security | 5/10 | Key auth and loopback are good; failure paths can leave the system listener on; revocation is not live; the boot receiver is exported. |
+| Reliability | 4/10 | No backoff, no log rotation, daemon DoS, no USB state, no exact alarm. |
+| Test coverage | 4/10 | Good daemon tests; missing app watchdog/policy tests, two-listener/two-key integration, CI, and device matrix. |
+| Release engineering | 2/10 | Unsigned release, lint fails, no CI, no versioning. |
+| Design conformance | 4/10 | The daemon is a rewrite, not the design's patched AOSP adbd; several flows are missing. |
+| Documentation | 5/10 | Phone evidence is good; DESIGN.md and E2E.md are stale; the license is inconsistent. |
+
+---
+
+## 1. Method and evidence
+
+Read: `DESIGN.md`, `README.md`, `docs/E2E.md`, `docs/PHONE-E2E.md`, all app
+Kotlin sources, the manifest and Gradle files, and the daemon fork's C sources,
+headers, integration test, and build scripts.
+
+Executed:
+
+```text
+./gradlew :app:testDebugUnitTest --rerun-tasks
+  BUILD SUCCESSFUL
+  AndroidPubKeyTest: 7 tests, 0 failures
+  ControlDataTest:   7 tests, 0 failures
+  ScaffoldTest:      1 test,  0 failures
+
+./gradlew :app:lintDebug :app:assembleRelease
+  lintDebug FAILED: 2 errors, 45 warnings
+  assembleRelease succeeded
+
+./gradlew :app:assembleRelease
+  BUILD SUCCESSFUL
+  output: app/build/outputs/apk/release/app-release-unsigned.apk
+
+cd ../adb-anywhere-adbd
+make
+  all host binaries built with -Wall -Wextra -Werror
+./tests/test_util   -> 15 checks, 0 failures
+./tests/test_auth   -> 30 checks, 0 failures
+./tests/test_proto  -> 86 checks, 0 failures
+./tests/integration.sh
+  integration ok (real adb client: shell v1/v2, exec-out,
+  stderr/exit code, push/pull, forward, key rejection)
+```
+
+Not executed in this environment: any Android device or emulator, Android 12,
+WireGuard, USB attach/detach, Doze, or OEM devices. The phone evidence in
+`docs/PHONE-E2E.md` is treated as reported evidence, not as a rerun.
+
+---
+
+## 2. What works
+
+These are verified or strongly supported by the repository:
+
+- The daemon binds only explicit `tcp:IP:PORT` listeners and refuses `0.0.0.0`
+  (`proto.c:listen_parse`). It has no USB, vsock, mDNS, or TLS code.
+- RSA-2048 Android `adbkey.pub` authentication, per-key roles, key-file reload
+  on mtime change and `SIGHUP`, structured JSON-lines logs.
+- `shell:`, `shell,v2`, `exec:`, `sync:`, and `tcp:` work with the real `adb`
+  client in the daemon integration test.
+- The app's setup flow is explicit and has no proxy fallback or random-port
+  redirect.
+- The app's key import supports Android `adbkey.pub`, `ssh-rsa`, base64 DER, and
+  PEM, and shows the fingerprint before adding the key.
+- The app uses device-protected storage for its key and preferences,
+  `allowBackup="false"`, a `connectedDevice` foreground service, and a
+  direct-boot-aware boot receiver.
+- The phone evidence in `docs/PHONE-E2E.md` shows the intended product path:
+  two listeners (`127.0.0.1:15037` and `100.64.0.10:15038`), app-key and
+  developer-key auth, `uid=2000(shell)`, `adb push`/`pull`, and
+  `adb_wifi_enabled=0`.
+
+---
+
+## 3. P0 blockers
+
+### P0-1 — The app crashes on Android 12 (contradicts D1)
+
+`AndroidPubKey.kt:40` uses `BigInteger.TWO`. The API database marks
+`java/math/BigInteger.TWO` as `since="33"`; lint reports it as an error against
+`minSdk = 31`. `AndroidPubKey.encode()` is called during first-run key
+generation (`AppKeyStore.loadOrCreate`) and in `KeyFiles`, so on Android 12/12L
+(API 31/32) the app throws `NoSuchFieldError` before it can pair or deploy.
+
+Impact: the stated Android 12+ support is false; the app cannot complete first run
+on Android 12. The JVM unit test passes because the host JDK has the field.
+
+Fix: `BigInteger.ONE.shiftLeft(MODULUS_SIZE * 8 * 2)` (or
+`BigInteger.valueOf(2)`), or raise `minSdk` to 33 and update DESIGN.md D1.
+
+### P0-2 — Setup failures can leave the system TLS listener on
+
+`ControlService.setup()` deliberately re-enables the bootstrap before it has a
+patched daemon: `setAdbEnabled(true)` when keep-off is on, and
+`setAdbWifiEnabled(true)` when Wi-Fi is connected (`ControlService.kt:183-186`).
+Every subsequent failure path calls `fail()` without a cleanup:
+
+- `grantSelfPermission()` failure (`ControlService.kt:209-215`);
+- `deployAndStart`/`restartDetached` failure (`ControlService.kt:230-247`);
+- `verifyDaemon()` failure (`ControlService.kt:252`);
+- `harden()` failure (`ControlService.kt:261`);
+- any other exception (`ControlService.kt:281-283`).
+
+`fail()` only records the error and changes UI state (`ControlService.kt:521-532`). It does not set
+`adb_wifi_enabled=0`, does not stop the daemon, and does not restore
+`ADB_ENABLED`.
+
+Impact: on a failed setup the system `adbd` can remain reachable over TLS on all
+interfaces, which violates the design's security model ("never expose plain ADB on an
+untrusted LAN" and "system adbd ... not reachable over TCP after
+`ADB_WIFI_ENABLED=0`"). The failure policy in DESIGN.md §9 says to show an
+explicit error; it does not authorize leaving the system listener on.
+
+Fix: put the bootstrap in a `try/finally` or explicit cleanup path that always sets
+`adb_wifi_enabled=0`, stops a partially started daemon, and restores the original
+`ADB_ENABLED` value when the patched daemon is not verified.
+
+### P0-3 — Revocation does not terminate live sessions
+
+`AppViewModel.removeDeveloperKey()` rewrites the key list and sends
+`ACTION_APPLY_KEYS`. `ControlService.setup()` sees a live daemon and
+`restart == false`, so it only calls `daemon.writeKeysAndPolicy(...)`
+(`ControlService.kt:227-229`). The daemon reloads the key file only on the next
+authentication (`main.c:maybe_reload_keys`), and an already authenticated
+connection keeps its role and can open new streams.
+
+Impact: a developer key that has an open connection remains usable after it is
+removed from the UI. This contradicts DESIGN.md §8: "Revocation: app removes a key
+from the key file and restarts the patched adbd if needed" and "removing the key
+revokes it". The app UI says the machine "will no longer be able to connect", which
+is only true for new connections.
+
+Fix: restart the daemon on key removal, or add a control operation that closes
+connections whose fingerprint was revoked and then reloads the keyring. At minimum,
+`ACTION_APPLY_KEYS` should force a daemon restart, not only a key-file rewrite.
+
+### P0-4 — `START_STICKY` restart is a no-op
+
+`ControlService.onStartCommand` returns `START_STICKY` (`ControlService.kt:126`),
+but when the system restarts the service with a null intent, the `when` has no
+matching branch and the service does nothing. `onCreate` only publishes the saved
+preferences; it does not call `setup()`. `ControlBus.state.phase` stays `Idle`,
+and `watchdog()` returns immediately unless the phase is `Running`
+(`ControlService.kt:430`).
+
+Impact: after the process is killed by Doze/LMK (without a reboot), the app does not
+redeploy, does not re-harden, and does not restart the watchdog. DESIGN.md §9
+explicitly relies on `START_STICKY` for Doze recovery. The daemon may still be
+running, but the app no longer supervises it.
+
+Fix: on `intent == null` (or when `phase == Idle` and `setupComplete`), call
+`setup()`.
+
+### P0-5 — Mandatory `ADB_WIFI_ENABLED=0` is not re-asserted or verified
+
+DESIGN.md D5/D6 say the app "always keeps the system wireless debugging off" and
+the watchdog "keeps the D5 state". `harden()` sets `adb_wifi_enabled=0` once during
+setup (`ControlService.kt:373`), but `watchdog()` never re-asserts it
+(`ControlService.kt:428-469`). If the user or the OEM turns wireless debugging
+back on, the system TLS listener stays on and the app never notices.
+
+The app also does not verify that the write stopped the listener: it does not check
+`service.adb.tls.port` or `persist.adb.tls_server.enable`. The only evidence is the
+setting value itself. The phone evidence shows `adb_wifi_enabled=0`, not that the TLS
+port closed.
+
+Fix: re-assert `setAdbWifiEnabled(false)` on every watchdog tick and boot; verify
+that `service.adb.tls.port` is empty (or that the TLS port is closed) before
+declaring "system wireless debugging off".
+
+### P0-6 — The 5555 warning is discarded and the UI infers state from the phase
+
+`harden()` sets a warning in `ControlBus.message` when `127.0.0.1:5555` is open and
+"Keep system adb off" is off (`ControlService.kt:395-402`). `setup()` then overwrites
+`message` with "Ready for developer machines." or "VPN is down…"
+(`ControlService.kt:269-277`). `HomeScreen` only shows a warning when
+`state.message.contains("Warning")` (`HomeScreen.kt:89`), so the warning is never
+visible.
+
+`SecurityRow` derives "System wireless debugging is off" from
+`state.phase == Phase.Running` (`HomeScreen.kt:271-295`). It never reads
+`adb_wifi_enabled` or `adb_enabled`, so it can claim "off" while the system
+listener is on. This contradicts D11 ("shows the current ADB state and any warning")
+and DESIGN.md §8's residual-risk requirement.
+
+Fix: add explicit `adbWifiEnabled`, `adbEnabled`, and `plain5555Open` fields to
+`ControlState`; populate them from `SystemSettings`/`SystemAdb`; show a persistent
+warning instead of inferring from the phase.
+
+### P0-7 — `BootReceiver` is exported and does not check the action
+
+`AndroidManifest.xml:53-56` declares `BootReceiver` with `android:exported="true"`,
+and `BootReceiver.onReceive` starts `ControlService.ACTION_START` for any intent
+(`BootReceiver.kt:12-14`). It does not check `intent.action`.
+
+Impact: any app on the phone can send an explicit intent with an unprotected action to
+`cz.slush.adbanywhere/.service.BootReceiver` and trigger the control service. If the
+daemon is down, `setup()` can re-enable `ADB_ENABLED=1` and `adb_wifi_enabled=1`
+before bootstrap (`ControlService.kt:183-186`), which is exactly the state the design
+promises to keep off. The receiver does not need to be exported: system broadcasts are
+delivered to non-exported receivers.
+
+Fix: `android:exported="false"` and/or check
+`intent.action in {BOOT_COMPLETED, LOCKED_BOOT_COMPLETED, MY_PACKAGE_REPLACED}`.
+
+### P0-8 — Release artifact is unsigned
+
+`./gradlew :app:assembleRelease` produces
+`app/build/outputs/apk/release/app-release-unsigned.apk`. There is no
+`signingConfig` in `app/build.gradle.kts`, no `keystore.properties`, and no release
+signing setup. A release APK cannot be installed or distributed as-is.
+
+Impact: no production release path. This is a P0 if the app is to be distributed; it
+is at least P1 for a sideload-only project.
+
+Fix: add a release signing config backed by a protected keystore/CI secret, or document
+that releases are signed externally.
+
+### P0-9 — The lint quality gate fails
+
+`./gradlew :app:lintDebug` fails with 2 errors and 45 warnings:
+
+- `ControlService.kt:571` `MissingPermission`: `NotificationManagerCompat.notify`
+  without a `POST_NOTIFICATIONS` check. The call is inside `runCatching`, but the lint
+  gate does not accept it. The service also posts the foreground notification without
+  a permission check.
+- `AndroidPubKey.kt:40` `NewApi`: `BigInteger.TWO` requires API 33.
+
+Impact: `./gradlew build`/`check` is red; any CI gate using lint fails. The
+`lintVitalRelease` task happens to pass because `NewApi` is not fatal there.
+
+Fix: fix P0-1; add an explicit permission check/annotation for the notification
+call; then make lint part of CI.
+
+---
+
+## 4. P1 findings
+
+### P1-1 — The implementation is not the design's "patched AOSP adbd"
+
+DESIGN.md §6 says: "The patched adbd is a stock AOSP adbd with a minimal patch set.
+All in `daemon/`" and lists AOSP files (`main.cpp`, `adb_wifi.cpp`,
+`auth.cpp`, `services.cpp`). The actual daemon is a ~2.3k-line independent C
+implementation (`src/main.c`, `auth.c`, `stream.c`, `service.c`, `proto.c`,
+`util.c`, `log.c`) in a separate repository. Its own README says it is "not a
+drop-in replacement for AOSP adbd" and lists deliberate omissions (USB, vsock,
+mDNS, TLS, `reverse:`, `jdwp:`, `abb:`).
+
+Impact: DESIGN.md §6's patch-set table, §11 Phase 2, and §12's "AOSP adbd
+cross-compile and patch maintenance" risk are stale. The implementation may be
+better or worse than the design, but the design cannot be used to review it. The
+provenance wording ("stock AOSP adbd with a minimal patch set") is inaccurate.
+
+Fix: either replace the daemon with the described AOSP fork or rewrite DESIGN.md
+§6/§11/§12 to describe the independent daemon, its supported protocol subset,
+and its test/porting strategy.
+
+### P1-2 — `adb_allowed_connection_time=0` is missing
+
+DESIGN.md §7 Boot step 2 says the service re-asserts `adb_allowed_connection_time=0`.
+The app never writes it (`grep` finds no occurrence). Without it, Android may disable
+wireless debugging after the framework's timeout, so the bootstrap path can fail after
+the app has gone to the background.
+
+Fix: set `Settings.Global.ADB_ALLOWED_CONNECTION_TIME` to `0` when bootstrapping,
+and re-assert it on boot/watchdog.
+
+### P1-3 — The `persist.adb.tcp.port` probe is missing
+
+DESIGN.md §9 says a reboot on cellular probes 5555, the last port, TLS on Wi-Fi, and
+`persist.adb.tcp.port`. `SystemAdb.ensureConnected()` probes
+`service.adb.tls.port`, `prefs.lastTlsPort`, listening shell ports, 5555, and mDNS
+(`SystemAdb.kt:30-65`); it never reads `persist.adb.tcp.port`.
+
+Impact: the documented cellular recovery path is incomplete.
+
+Fix: read `persist.adb.tcp.port` and add it to the candidate set.
+
+### P1-4 — `ACTION_USB_STATE` is not registered
+
+DESIGN.md §6/§7 say the watchdog registers the sticky
+`UsbManager.ACTION_USB_STATE` and handles USB attach/detach. `ControlService`
+registers only a VPN `NetworkCallback` and a default `NetworkCallback`
+(`ControlService.kt:665-688`). There is no `UsbManager` use anywhere.
+
+Impact: USB state changes are only noticed indirectly by the 60s watchdog. The design's
+USB flow (system adbd returns to TCP, warning, `ADB_ENABLED=0`) is not implemented.
+
+Fix: register the sticky USB receiver and route it to `watchdog()`/`networkChanged()`.
+
+### P1-5 — The watchdog is not exact and is not screen-state aware
+
+DESIGN.md §6 says: poll loopback every 60 s while the screen is on and every 15 min
+via `AlarmManager.setExactAndAllowWhileIdle` otherwise. The app polls every 60 s
+unconditionally (`ControlService.kt:414-425`) and schedules with
+`setAndAllowWhileIdle` (`ControlService.kt:690-705`).
+
+Impact: unnecessary wakeups/battery drain while the screen is off, and the Doze wakeup
+is inexact and can be delayed.
+
+Fix: use `PowerManager.isInteractive` to choose 60 s vs 15 min, and
+`setExactAndAllowWhileIdle` (with the exact-alarm permission/`canScheduleExactAlarms`
+handling) for the 15-minute case.
+
+### P1-6 — No backoff or hysteresis on failure
+
+DESIGN.md §6 says "Backoff and hysteresis; never fight an explicit user 'off'."
+`startWatchdogLoop` calls `setup()` every 60 s whenever `phase == Error` and
+`setupComplete` (`ControlService.kt:414-425`). There is no attempt counter, no
+exponential backoff, and no stop after repeated failures. If `harden()` keeps failing
+(e.g. OEM blocks `ADB_ENABLED=0`), the app re-enables the bootstrap every minute,
+which is exactly "fighting" the failure.
+
+Fix: exponential backoff with a cap, a failure counter, and a stop state that requires
+user action.
+
+### P1-7 — Daemon accepts unlimited unauthenticated connections
+
+`accept_thread` creates one detached thread per connection with no cap
+(`main.c:300-335`). Each `connection_thread` allocates `ADB_MAX_PAYLOAD` (1 MiB)
+before authentication (`main.c:170-175`). The daemon listens on loopback, which any app
+on the phone can reach. A local app can open thousands of connections and exhaust
+threads/memory.
+
+Impact: local DoS against the app's own channel and the developer endpoint. This
+contradicts §2 ("Keep ADB reachable") and is a production-readiness gap.
+
+Fix: cap concurrent connections (e.g. 8-16), cap per-IP connections, allocate a small
+pre-auth buffer (e.g. 4 KiB) until CNXN, set read/write timeouts, and reject idle
+connections.
+
+### P1-8 — The daemon log and stderr grow without bound
+
+`adb_log_open` appends to `adbd.log` with `O_APPEND` and no rotation or size cap
+(`log.c:adb_log_open`). The app's `startCommand` also redirects stderr to
+`adbd.stderr` (`DaemonManager.kt:125-133`). Both live in `/data/local/tmp` as the
+shell user.
+
+Impact: a long-running daemon or a noisy developer can fill the phone's storage. The app
+shows the log tail but never trims it.
+
+Fix: cap the log (e.g. 1 MiB) and rotate/truncate; add a bounded ring buffer for the
+UI; document the log location and retention.
+
+### P1-9 — The app does not verify that `adb_wifi_enabled=0` stopped TLS
+
+As in P0-5, `harden()` writes the setting but does not verify
+`service.adb.tls.port` is empty or the TLS port is closed. The design's security claim
+rests on the framework reacting to the setting. If an OEM ignores it, the app still shows
+"System wireless debugging off" (P0-6).
+
+Fix: verify and fail explicitly if the TLS port remains.
+
+### P1-10 — The app's verification of the VPN listener can be a false negative
+
+`verifyDaemon(vpnIp)` connects from the app to `<vpn-ip>:<vpn-port>`
+(`ControlService.kt:355-369`). DESIGN.md §12 acknowledges that a VPN app can exclude
+the app from the tunnel: loopback still works but the VPN listener is unreachable. In that
+case the daemon is healthy and developer machines can connect, but the app calls `fail()`.
+
+Fix: verify the VPN listener from a context that is not subject to the app's VPN exclusion,
+or treat a failed VPN verification as a warning (loopback verified) rather than a fatal error.
+
+### P1-11 — The policy roles are effectively identical
+
+`policy_allows` gives `app` every service and `developer` every service
+(`service.c:policy_allows`). There is no per-service or per-command distinction. The
+policy file is therefore cosmetic: both roles can `shell`, `exec`, `sync`, and `tcp`.
+
+Impact: DESIGN.md D7 says "Patched adbd enforces per-key and per-service rules." The
+implementation enforces authentication and a role label, but not a meaningful policy.
+
+Fix: define a real policy matrix (e.g. `developer` = shell/sync/exec; `app` = shell/sync/exec/tcp;
+or remove `tcp` from developer), and test allow/deny per role.
+
+### P1-12 — `tcpip:<port>` bootstrap/port discovery is not implemented
+
+DESIGN.md §7 says the plain target port is chosen by the app and set with
+`tcpip:<port>`, stored in prefs, and re-applied after boot. The app never calls
+`tcpip:` on the system adbd and has no plain-target-port preference. It only probes
+5555 and TLS ports.
+
+Impact: the design's port discovery and USB bootstrap flows are not met. The README and
+the setup screen tell the user to run `adb tcpip:<loopback>`, which is a different port
+from the design's stable plain target port.
+
+Fix: either implement the plain target port (call `tcpip:<port>`, store it, re-apply it) or
+remove it from DESIGN.md §7 and update the README/setup text.
+
+### P1-13 — The design's network-change TLS switch is not implemented (and contradicts D5)
+
+DESIGN.md §7 says: "If the active transport is Wi-Fi or Ethernet and no VPN is up, the app
+switches the developer machine to the system TLS endpoint and shows it." The app never does
+this; `networkChanged()` only restarts the daemon when the VPN IP changes
+(`ControlService.kt:471-479`). This flow also contradicts D5 ("`ADB_WIFI_ENABLED=0` always
+after the patched adbd is running"). The implementation follows D5 and not §7.
+
+Fix: reconcile the design. If D5 is the intended policy, remove the §7 TLS switch and say
+the developer endpoint is unavailable without a VPN. If §7 is intended, implement the switch
+and qualify D5.
+
+### P1-14 — `SystemAdb` can be spoofed on loopback
+
+`probeDaemon()` and `verifyDaemon()` trust any process that accepts the app key on
+`127.0.0.1:<loopback>` and returns `uid=2000` (`ControlService.kt:331-369`). A malicious
+app can bind `127.0.0.1:15037` before the real daemon, accept the app's key, and answer
+`id` with `uid=2000`. The app would then use the fake daemon for key writes and log reads
+and would report Running.
+
+Impact: local impersonation of the daemon; the app's "only entity that controls the ADB
+listener" claim is not enforceable against a malicious local app. The attacker does not learn
+the app's private key, but it can capture the developer public keys and the app's shell commands.
+
+Fix: have the daemon prove possession of a per-install secret (e.g. a random token written
+to an app-private file and signed by the daemon), or verify the daemon binary's hash and
+PID/owner; at minimum, bind the daemon to a socket in an app-private directory instead of
+a predictable TCP port.
+
+### P1-15 — The app key generation is racy
+
+`AppKeyStore.keyPair` and `certificate` are separate `by lazy` properties, each calling
+`loadOrCreate()` (`AppKeyStore.kt:31-33`). `loadOrCreate()` is not synchronized. The service
+reads `keys.publicKey` from one coroutine while `AppViewModel` reads it from another; on first
+run both can generate different keypairs and write different files. The private key and certificate
+can then mismatch, and the daemon rejects the app key.
+
+Impact: first-run flakiness, especially on slow devices.
+
+Fix: use a single synchronized/lazy `loadOrCreate()` result, or a `Mutex`/`synchronized`
+around generation.
+
+### P1-16 — `QrScanner` leaks the camera and blocks the main thread
+
+`QrScanner` calls `ProcessCameraProvider.getInstance(context).get()` inside a
+`LaunchedEffect` on the main dispatcher (`QrScanner.kt:101-104`). It never calls
+`provider.unbindAll()` on dispose; `DisposableEffect` only shuts down the executor
+(`QrScanner.kt:93-95`). The camera stays bound to the activity after the dialog closes.
+
+Impact: camera/battery drain and a potential ANR on slow devices.
+
+Fix: call `provider.unbindAll()` in `onDispose`, and use `addListener`/`await` off the
+main thread.
+
+### P1-17 — No CI and no device matrix
+
+DESIGN.md §10 says CI runs `./gradlew test assembleDebug` and no device tests; the device
+matrix is Pixel/Samsung/OnePlus, Tailscale/WireGuard, reboot, Wi-Fi↔cellular, USB
+attach/detach, and Doze. The repository has no CI workflow, and the only documented device
+is one Samsung S23 with Tailscale. The emulator script no longer exercises the host `adb`
+client (see P2-1).
+
+Impact: no automated regression gate; the most important paths (two listeners, two keys,
+key revocation, reboot, Doze, USB, WireGuard) are not covered by tests.
+
+Fix: add a CI workflow (`test`, `assembleDebug`, `lint`) and a device/integration matrix.
+At minimum, add a daemon integration case with two listeners and two keys, key reload,
+and a revocation test.
+
+### P1-18 — The release build has no versioning/signing/CI path
+
+`versionCode = 1`, `versionName = "0.1.0"`, no signing config, no release notes, no
+update mechanism. This is acceptable for a prototype but not for production.
+
+Fix: define versioning, signing, and a release process.
+
+---
+
+## 5. P2 findings
+
+### P2-1 — `docs/E2E.md` is stale
+
+`docs/E2E.md:5-9` says the emulator script "runs the complete control plane … host
+forward and a real `adb` shell" and "deliberately uses a host forward because the
+emulator's loopback is not reachable from the host." The current
+`scripts/e2e-emulator.sh` does not use `adb forward` or a host `adb` shell; it runs a
+debug shell through the app and checks the daemon log and UI. The host `adb` path is
+now only in the daemon repository's integration test.
+
+Fix: update `docs/E2E.md` and the script comment to describe what is actually
+exercised, and add a real host-forward/`adb connect` case if that is still required.
+
+### P2-2 — The app's policy/watchdog unit coverage is missing
+
+DESIGN.md §10 lists a policy evaluator and a watchdog state machine as unit tests.
+The app tests public-key parsing, key files, address selection, and pairing-code
+parsing; there is no policy evaluator test and no watchdog state-machine test. The
+daemon has policy tests, but not the app's state machine.
+
+Fix: add tests for `policy_allows` (daemon) and a pure `WatchdogState`/decision
+function in the app, and test it with fake time and fake probes.
+
+### P2-3 — The daemon integration test does not cover two listeners or two keys
+
+`tests/integration.sh` uses one listener, one key, shell v1/v2, exec-out, push/pull,
+forward, and key rejection. DESIGN.md §10 asks for two listeners, auth with two keys,
+policy allow/deny, and key reload. The phone evidence covers two keys manually, but the
+automated test does not.
+
+Fix: extend the integration test with a second listener and a second key, a policy
+allow/deny case, and a key-reload case.
+
+### P2-4 — `SystemAdb` uses private API reflection
+
+`SystemAdb.kt:103` reflects `android.os.SystemProperties` as a fallback after
+`getprop`. Lint warns `PrivateApi`; hidden APIs are blocked or changed across
+releases. The `getprop` path is sufficient for `service.adb.tls.port`.
+
+Fix: remove the reflection fallback, or use a supported API.
+
+### P2-5 — Unused permissions
+
+The manifest declares `CHANGE_NETWORK_STATE`, `CHANGE_WIFI_STATE`, and
+`ACCESS_WIFI_STATE` but the app uses none of them (`grep` finds no use).
+`ACCESS_NETWORK_STATE` is used by `ConnectivityManager`; the others are not.
+
+Fix: remove the unused permissions.
+
+### P2-6 — `SettingsScreen` does not show the current ADB state
+
+D11 says the settings UI "shows the current ADB state and any warning". The Settings
+screen shows the keep-off switch and a generic note; it does not show
+`adb_enabled`/`adb_wifi_enabled` or whether 5555 is open. `HomeScreen`'s
+`SecurityRow` infers the state from the phase (P0-6).
+
+Fix: read and display the actual settings and the 5555 probe result.
+
+### P2-7 — `SystemAdb.listeningShellPorts()` is unreliable on Android 10+
+
+It reads `/proc/net/tcp*` for uid 2000. Android 10+ restricts `/proc/net/tcp` to the
+app's own sockets, so this fallback likely sees nothing on modern devices. It is only a
+fallback, but the design presents it as a candidate.
+
+Fix: rely on `getprop`/mDNS, or document the limitation.
+
+### P2-8 — `DaemonManager.restartDetached` has a restart race
+
+It kills the old daemon and starts the new one in a detached script, then `waitForPort`
+returns as soon as the old daemon's port is still open. The subsequent `probe(vpnIp, vpnPort)`
+can connect to the old daemon, so `verifyDaemon` can verify the old daemon and the new
+daemon may not be up yet.
+
+Fix: wait for the old PID to disappear or the new PID file to change before probing.
+
+### P2-9 — `DaemonManager.stop` relies on `ps`/`awk`/`xargs` availability
+
+The stale-process cleanup uses `ps -A -o PID,NAME,ARGS`, `awk`, and `xargs -r`
+(`DaemonManager.kt:143-151`). Toybox variants differ; if any is missing, the cleanup
+silently fails. The pid file is the primary path, but a daemon that loses its pid file is
+not cleaned.
+
+Fix: verify the tools or use `/proc` directly.
+
+### P2-10 — `Shell.exec` timeout does not cover a hung read
+
+`execV2` checks the deadline only after a frame is read (`Shell.kt:55-81`). `readFully`
+blocks on the socket, so a hung command (e.g. `cat` on a FIFO, a daemon that stops
+responding) can block the IO coroutine indefinitely and hold `setupMutex`.
+
+Fix: set `SO_TIMEOUT` on the socket or run the read with a coroutine timeout and close
+the stream on timeout.
+
+### P2-11 — `SystemAdb.ensureConnected` can treat a daemon as the system adbd
+
+The candidate list includes `prefs.loopbackPort`? It skips `prefs.loopbackPort` and
+`prefs.vpnPort` (`SystemAdb.kt:56`), but if the prefs were reset or the daemon is on a
+different port, `listeningShellPorts()` can include the daemon. The app could then run
+`pm grant` through its own daemon and use it as the bootstrap. Not a security boundary
+(shell is shell), but a state confusion.
+
+Fix: verify the system adbd's identity (e.g. the system adbd's TLS certificate or the
+`ro.adb.secure` property) before using it.
+
+### P2-12 — `libadb-android` is a JitPack dependency with a trust-all TLS manager
+
+`app/build.gradle.kts:119` uses `com.github.MuntashirAkon:libadb-android:3.1.1` from
+JitPack. Lint reports `TrustAllX509TrustManager` in libadb and BouncyCastle. For ADB
+pairing, the pairing code is the authentication and the certificate is self-signed; for the
+system TLS connect, ADB key auth is the authentication. The trust-all is expected in ADB, but
+it is a supply-chain and review risk: the dependency is not pinned by hash/lockfile and the
+JitPack artifact is built on demand.
+
+Fix: vendor or mirror the dependency, pin a checksum, and document why trust-all is
+acceptable for ADB's TLS model.
+
+### P2-13 — Debug-only surfaces are broad
+
+`DebugReceiver` is exported in debug builds and accepts `DEBUG_PAIR` with an arbitrary
+`code:port`; `MainActivity` accepts `addkey`, `shellcmd`, `bootstrapHost`,
+`remoteDir`, `loopbackPort`, `vpnPort`, and `logkey` extras in debug builds. These are
+debug-only (`BuildConfig.DEBUG` and `debugReceiverEnabled`), but they are powerful and must
+never be enabled in a release. The release manifest sets `debugReceiverEnabled=false`, and
+`MainActivity.handleIntent` returns early when `!BuildConfig.DEBUG`. This is acceptable if
+debug builds are never distributed.
+
+Fix: document the debug-only surface; consider gating `DebugReceiver` behind a signature
+permission as well.
+
+### P2-14 — `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` is a Play policy issue
+
+Lint warns that `ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` violates the Play Store
+content policy for acceptable use cases. For sideload-only distribution this is fine; for Play
+it is a blocker.
+
+Fix: decide the distribution channel; if Play, use the standard battery-optimization
+settings intent instead.
+
+### P2-15 — Licensing is inconsistent
+
+DESIGN.md §13 says "The app's own code is MIT." `NOTICE` says the app is licensed under
+the Apache License 2.0 and there is no `LICENSE` file in the app repository. The daemon
+fork has Apache 2.0. The app's README does not state a license.
+
+Fix: choose one license for the app, add `LICENSE`, and align DESIGN.md §13 and `NOTICE`.
+
+### P2-16 — The app's `themes.xml` is a legacy platform theme
+
+The app uses `android:Theme.Material.NoActionBar` with a transparent window background
+and Compose. It works, but it is not a Material 3 XML theme and can flash on launch. Lint
+also reports unused `notification_channel_*` strings and an unnecessary
+`mipmap-anydpi-v26` folder.
+
+Fix: use a Compose-compatible splash/theme and clean up unused resources.
+
+---
+
+## 6. P3 findings
+
+- `ScaffoldTest` is a placeholder (`2 + 2 == 4`), not a real test. Replace it or remove it.
+- `syncAdbd` runs an external `tools/build-android.sh` on every `preBuild`; if the fork is
+  absent it warns and uses committed binaries. This is fine for development but not a
+  reproducible/CI build unless the committed binaries are the source of truth and are
+  verified.
+- `Prefs` uses `SharedPreferences.apply()` per field; acceptable, but a single transaction
+  would be cleaner.
+- `Theme.kt` has `SDK_INT >= 31` checks that are always true for `minSdk 31`.
+- `mipmap-anydpi-v26` is unnecessary for `minSdk 31`.
+- The notification small icon is `android.R.drawable.ic_dialog_info`, not a proper
+  monochrome app icon.
+- `Docs/E2E.md` and `README.md` use future-dated evidence (2026-11-03); confirm the date
+  is intentional.
+
+---
+
+## 7. Design conformance matrix
+
+| DESIGN.md | Status | Evidence |
+|---|---|---|
+| §2 Goals: reachable across reboots/sleep/network, including mobile data over VPN | **Partial** | Daemon and VPN restart work; process-death recovery is broken (P0-4); OEM bootstrap limitation is documented. |
+| §2 Never expose plain ADB on an untrusted LAN | **Partial** | Daemon binds loopback + VPN only; system adbd can be left on 5555/TLS on failure paths (P0-2, P0-5, P0-6). |
+| §2 App is the only entity that controls the listener / decides who connects | **Partial** | App controls deployment, but shell can rewrite the key file; revocation does not close live sessions (P0-3); loopback can be spoofed (P1-14). |
+| §2 No root, no custom ROM, no permanent web server | **Met** | Daemon runs as shell; no web server. |
+| §4 Verified platform constraints | **Mostly met** | Implementation relies on `ADB_ENABLED`, `adb_wifi_enabled`, `service.adb.tls.port`, `pm grant`; §4.6 key file path is replaced by the daemon's key file. |
+| §5 D1 Android 12+ | **Not met at runtime** | `BigInteger.TWO` is API 33 (P0-1). |
+| §5 D2 One patched adbd with two listeners | **Functional, not as designed** | Two listeners work, but the daemon is an independent implementation, not a patched AOSP adbd (P1-1). |
+| §5 D3 App key ephemeral, private in app storage, public in daemon key file | **Met** | `AppKeyStore`, `KeyFiles`, `DaemonManager`. |
+| §5 D4 QR/paste pairing, fingerprint confirmation, label, no listener | **Met** | `KeysScreen`, `AndroidPubKey`, `DeveloperKey`; no pairing listener. |
+| §5 D5 `ADB_WIFI_ENABLED=0` always; `ADB_ENABLED=0` only with keep-off; restore original | **Partial** | `harden()` sets both, but no verification (P0-5), no re-assert (P0-5), and failure paths leave bootstrap on (P0-2). |
+| §5 D6 Watchdog keeps D5, probes 5555 only with keep-off, restarts daemon | **Partial** | Restarts daemon; probes 5555 only with keep-off; does not re-assert `ADB_WIFI_ENABLED=0`; no backoff; START_STICKY broken. |
+| §5 D7 Patched adbd per-key/per-service policy | **Partial** | Roles exist, but both allow all services (P1-11). |
+| §5 D8 Kotlin/Compose/Material 3/package | **Met** | App sources and manifest. |
+| §5 D9 Bootstrap pairing notification with `code:port` | **Met** | `ControlService.postPairingNotification`, `PairReplyReceiver`. |
+| §5 D10 TCP only; USB/vsock disabled | **Met** | Daemon has no USB/vsock code. |
+| §5 D11 Settings UI shows current ADB state and warning | **Partial** | Checkbox exists; state is inferred from phase; warning is discarded (P0-6, P2-6). |
+| §5 D12 Explicit errors, no silent fallback/random-port redirect | **Partial** | Many errors are explicit; some failures are swallowed (`startForeground`, `postPairingNotification`, `scheduleWatchdog`), and the 5555 warning is lost. |
+| §6 Patch set in `daemon/` | **Not met** | No `daemon/` directory; independent daemon (P1-1). |
+| §6 Key provisioning: app key only at startup, developer keys appended | **Partial** | App writes app + developer keys before start; app key is not the only startup key (minor). |
+| §6 Developer machine pairing: QR/paste, fingerprint, label, no listener | **Met** | App UI and key parsing. |
+| §6 System adbd control: mandatory `ADB_WIFI_ENABLED=0`, optional `ADB_ENABLED=0` | **Partial** | Implemented but not verified/re-asserted (P0-5). |
+| §6 Port behavior: app never calls `adb tcpip` on system adbd | **Met** | No `tcpip` call in app. |
+| §6 Watchdog: 60 s screen-on / 15 min otherwise, exact alarm, USB + network callbacks, backoff/hysteresis | **Not met** | 60 s always, `setAndAllowWhileIdle`, no USB callback, no backoff (P1-4, P1-5, P1-6). |
+| §7 First run | **Met** | Implemented end-to-end (modulo P0-1/P0-2). |
+| §7 Port discovery: TLS primary, mDNS fallback, manual port, `tcpip:<port>` | **Partial** | TLS/mDNS/manual implemented; `tcpip:<port>` not (P1-12). |
+| §7 Boot: boot receiver, re-assert `adb_wifi_enabled` and `adb_allowed_connection_time=0`, probe, deploy, harden, manual recovery | **Partial** | Boot receiver and probe implemented; `adb_allowed_connection_time=0` missing (P1-2); `persist.adb.tcp.port` missing (P1-3). |
+| §7 Network change: VPN restart, VPN down, TLS switch | **Partial / contradicts D5** | VPN restart and VPN down implemented; TLS switch not implemented (P1-13). |
+| §7 USB: `ACTION_USB_STATE`, warning, `ADB_ENABLED=0` | **Not met** | No USB receiver; warning lost (P1-4, P0-6). |
+| §8 Security: VPN ACL outer, key file/policy inner, loopback app channel, system adbd off, residual warning, pairing, keys, revocation, no root | **Partial** | Key auth and loopback are good; residual warning lost; revocation not live; system adbd can remain on (P0-2, P0-3, P0-5, P0-6). |
+| §9 Failure modes | **Partial** | Many are explicit; cleanup, revocation, sticky restart, and 5555 warning are missing. |
+| §10 Testing: unit (QR/key/policy/address/watchdog), integration (two listeners/two keys/policy/key reload), device matrix, CI | **Partial** | App tests 15; daemon tests 131 checks + integration; no policy/watchdog tests, no two-listener/two-key integration, no device matrix, no CI. |
+| §11 Phasing: Phase 0 report, Phase 1 control plane, Phase 2 patched adbd, Phase 3 depth | **Partial** | Phase 0 report absent; Phase 1/2 functional; Phase 3 not implemented. |
+| §12 Open risks | **Mostly acknowledged** | The design acknowledges the main risks; some are unhandled (process death, failure cleanup). |
+| §13 Provenance | **Partial** | NOTICE exists; license inconsistency (P2-15); "stock AOSP adbd" wording is inaccurate (P1-1). |
+
+---
+
+## 8. Security review
+
+### Strengths
+
+- No wildcard bind: `listen_parse` rejects `0.0.0.0`.
+- No USB, vsock, mDNS, or TLS listener in the daemon.
+- RSA-2048 key auth with PKCS#1 v1.5/SHA-1 verification, random 20-byte
+  tokens, three attempts, and key-file-only authorization. Client-offered keys are
+  logged and ignored.
+- Key file and policy are `0600` and written through the daemon's shell; the app key
+  is the first line.
+- The app uses `allowBackup=false`, device-protected storage, and a
+  `connectedDevice` foreground service.
+- The app's key import validates RSA-2048, rejects duplicates, and shows the
+  fingerprint before adding.
+- The app never calls `adb tcpip` on the system adbd and has no proxy fallback.
+
+### Weaknesses
+
+- **Bootstrap exposure on failure** (P0-2): system TLS listener can stay on.
+- **Revocation is not live** (P0-3): an existing connection survives key removal.
+- **System listener not re-asserted/verified** (P0-5, P1-9): the "off" claim is
+  a setting write, not a verified closed port.
+- **Exported boot receiver** (P0-7): any app can trigger setup.
+- **Local daemon spoofing** (P1-14): loopback identity is not proven.
+- **Daemon DoS** (P1-7): unlimited unauthenticated connections/threads.
+- **Shell = policy authority** (P1-11): any developer key can rewrite the key
+  file and policy, so the app is not the only entity that decides who connects.
+  This is inherent to running the daemon as `shell`; the design should state it
+  explicitly or move the key file to a location the shell cannot write (not possible
+  without root/system privileges).
+- **`tcp:` service** (P1-11): developer keys can use the phone as a TCP proxy
+  into its LAN/VPN. Since they already have shell, this adds no new privilege, but
+  it widens the blast radius and should be a deliberate policy decision.
+- **Unbounded log** (P1-8): a developer can fill storage.
+
+### Threat-model note
+
+The design's outer boundary is the VPN ACL. The app does not enforce that ACL;
+it trusts the VPN app. If the VPN app routes the phone's VPN address to the LAN or
+to the internet, the daemon is reachable there. The README should state that the
+VPN's ACL is the only network boundary and that the app cannot verify it.
+
+---
+
+## 9. Reliability and operations
+
+- No process-death recovery (P0-4).
+- No backoff (P1-6), so persistent failures loop every 60 s.
+- No log rotation (P1-8), so storage can fill.
+- No connection cap (P1-7), so a local app can DoS the daemon.
+- No health/readiness signal beyond the UI phase and log tail; no metrics,
+  no alerting, no crash reporting.
+- No upgrade/migration path for the key file, policy file, or prefs.
+- No uninstall cleanup: the daemon, `/data/local/tmp/adb-anywhere`, and the
+  system settings (`ADB_ENABLED`, `adb_wifi_enabled`) are not restored on
+  uninstall. The app cannot run on uninstall without a receiver; document the
+  manual cleanup.
+- No `adb_allowed_connection_time=0` (P1-2), so the framework may disable
+  wireless debugging after a timeout.
+- No `persist.adb.tcp.port` probe (P1-3), so the documented cellular recovery
+  is incomplete.
+
+---
+
+## 10. Testing and CI
+
+Current automated coverage:
+
+| Area | App | Daemon |
+|---|---|---|
+| Public-key encode/decode/parse/fingerprint | Yes (7 tests) | Yes (auth tests) |
+| Key file/policy writer | Yes | Yes |
+| Pairing code parser | Yes | N/A |
+| Address selection | Yes | N/A |
+| Policy evaluator | No | Yes (C unit test) |
+| Watchdog state machine | No | N/A |
+| QR payload parser | Indirect (QR text → `AndroidPubKey.parse`) | N/A |
+| Shell v1/v2, exec, sync, forward | No (app uses libadb) | Yes (integration) |
+| Two listeners | No | No |
+| Two keys | No (phone evidence only) | No |
+| Key reload | No | No |
+| Revocation/live session | No | No |
+| Reboot/Doze/USB/network changes | No | No |
+| Android 12 runtime | No | N/A |
+
+Gaps:
+
+- `ScaffoldTest` is a placeholder.
+- No CI workflow; DESIGN.md §10's CI command is not wired.
+- No device matrix; only one phone is documented.
+- The emulator script no longer exercises the host `adb` client (P2-1).
+- The daemon integration test is good but narrow.
+
+---
+
+## 11. Release engineering
+
+- `assembleRelease` produces `app-release-unsigned.apk`; no signing config.
+- `versionCode 1`, `versionName 0.1.0`; no versioning policy.
+- `isMinifyEnabled = false`; no shrinking/obfuscation. For a small app this is
+  acceptable, but it means the debug code paths remain in the APK (they are
+  guarded by `BuildConfig.DEBUG` and the manifest placeholder).
+- No CI, no release notes, no update channel, no rollback plan.
+- `syncAdbd` depends on an external checkout; the committed binaries are used if
+  it is absent. This is a reproducibility risk unless the committed binaries are
+  treated as the source of truth and verified.
+- No dependency lockfile/verification; `libadb-android` comes from JitPack.
+- No privacy policy/data-safety declaration. The app collects no analytics, but it
+  does handle ADB keys and logs; document that.
+
+---
+
+## 12. Documentation and licensing
+
+- DESIGN.md is stale: it describes an AOSP patch set that does not exist, a
+  `daemon/` directory that does not exist, and flows (`tcpip` port, TLS switch)
+  that are not implemented.
+- DESIGN.md §13 says the app is MIT; `NOTICE` says Apache 2.0; there is no app
+  `LICENSE` file.
+- `docs/E2E.md` claims a host forward and a real `adb` shell that the script no
+  longer performs.
+- `README.md` is accurate on the core model but does not state the security
+  limitations (shell can rewrite the key file; revocation is not live; failure
+  paths can leave the system listener on).
+- The phone evidence is good and specific; keep it, but mark it as manual evidence
+  and add the date/commit.
+
+---
+
+## 13. Remediation plan
+
+### Phase A — P0 before any production claim
+
+1. Fix `BigInteger.TWO` (P0-1) and add an Android 12 runtime test.
+2. Add a `finally` cleanup to `setup()`: on any failure after bootstrap,
+   set `adb_wifi_enabled=0`, stop the daemon, restore `ADB_ENABLED` (P0-2).
+3. Force a daemon restart (or a live-session close) on key removal (P0-3).
+4. Handle `intent == null`/`Idle` in `onStartCommand` by calling `setup()`
+   (P0-4).
+5. Re-assert and verify `adb_wifi_enabled=0` in the watchdog (P0-5, P1-9).
+6. Add explicit ADB state/warning fields to `ControlState`; stop inferring
+   "off" from the phase; keep the 5555 warning (P0-6, P2-6).
+7. Set `BootReceiver` `exported=false` and check the action (P0-7).
+8. Add release signing or document external signing (P0-8).
+9. Fix the lint errors and add lint to CI (P0-9).
+
+### Phase B — P1 before release
+
+1. Reconcile DESIGN.md with the independent daemon, or replace the daemon with
+   the described AOSP fork (P1-1).
+2. Add `adb_allowed_connection_time=0`, `persist.adb.tcp.port` probe, and
+   `ACTION_USB_STATE` (P1-2, P1-3, P1-4).
+3. Make the watchdog exact/screen-aware/backoff (P1-5, P1-6).
+4. Cap daemon connections, add pre-auth limits/timeouts, rotate logs
+   (P1-7, P1-8).
+5. Add daemon identity proof or a private socket for the app channel (P1-14).
+6. Fix the `AppKeyStore` race (P1-15) and the `QrScanner` lifecycle (P1-16).
+7. Add CI and a two-listener/two-key/key-reload/revocation test (P1-17).
+8. Define a real policy matrix or document that roles are equivalent (P1-11).
+9. Resolve the `tcpip` port and network-change contradictions in DESIGN.md
+   (P1-12, P1-13).
+
+### Phase C — P2/P3 polish
+
+1. Update `docs/E2E.md` and `README.md`.
+2. Remove unused permissions and private API reflection.
+3. Add `LICENSE` and align DESIGN.md §13 with `NOTICE`.
+4. Clean up `ScaffoldTest`, unused strings, and the legacy theme.
+5. Document the debug-only surface and the uninstall cleanup.
+
+---
+
+## 14. Open questions for the owner
+
+1. **Distribution**: sideload-only or Play Store? This changes the weight of
+   P0-8, P0-9, P2-14, and the signing/CI findings.
+2. **Daemon**: is the independent daemon the intended implementation, or is the
+   design's AOSP patch set still the target? If the former, DESIGN.md must be
+   rewritten; if the latter, the daemon is a rewrite, not a patch.
+3. **Android 12**: still supported? If yes, P0-1 is a blocker. If no, raise
+   `minSdk` to 33 and update D1.
+4. **Policy**: should `developer` be less privileged than `app`? If yes, define the
+   matrix. If no, remove the policy file or document that it is only a label.
+5. **Live revocation**: must a removed key lose an already-open connection? If yes,
+   the daemon needs a control path to close sessions; if no, the UI wording and
+   DESIGN.md §8 must say "new connections only".
+6. **Plain TCP bootstrap**: is `adb tcpip:<port>` still required? If yes, implement
+   it; if no, remove it from DESIGN.md §7.
+7. **Network-change TLS switch**: is DESIGN.md §7's TLS fallback still desired?
+   It contradicts D5. Choose one and update the other.
+8. **`adb_allowed_connection_time=0`**: is it safe to set on all target devices?
+   It changes the framework's wireless-debugging timeout behavior.
+
+---
+
+## 15. Bottom line
+
+The core product idea works and the phone evidence is credible. The daemon is
+small and auditable, the auth path is careful, and the app's UX is clear. But the
+implementation is a prototype, not a production system: Android 12 crashes, failed
+setups can leave the system listener on, revocation is not live, process-death
+recovery is broken, the mandatory "wireless debugging off" state is not re-asserted
+or verified, and the UI can claim "off" when it is not. The design is also stale:
+it describes a patched AOSP `adbd` and flows (`tcpip`, TLS switch) that do not
+exist. Fix the P0 items, reconcile the design, add CI/signing, and add the missing
+security and recovery tests before calling this production-ready.
