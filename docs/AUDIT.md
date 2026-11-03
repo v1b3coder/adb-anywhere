@@ -641,8 +641,7 @@ Fix: choose one license for the app, add `LICENSE`, and align DESIGN.md §13 and
 
 The app uses `android:Theme.Material.NoActionBar` with a transparent window background
 and Compose. It works, but it is not a Material 3 XML theme and can flash on launch. Lint
-also reports unused `notification_channel_*` strings and an unnecessary
-`mipmap-anydpi-v26` folder.
+also reports unused `notification_channel_*` strings.
 
 Fix: use a Compose-compatible splash/theme and clean up unused resources.
 
@@ -658,7 +657,9 @@ Fix: use a Compose-compatible splash/theme and clean up unused resources.
 - `Prefs` uses `SharedPreferences.apply()` per field; acceptable, but a single transaction
   would be cleaner.
 - `Theme.kt` has `SDK_INT >= 31` checks that are always true for `minSdk 31`.
-- `mipmap-anydpi-v26` is unnecessary for `minSdk 31`.
+- `mipmap-anydpi-v26` is unnecessary for `minSdk 31`. **Status: fixed in `8310f3a`.**
+  `ic_launcher.xml` now lives in `mipmap-anydpi`; lint no longer reports
+  `ObsoleteSdkInt` for the folder.
 - The notification small icon is `android.R.drawable.ic_dialog_info`, not a proper
   monochrome app icon.
 - `Docs/E2E.md` and `README.md` use future-dated evidence (2026-11-03); confirm the date
