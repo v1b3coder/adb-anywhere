@@ -96,7 +96,7 @@ These are facts from AOSP `main`, not assumptions.
 | D8 | UI stack | Kotlin, Jetpack Compose, Material 3; package `cz.slush.adbanywhere` |
 | D9 | Bootstrap pairing | Notification `RemoteInput` with `code:port` |
 | D10 | Patched adbd transports | TCP only; USB and vsock disabled |
-| D11 | Settings UI | "Keep system adb off" checkbox; shows the current ADB state and the residual |
+| D11 | Settings UI | "Keep system adb off" checkbox; shows the current ADB state and any warning |
 | D12 | Failure policy | Explicit error and recovery steps; no silent fallback and no random-port redirect |
 
 ## 6. Architecture
@@ -244,12 +244,12 @@ has no TCP listener, so there is nothing to monitor or turn off.
 - If "Keep system adb off" is checked: keep `ADB_ENABLED=0`. Probe
   `127.0.0.1:5555` once after boot, after a network change, and after a USB
   state change; if it is open, set `ADB_ENABLED=0`.
-- If the checkbox is off: leave `ADB_ENABLED` alone. Show the plain listener as
-  a residual if `127.0.0.1:5555` is open.
+- If the checkbox is off: leave `ADB_ENABLED` alone. Show an explicit warning and
+  link the checkbox if `127.0.0.1:5555` is open.
 - Poll `127.0.0.1:<portA>` every 60 s while the screen is on and every 15 min
   via `AlarmManager.setExactAndAllowWhileIdle` otherwise.
 - If `<portA>` is down, restart the patched adbd through the system adbd if it is
-  reachable, otherwise notify the user.
+  reachable, otherwise show an explicit error with recovery steps.
 - Register `UsbManager.ACTION_USB_STATE` (sticky) and
   `ConnectivityManager.NetworkCallback`.
 - Backoff and hysteresis; never fight an explicit user "off".
@@ -308,15 +308,21 @@ has no TCP listener, so there is nothing to monitor or turn off.
    keep the loopback listener.
 3. If the VPN is gone, remove the VPN listener; the app keeps the loopback
    listener.
-4. If the active transport is Wi-Fi or Ethernet and no VPN is up, the developer
-   machine uses the system TLS port, not the patched adbd.
+4. If the active transport is Wi-Fi or Ethernet and no VPN is up, the app
+   switches the developer machine to the system TLS endpoint and shows it. If TLS
+   is unavailable, the app shows an explicit error.
 
 ### USB
 
 1. `ACTION_USB_STATE` fires.
-2. The system adbd stays on USB; the patched adbd is unaffected.
-3. If the system adbd returns to TCP, the watchdog sets `ADB_ENABLED=0`.
-4. If that does not stop it, show an explicit error; no random-port redirect.
+2. If the system adbd is on USB, it is not a network listener; the app records
+   this state and the patched adbd is unaffected.
+3. If the system adbd returns to TCP and "Keep system adb off" is on, the
+   watchdog sets `ADB_ENABLED=0`.
+4. If "Keep system adb off" is off, the app shows an explicit warning that the
+   plain listener is back and links the checkbox.
+5. If `ADB_ENABLED=0` does not stop it, the app shows an explicit error and
+   stops; no random-port redirect.
 
 ## 8. Security model
 
@@ -330,9 +336,9 @@ has no TCP listener, so there is nothing to monitor or turn off.
 - **System adbd**: USB (left on); not reachable over TCP after
   `ADB_WIFI_ENABLED=0`.
 - **Residual**: on devices where the system adbd exposes 5555, set
-  `ADB_ENABLED=0` only when "Keep system adb off" is on; otherwise show the
-  residual. If `ADB_ENABLED=0` fails, show an explicit error; no random-port
-  redirect.
+  `ADB_ENABLED=0` only when "Keep system adb off" is on; otherwise show an
+  explicit warning and link the checkbox. If `ADB_ENABLED=0` fails, show an
+  explicit error; no random-port redirect.
 - **Pairing**: QR is out-of-band, one-time, fingerprint-confirmed. No listener.
 - **Keys**: app key is ephemeral; developer keys are public only; private keys
   never leave their owners.
@@ -346,7 +352,7 @@ has no TCP listener, so there is nothing to monitor or turn off.
 | Failure | Response |
 |---|---|
 | Patched adbd dies | Restart via system adbd if reachable; otherwise show an explicit error with recovery steps |
-| System adbd returns to TCP | Watchdog sets `ADB_ENABLED=0` if "Keep system adb off" is on; otherwise shows the residual |
+| System adbd returns to TCP | Watchdog sets `ADB_ENABLED=0` if "Keep system adb off" is on; otherwise shows an explicit warning |
 | `ADB_ENABLED=0` does not stop adbd | Show an explicit error; no random-port redirect |
 | VPN address changes | Restart patched adbd with the new address; loopback stays |
 | VPN down | Remove VPN listener; app still controls via loopback |
@@ -391,7 +397,8 @@ a different mode.
   Wi-Fi connection to bootstrap. This is a manual recovery step, not a blocker.
 - OEM blocks `pm grant WRITE_SECURE_SETTINGS`.
 - Plain listener remains when "Keep system adb off" is off and `is_usb=false`
-  or `service.adb.tcp.port` is set; the app shows it as a residual.
+  or `service.adb.tcp.port` is set; the app shows an explicit warning and
+  links the checkbox.
 - `ADB_ENABLED=0` may not stop adbd on some OEMs; show an explicit error;
   no random-port redirect.
 - After reboot with `ADB_ENABLED=0`, the app must set `ADB_ENABLED=1` to start
