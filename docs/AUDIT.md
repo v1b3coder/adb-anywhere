@@ -21,7 +21,7 @@ production-ready until the P0 items below are fixed and the design is reconciled
 | Functional core | 7/10 | The real phone path works; process-death recovery is broken. |
 | Security | 5/10 | Key auth and loopback are good; failure paths can leave the system listener on; revocation is not live; the boot receiver is exported. |
 | Reliability | 4/10 | No backoff, no log rotation, daemon DoS, no USB state, no exact alarm. |
-| Test coverage | 4/10 | Good daemon tests; missing app watchdog/policy tests, two-listener/two-key integration, CI, and device matrix. |
+| Test coverage | 5/10 | Good daemon tests; the wireless-debugging guard now has app unit tests; still missing watchdog/backoff, two-listener/two-key integration, CI, and device matrix. |
 | Release engineering | 2/10 | Unsigned release, lint fails, no CI, no versioning. |
 | Design conformance | 4/10 | The daemon is a rewrite, not the design's patched AOSP adbd; several flows are missing. |
 | Documentation | 5/10 | Phone evidence is good; DESIGN.md and E2E.md are stale; the license is inconsistent. |
@@ -223,6 +223,14 @@ Fix: on `intent == null` (or when `phase == Idle` and `setupComplete`), call
 
 ### P0-5 — Mandatory `ADB_WIFI_ENABLED=0` is not re-asserted or verified
 
+**Status: fixed in `17277a2`.** `harden()` now runs a `WirelessDebuggingGuard`
+that writes `adb_wifi_enabled=0` on every call, even when it already reads off, and
+verifies that `service.adb.tls.port` is empty or that the published port is closed
+before reporting "off"; the watchdog runs the same guard on every tick and boot reaches
+it through `setup()`. The guard is covered by JVM unit tests
+(`WirelessDebuggingGuardTest`). Not re-verified on a device; the UI still infers
+"off" from the phase (P0-6) and `abortSetup()` still checks only the setting (P1-9).
+
 DESIGN.md D5/D6 say the app "always keeps the system wireless debugging off" and
 the watchdog "keeps the D5 state". `harden()` sets `adb_wifi_enabled=0` once during
 setup (`ControlService.kt:373`), but `watchdog()` never re-asserts it
@@ -414,10 +422,10 @@ UI; document the log location and retention.
 
 ### P1-9 — The app does not verify that `adb_wifi_enabled=0` stopped TLS
 
-As in P0-5, `harden()` writes the setting but does not verify
-`service.adb.tls.port` is empty or the TLS port is closed. The design's security claim
-rests on the framework reacting to the setting. If an OEM ignores it, the app still shows
-"System wireless debugging off" (P0-6).
+`harden()` now verifies the TLS listener (P0-5, fixed in `17277a2`), but
+`abortSetup()` writes the setting and checks only `adb_wifi_enabled`, not
+`service.adb.tls.port` or the closed port. If an OEM ignores the write during cleanup,
+the app does not notice and the UI still infers "off" from the phase (P0-6).
 
 Fix: verify and fail explicitly if the TLS port remains.
 
@@ -719,7 +727,7 @@ Fix: use a Compose-compatible splash/theme and clean up unused resources.
 | DESIGN.md | Status | Evidence |
 |---|---|---|
 | §2 Goals: reachable across reboots/sleep/network, including mobile data over VPN | **Partial** | Daemon and VPN restart work; a sticky restart or watchdog alarm now resumes setup (P0-4, fixed in `284b75b`), not verified under Doze/LMK; OEM bootstrap limitation is documented. |
-| §2 Never expose plain ADB on an untrusted LAN | **Partial** | Daemon binds loopback + VPN only; the system listener can still be left on by the pre-existing verification gaps (P0-5, P0-6); failed setup now closes it (P0-2, fixed in `a99716e`). |
+| §2 Never expose plain ADB on an untrusted LAN | **Partial** | Daemon binds loopback + VPN only; setup and the watchdog re-assert and verify the system listener (P0-5, fixed in `17277a2`); the UI still infers "off" (P0-6); failed setup now closes it (P0-2, fixed in `a99716e`). |
 | §2 App is the only entity that controls the listener / decides who connects | **Partial** | App controls deployment, but shell can rewrite the key file; revocation restarts the daemon and closes live sessions (P0-3, fixed in `822fc50`); loopback can be spoofed (P1-14). |
 | §2 No root, no custom ROM, no permanent web server | **Met** | Daemon runs as shell; no web server. |
 | §4 Verified platform constraints | **Mostly met** | Implementation relies on `ADB_ENABLED`, `adb_wifi_enabled`, `service.adb.tls.port`, `pm grant`; §4.6 key file path is replaced by the daemon's key file. |
@@ -727,8 +735,8 @@ Fix: use a Compose-compatible splash/theme and clean up unused resources.
 | §5 D2 One patched adbd with two listeners | **Functional, not as designed** | Two listeners work, but the daemon is an independent implementation, not a patched AOSP adbd (P1-1). |
 | §5 D3 App key ephemeral, private in app storage, public in daemon key file | **Met** | `AppKeyStore`, `KeyFiles`, `DaemonManager`. |
 | §5 D4 QR/paste pairing, fingerprint confirmation, label, no listener | **Met** | `KeysScreen`, `AndroidPubKey`, `DeveloperKey`; no pairing listener. |
-| §5 D5 `ADB_WIFI_ENABLED=0` always; `ADB_ENABLED=0` only with keep-off; restore original | **Partial** | `harden()` sets both, but no verification (P0-5) and no re-assert (P0-5); failed setup restores the bootstrap and the pre-bootstrap `ADB_ENABLED` (P0-2, fixed in `a99716e`). |
-| §5 D6 Watchdog keeps D5, probes 5555 only with keep-off, restarts daemon | **Partial** | Restarts daemon; probes 5555 only with keep-off; does not re-assert `ADB_WIFI_ENABLED=0`; no backoff; a sticky restart or watchdog alarm resumes setup (P0-4, fixed in `284b75b`). |
+| §5 D5 `ADB_WIFI_ENABLED=0` always; `ADB_ENABLED=0` only with keep-off; restore original | **Partial** | `harden()` and the watchdog re-assert and verify `ADB_WIFI_ENABLED=0` (P0-5, fixed in `17277a2`); `ADB_ENABLED=0` still only with keep-off; failed setup restores the bootstrap and the pre-bootstrap `ADB_ENABLED` (P0-2, fixed in `a99716e`). |
+| §5 D6 Watchdog keeps D5, probes 5555 only with keep-off, restarts daemon | **Partial** | Restarts daemon; probes 5555 only with keep-off; re-asserts and verifies `ADB_WIFI_ENABLED=0` every tick (P0-5, fixed in `17277a2`); no backoff; a sticky restart or watchdog alarm resumes setup (P0-4, fixed in `284b75b`). |
 | §5 D7 Patched adbd per-key/per-service policy | **Partial** | Roles exist, but both allow all services (P1-11). |
 | §5 D8 Kotlin/Compose/Material 3/package | **Met** | App sources and manifest. |
 | §5 D9 Bootstrap pairing notification with `code:port` | **Met** | `ControlService.postPairingNotification`, `PairReplyReceiver`. |
@@ -738,7 +746,7 @@ Fix: use a Compose-compatible splash/theme and clean up unused resources.
 | §6 Patch set in `daemon/` | **Not met** | No `daemon/` directory; independent daemon (P1-1). |
 | §6 Key provisioning: app key only at startup, developer keys appended | **Partial** | App writes app + developer keys before start; app key is not the only startup key (minor). |
 | §6 Developer machine pairing: QR/paste, fingerprint, label, no listener | **Met** | App UI and key parsing. |
-| §6 System adbd control: mandatory `ADB_WIFI_ENABLED=0`, optional `ADB_ENABLED=0` | **Partial** | Implemented but not verified/re-asserted (P0-5). |
+| §6 System adbd control: mandatory `ADB_WIFI_ENABLED=0`, optional `ADB_ENABLED=0` | **Met in code** | `harden()` and the watchdog re-assert `adb_wifi_enabled=0` and verify the TLS port (`WirelessDebuggingGuardTest`); not re-verified on a device (P0-5, fixed in `17277a2`). |
 | §6 Port behavior: app never calls `adb tcpip` on system adbd | **Met** | No `tcpip` call in app. |
 | §6 Watchdog: 60 s screen-on / 15 min otherwise, exact alarm, USB + network callbacks, backoff/hysteresis | **Not met** | 60 s always, `setAndAllowWhileIdle`, no USB callback, no backoff (P1-4, P1-5, P1-6). |
 | §7 First run | **Met** | Implemented end-to-end (modulo P0-2 cleanup not re-verified on a device). |
@@ -746,9 +754,9 @@ Fix: use a Compose-compatible splash/theme and clean up unused resources.
 | §7 Boot: boot receiver, re-assert `adb_wifi_enabled` and `adb_allowed_connection_time=0`, probe, deploy, harden, manual recovery | **Partial** | Boot receiver and probe implemented; `adb_allowed_connection_time=0` missing (P1-2); `persist.adb.tcp.port` missing (P1-3). |
 | §7 Network change: VPN restart, VPN down, TLS switch | **Partial / contradicts D5** | VPN restart and VPN down implemented; TLS switch not implemented (P1-13). |
 | §7 USB: `ACTION_USB_STATE`, warning, `ADB_ENABLED=0` | **Not met** | No USB receiver; warning lost (P1-4, P0-6). |
-| §8 Security: VPN ACL outer, key file/policy inner, loopback app channel, system adbd off, residual warning, pairing, keys, revocation, no root | **Partial** | Key auth and loopback are good; residual warning lost; revocation now restarts the daemon and closes live sessions (P0-3, fixed in `822fc50`); system adbd can remain on (P0-5, P0-6). |
+| §8 Security: VPN ACL outer, key file/policy inner, loopback app channel, system adbd off, residual warning, pairing, keys, revocation, no root | **Partial** | Key auth and loopback are good; residual warning lost; revocation now restarts the daemon and closes live sessions (P0-3, fixed in `822fc50`); system adbd is re-asserted and verified by the watchdog (P0-5, fixed in `17277a2`); the UI still infers "off" (P0-6) and `abortSetup()` does not verify the port (P1-9). |
 | §9 Failure modes | **Partial** | Many are explicit; the 5555 warning is missing; a sticky restart or watchdog alarm resumes setup (P0-4, fixed in `284b75b`). |
-| §10 Testing: unit (QR/key/policy/address/watchdog), integration (two listeners/two keys/policy/key reload), device matrix, CI | **Partial** | App tests 15; daemon tests 131 checks + integration; no policy/watchdog tests, no two-listener/two-key integration, no device matrix, no CI. |
+| §10 Testing: unit (QR/key/policy/address/watchdog), integration (two listeners/two keys/policy/key reload), device matrix, CI | **Partial** | App tests 24, including `WirelessDebuggingGuardTest`; daemon tests 131 checks + integration; no watchdog/backoff tests, no two-listener/two-key integration, no device matrix, no CI. |
 | §11 Phasing: Phase 0 report, Phase 1 control plane, Phase 2 patched adbd, Phase 3 depth | **Partial** | Phase 0 report absent; Phase 1/2 functional; Phase 3 not implemented. |
 | §12 Open risks | **Mostly acknowledged** | The design acknowledges the main risks; some are unhandled (process death, failure cleanup). |
 | §13 Provenance | **Partial** | NOTICE exists; license inconsistency (P2-15); "stock AOSP adbd" wording is inaccurate (P1-1). |
@@ -779,8 +787,9 @@ Fix: use a Compose-compatible splash/theme and clean up unused resources.
   device.
 - **Revocation** (P0-3, fixed in `822fc50`): removing a key restarts the
   daemon, so the sessions that the key authenticated end; verified on the SM-S911B.
-- **System listener not re-asserted/verified** (P0-5, P1-9): the "off" claim is
-  a setting write, not a verified closed port.
+- **System listener on a failed setup** (P1-9): `abortSetup()` checks the setting,
+  not the closed port; `harden()` and the watchdog now verify it (P0-5, fixed in
+  `17277a2`).
 - **Exported boot receiver** (P0-7): any app can trigger setup.
 - **Local daemon spoofing** (P1-14): loopback identity is not proven.
 - **Daemon DoS** (P1-7): unlimited unauthenticated connections/threads.
@@ -835,7 +844,7 @@ Current automated coverage:
 | Pairing code parser | Yes | N/A |
 | Address selection | Yes | N/A |
 | Policy evaluator | No | Yes (C unit test) |
-| Watchdog state machine | No | N/A |
+| Watchdog state machine | Partial (D5 guard only; `WirelessDebuggingGuardTest`) | N/A |
 | QR payload parser | Indirect (QR text → `AndroidPubKey.parse`) | N/A |
 | Shell v1/v2, exec, sync, forward | No (app uses libadb) | Yes (integration) |
 | Two listeners | No | No |
@@ -899,7 +908,8 @@ Gaps:
 3. Force a daemon restart (or a live-session close) on key removal (P0-3).
 4. Handle `intent == null`/`Idle` in `onStartCommand` by calling `setup()`
    (P0-4).
-5. Re-assert and verify `adb_wifi_enabled=0` in the watchdog (P0-5, P1-9).
+5. Re-assert and verify `adb_wifi_enabled=0` in the watchdog (P0-5, fixed in
+   `17277a2`; P1-9 remains for `abortSetup()`).
 6. Add explicit ADB state/warning fields to `ControlState`; stop inferring
    "off" from the phase; keep the 5555 warning (P0-6, P2-6).
 7. Set `BootReceiver` `exported=false` and check the action (P0-7).
@@ -960,8 +970,7 @@ The core product idea works and the phone evidence is credible. The daemon is
 small and auditable, the auth path is careful, and the app's UX is clear. But the
 implementation is a prototype, not a production system: Android 12 crashes, failed
 setups can leave the system listener on, revocation is not live, process-death
-recovery is broken, the mandatory "wireless debugging off" state is not re-asserted
-or verified, and the UI can claim "off" when it is not. The design is also stale:
+recovery is broken, and the UI can claim "off" when it is not. The design is also stale:
 it describes a patched AOSP `adbd` and flows (`tcpip`, TLS switch) that do not
 exist. Fix the P0 items, reconcile the design, add CI/signing, and add the missing
 security and recovery tests before calling this production-ready.
