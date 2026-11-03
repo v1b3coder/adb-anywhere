@@ -93,5 +93,8 @@ submodule. If the clone is absent, the committed binaries are used.
   daemon over loopback but developer machines cannot connect.
 - A reboot with no Wi-Fi needs one Wi-Fi connection (or USB `adb tcpip`) to
   bootstrap. The app shows the recovery steps.
+- On some OEMs, re-asserting `adb_wifi_enabled=1` does not restart the system TLS
+  server on a Wi-Fi network without internet. The app reports the failure explicitly;
+  enable Wireless debugging once in Settings to recover.
 - If an OEM blocks `pm grant WRITE_SECURE_SETTINGS`, the app shows the manual
   command and stops.

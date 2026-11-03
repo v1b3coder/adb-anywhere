@@ -61,6 +61,7 @@ class ControlService : Service() {
     private lateinit var system: SystemAdb
     private lateinit var daemon: DaemonManager
     private var notificationJob: Job? = null
+    private var watchdogJob: Job? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var defaultCallback: ConnectivityManager.NetworkCallback? = null
     private var foregroundStarted = false
@@ -129,6 +130,7 @@ class ControlService : Service() {
 
     override fun onDestroy() {
         notificationJob?.cancel()
+        watchdogJob?.cancel()
         scope.cancel()
         networkCallback?.let {
             runCatching { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(it) }
@@ -269,6 +271,7 @@ class ControlService : Service() {
                     )
                 }
                 scheduleWatchdog()
+                startWatchdogLoop()
                 refreshLogs()
             } catch (e: Exception) {
                 Log.i("AdbAnywhere", "setup failed: ${e.message}", e)
@@ -403,6 +406,20 @@ class ControlService : Service() {
         Shell(manager)
     }
 
+    private fun startWatchdogLoop() {
+        watchdogJob?.cancel()
+        watchdogJob = scope.launch {
+            while (true) {
+                delay(60_000)
+                when (ControlBus.state.value.phase) {
+                    Phase.Running -> watchdog()
+                    Phase.Error -> if (prefs.setupComplete) setup()
+                    else -> Unit
+                }
+            }
+        }
+    }
+
     private suspend fun watchdog() {
         val state = ControlBus.state.value
         if (state.phase != Phase.Running) return
@@ -487,6 +504,7 @@ class ControlService : Service() {
                 }
             }
             cancelWatchdog()
+            watchdogJob?.cancel()
             ControlBus.update {
                 it.copy(phase = Phase.Stopped, endpoint = "", message = "Stopped", error = "")
             }

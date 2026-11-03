@@ -37,6 +37,7 @@ class MainActivity : ComponentActivity() {
 
     private fun handleIntent(intent: Intent?) {
         if (!BuildConfig.DEBUG) return
+        intent?.getIntExtra("tlsPort", 0)?.takeIf { it > 0 }?.let(viewModel::rememberTlsPort)
         intent?.getStringExtra("pair")?.let(viewModel::pair)
         intent?.getStringExtra("addkey")?.let { key ->
             val error = viewModel.addDeveloperKey(key, intent.getStringExtra("addlabel") ?: "test")

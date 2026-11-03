@@ -66,6 +66,15 @@
             android:exported="false" />
 
         <receiver
+            android:name=".service.DebugReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="cz.slush.adbanywhere.DEBUG_PAIR" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
             android:name=".service.WatchdogReceiver"
             android:directBootAware="true"
             android:enabled="true"

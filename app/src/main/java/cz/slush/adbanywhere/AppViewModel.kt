@@ -93,6 +93,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         return null
     }
 
+    fun rememberTlsPort(port: Int) {
+        if (port in 1024..65535) prefs.lastTlsPort = port
+    }
+
     fun setTlsPort(port: Int): String? {
         if (port !in 1024..65535) return "The port must be between 1024 and 65535."
         prefs.lastTlsPort = port
