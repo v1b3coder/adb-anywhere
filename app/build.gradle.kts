@@ -18,10 +18,15 @@ android {
         versionName = "0.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        manifestPlaceholders["debugReceiverEnabled"] = "false"
     }
 
     buildTypes {
+        debug {
+            manifestPlaceholders["debugReceiverEnabled"] = "true"
+        }
         release {
+            manifestPlaceholders["debugReceiverEnabled"] = "false"
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

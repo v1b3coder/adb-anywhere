@@ -17,15 +17,17 @@ object SystemSettings {
     fun adbWifiEnabled(context: Context): Int =
         Settings.Global.getInt(context.contentResolver, "adb_wifi_enabled", 0)
 
-    fun setAdbEnabled(context: Context, enabled: Boolean): Boolean =
+    fun setAdbEnabled(context: Context, enabled: Boolean): Boolean = runCatching {
         Settings.Global.putInt(context.contentResolver, Settings.Global.ADB_ENABLED, if (enabled) 1 else 0)
+    }.getOrDefault(false)
 
-    fun setAdbWifiEnabled(context: Context, enabled: Boolean): Boolean =
+    fun setAdbWifiEnabled(context: Context, enabled: Boolean): Boolean = runCatching {
         Settings.Global.putInt(
             context.contentResolver,
             "adb_wifi_enabled",
             if (enabled) 1 else 0,
         )
+    }.getOrDefault(false)
 
     fun isWifiConnected(context: Context): Boolean {
         val manager = context.getSystemService(ConnectivityManager::class.java) ?: return false

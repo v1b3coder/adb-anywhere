@@ -172,7 +172,12 @@ class ControlService : Service() {
                 val previous = ControlBus.state.value
                 val daemonAlive = withContext(Dispatchers.IO) { probeDaemon() }
                 Log.i("AdbAnywhere", "setup daemonAlive=$daemonAlive dir=${prefs.remoteDir}")
-                if (!daemonAlive && prefs.setupComplete) {
+                if (!daemonAlive && prefs.setupComplete &&
+                    ContextCompat.checkSelfPermission(
+                        this,
+                        android.Manifest.permission.WRITE_SECURE_SETTINGS,
+                    ) == PackageManager.PERMISSION_GRANTED
+                ) {
                     // The one-time grant persists, so the app can re-open the
                     // bootstrap path after a reboot without touching adb.
                     if (prefs.keepSystemAdbOff) SystemSettings.setAdbEnabled(this, true)

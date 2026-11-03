@@ -67,7 +67,7 @@
 
         <receiver
             android:name=".service.DebugReceiver"
-            android:enabled="true"
+            android:enabled="${debugReceiverEnabled}"
             android:exported="true">
             <intent-filter>
                 <action android:name="cz.slush.adbanywhere.DEBUG_PAIR" />
