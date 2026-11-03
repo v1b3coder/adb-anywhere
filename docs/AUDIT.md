@@ -168,6 +168,16 @@ connections whose fingerprint was revoked and then reloads the keyring. At minim
 
 ### P0-4 — `START_STICKY` restart is a no-op
 
+**Status: fixed in `284b75b`.** `onStartCommand` now matches a null intent (the
+`START_STICKY` restart) and resumes the full `setup()` when a previous run
+completed setup and this process has not started one yet (`resumeAfterRestart()`,
+gated on `prefs.setupComplete` and `Phase.Idle`). `ACTION_WATCHDOG` takes the same
+path, because the 15-minute alarm is the other way a dead process is woken; it used
+to reach `watchdog()`, which returned on a non-`Running` phase and left no alarm
+scheduled. An explicit stop is unaffected: it returns `START_NOT_STICKY` and leaves
+`Phase.Stopped`. Compiles and the app unit tests pass; not verified on a device
+under Doze/LMK.
+
 `ControlService.onStartCommand` returns `START_STICKY` (`ControlService.kt:126`),
 but when the system restarts the service with a null intent, the `when` has no
 matching branch and the service does nothing. `onCreate` only publishes the saved
@@ -680,7 +690,7 @@ Fix: use a Compose-compatible splash/theme and clean up unused resources.
 
 | DESIGN.md | Status | Evidence |
 |---|---|---|
-| §2 Goals: reachable across reboots/sleep/network, including mobile data over VPN | **Partial** | Daemon and VPN restart work; process-death recovery is broken (P0-4); OEM bootstrap limitation is documented. |
+| §2 Goals: reachable across reboots/sleep/network, including mobile data over VPN | **Partial** | Daemon and VPN restart work; a sticky restart or watchdog alarm now resumes setup (P0-4, fixed in `284b75b`), not verified under Doze/LMK; OEM bootstrap limitation is documented. |
 | §2 Never expose plain ADB on an untrusted LAN | **Partial** | Daemon binds loopback + VPN only; the system listener can still be left on by the pre-existing verification gaps (P0-5, P0-6); failed setup now closes it (P0-2, fixed in `a99716e`). |
 | §2 App is the only entity that controls the listener / decides who connects | **Partial** | App controls deployment, but shell can rewrite the key file; revocation does not close live sessions (P0-3); loopback can be spoofed (P1-14). |
 | §2 No root, no custom ROM, no permanent web server | **Met** | Daemon runs as shell; no web server. |
@@ -690,7 +700,7 @@ Fix: use a Compose-compatible splash/theme and clean up unused resources.
 | §5 D3 App key ephemeral, private in app storage, public in daemon key file | **Met** | `AppKeyStore`, `KeyFiles`, `DaemonManager`. |
 | §5 D4 QR/paste pairing, fingerprint confirmation, label, no listener | **Met** | `KeysScreen`, `AndroidPubKey`, `DeveloperKey`; no pairing listener. |
 | §5 D5 `ADB_WIFI_ENABLED=0` always; `ADB_ENABLED=0` only with keep-off; restore original | **Partial** | `harden()` sets both, but no verification (P0-5) and no re-assert (P0-5); failed setup restores the bootstrap and the pre-bootstrap `ADB_ENABLED` (P0-2, fixed in `a99716e`). |
-| §5 D6 Watchdog keeps D5, probes 5555 only with keep-off, restarts daemon | **Partial** | Restarts daemon; probes 5555 only with keep-off; does not re-assert `ADB_WIFI_ENABLED=0`; no backoff; START_STICKY broken. |
+| §5 D6 Watchdog keeps D5, probes 5555 only with keep-off, restarts daemon | **Partial** | Restarts daemon; probes 5555 only with keep-off; does not re-assert `ADB_WIFI_ENABLED=0`; no backoff; a sticky restart or watchdog alarm resumes setup (P0-4, fixed in `284b75b`). |
 | §5 D7 Patched adbd per-key/per-service policy | **Partial** | Roles exist, but both allow all services (P1-11). |
 | §5 D8 Kotlin/Compose/Material 3/package | **Met** | App sources and manifest. |
 | §5 D9 Bootstrap pairing notification with `code:port` | **Met** | `ControlService.postPairingNotification`, `PairReplyReceiver`. |
@@ -709,7 +719,7 @@ Fix: use a Compose-compatible splash/theme and clean up unused resources.
 | §7 Network change: VPN restart, VPN down, TLS switch | **Partial / contradicts D5** | VPN restart and VPN down implemented; TLS switch not implemented (P1-13). |
 | §7 USB: `ACTION_USB_STATE`, warning, `ADB_ENABLED=0` | **Not met** | No USB receiver; warning lost (P1-4, P0-6). |
 | §8 Security: VPN ACL outer, key file/policy inner, loopback app channel, system adbd off, residual warning, pairing, keys, revocation, no root | **Partial** | Key auth and loopback are good; residual warning lost; revocation not live; system adbd can remain on (P0-3, P0-5, P0-6). |
-| §9 Failure modes | **Partial** | Many are explicit; cleanup, revocation, sticky restart, and 5555 warning are missing. |
+| §9 Failure modes | **Partial** | Many are explicit; revocation and the 5555 warning are missing; a sticky restart or watchdog alarm resumes setup (P0-4, fixed in `284b75b`). |
 | §10 Testing: unit (QR/key/policy/address/watchdog), integration (two listeners/two keys/policy/key reload), device matrix, CI | **Partial** | App tests 15; daemon tests 131 checks + integration; no policy/watchdog tests, no two-listener/two-key integration, no device matrix, no CI. |
 | §11 Phasing: Phase 0 report, Phase 1 control plane, Phase 2 patched adbd, Phase 3 depth | **Partial** | Phase 0 report absent; Phase 1/2 functional; Phase 3 not implemented. |
 | §12 Open risks | **Mostly acknowledged** | The design acknowledges the main risks; some are unhandled (process death, failure cleanup). |
@@ -766,7 +776,8 @@ VPN's ACL is the only network boundary and that the app cannot verify it.
 
 ## 9. Reliability and operations
 
-- No process-death recovery (P0-4).
+- A sticky restart or a watchdog alarm resumes setup when a previous run
+  completed it (P0-4, fixed in `284b75b`); not verified under Doze/LMK.
 - No backoff (P1-6), so persistent failures loop every 60 s.
 - No log rotation (P1-8), so storage can fill.
 - No connection cap (P1-7), so a local app can DoS the daemon.
