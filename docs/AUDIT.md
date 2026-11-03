@@ -149,6 +149,20 @@ Fix: put the bootstrap in a `try/finally` or explicit cleanup path that always s
 
 ### P0-3 — Revocation does not terminate live sessions
 
+**Status: fixed in `822fc50`.** `removeDeveloperKey()` now sends
+`ACTION_REVOKE_KEYS`, which the service handles like an explicit restart:
+`setup(forceRestart = true)` writes the reduced key file and then runs
+`restartDetached()`, which kills and starts the daemon process. Every connection
+is a thread in that process, and the forked shell children close every descriptor
+above 2 (`stream.c:spawn_process`), so the kill drops the sessions that the
+removed key authenticated. Adding a key keeps the light path: `ACTION_APPLY_KEYS`
+rewrites the file and the new key is loaded on the next authentication. The
+removal dialog now says the daemon restarts and open connections drop. Verified
+on the host with the real `adb` client and the host daemon: a live
+`shell sleep 120` session ended when the key file was rewritten and the daemon
+killed/restarted, the removed key was rejected (`auth_reject`), and the remaining
+key still got a shell (`auth_ok`). Not re-verified on a device.
+
 `AppViewModel.removeDeveloperKey()` rewrites the key list and sends
 `ACTION_APPLY_KEYS`. `ControlService.setup()` sees a live daemon and
 `restart == false`, so it only calls `daemon.writeKeysAndPolicy(...)`
@@ -692,7 +706,7 @@ Fix: use a Compose-compatible splash/theme and clean up unused resources.
 |---|---|---|
 | §2 Goals: reachable across reboots/sleep/network, including mobile data over VPN | **Partial** | Daemon and VPN restart work; a sticky restart or watchdog alarm now resumes setup (P0-4, fixed in `284b75b`), not verified under Doze/LMK; OEM bootstrap limitation is documented. |
 | §2 Never expose plain ADB on an untrusted LAN | **Partial** | Daemon binds loopback + VPN only; the system listener can still be left on by the pre-existing verification gaps (P0-5, P0-6); failed setup now closes it (P0-2, fixed in `a99716e`). |
-| §2 App is the only entity that controls the listener / decides who connects | **Partial** | App controls deployment, but shell can rewrite the key file; revocation does not close live sessions (P0-3); loopback can be spoofed (P1-14). |
+| §2 App is the only entity that controls the listener / decides who connects | **Partial** | App controls deployment, but shell can rewrite the key file; revocation restarts the daemon and closes live sessions (P0-3, fixed in `822fc50`); loopback can be spoofed (P1-14). |
 | §2 No root, no custom ROM, no permanent web server | **Met** | Daemon runs as shell; no web server. |
 | §4 Verified platform constraints | **Mostly met** | Implementation relies on `ADB_ENABLED`, `adb_wifi_enabled`, `service.adb.tls.port`, `pm grant`; §4.6 key file path is replaced by the daemon's key file. |
 | §5 D1 Android 12+ | **Met in code** | `encode()` no longer uses the API-33 `BigInteger.TWO` (P0-1, fixed in `a21654d`); no API 31/32 runtime run yet. |
@@ -718,8 +732,8 @@ Fix: use a Compose-compatible splash/theme and clean up unused resources.
 | §7 Boot: boot receiver, re-assert `adb_wifi_enabled` and `adb_allowed_connection_time=0`, probe, deploy, harden, manual recovery | **Partial** | Boot receiver and probe implemented; `adb_allowed_connection_time=0` missing (P1-2); `persist.adb.tcp.port` missing (P1-3). |
 | §7 Network change: VPN restart, VPN down, TLS switch | **Partial / contradicts D5** | VPN restart and VPN down implemented; TLS switch not implemented (P1-13). |
 | §7 USB: `ACTION_USB_STATE`, warning, `ADB_ENABLED=0` | **Not met** | No USB receiver; warning lost (P1-4, P0-6). |
-| §8 Security: VPN ACL outer, key file/policy inner, loopback app channel, system adbd off, residual warning, pairing, keys, revocation, no root | **Partial** | Key auth and loopback are good; residual warning lost; revocation not live; system adbd can remain on (P0-3, P0-5, P0-6). |
-| §9 Failure modes | **Partial** | Many are explicit; revocation and the 5555 warning are missing; a sticky restart or watchdog alarm resumes setup (P0-4, fixed in `284b75b`). |
+| §8 Security: VPN ACL outer, key file/policy inner, loopback app channel, system adbd off, residual warning, pairing, keys, revocation, no root | **Partial** | Key auth and loopback are good; residual warning lost; revocation now restarts the daemon and closes live sessions (P0-3, fixed in `822fc50`); system adbd can remain on (P0-5, P0-6). |
+| §9 Failure modes | **Partial** | Many are explicit; the 5555 warning is missing; a sticky restart or watchdog alarm resumes setup (P0-4, fixed in `284b75b`). |
 | §10 Testing: unit (QR/key/policy/address/watchdog), integration (two listeners/two keys/policy/key reload), device matrix, CI | **Partial** | App tests 15; daemon tests 131 checks + integration; no policy/watchdog tests, no two-listener/two-key integration, no device matrix, no CI. |
 | §11 Phasing: Phase 0 report, Phase 1 control plane, Phase 2 patched adbd, Phase 3 depth | **Partial** | Phase 0 report absent; Phase 1/2 functional; Phase 3 not implemented. |
 | §12 Open risks | **Mostly acknowledged** | The design acknowledges the main risks; some are unhandled (process death, failure cleanup). |
@@ -749,7 +763,9 @@ Fix: use a Compose-compatible splash/theme and clean up unused resources.
 - **Bootstrap exposure on failure** (P0-2, fixed in `a99716e`): `abortSetup()`
   now closes the system listener and restores `ADB_ENABLED`; not re-verified on a
   device.
-- **Revocation is not live** (P0-3): an existing connection survives key removal.
+- **Revocation** (P0-3, fixed in `822fc50`): removing a key restarts the
+  daemon, so the sessions that the key authenticated end; not re-verified on a
+  device.
 - **System listener not re-asserted/verified** (P0-5, P1-9): the "off" claim is
   a setting write, not a verified closed port.
 - **Exported boot receiver** (P0-7): any app can trigger setup.
@@ -853,8 +869,8 @@ Gaps:
 - `docs/E2E.md` claims a host forward and a real `adb` shell that the script no
   longer performs.
 - `README.md` is accurate on the core model but does not state the security
-  limitations (shell can rewrite the key file; revocation is not live; failure
-  paths can leave the system listener on).
+  limitations (shell can rewrite the key file; failure paths can leave the system
+  listener on).
 - The phone evidence is good and specific; keep it, but mark it as manual evidence
   and add the date/commit.
 
@@ -914,9 +930,8 @@ Gaps:
    `minSdk` to 33 and update D1.
 4. **Policy**: should `developer` be less privileged than `app`? If yes, define the
    matrix. If no, remove the policy file or document that it is only a label.
-5. **Live revocation**: must a removed key lose an already-open connection? If yes,
-   the daemon needs a control path to close sessions; if no, the UI wording and
-   DESIGN.md §8 must say "new connections only".
+5. **Live revocation**: resolved — yes. Revocation restarts the patched daemon,
+   which closes live sessions (P0-3, fixed in `822fc50`); the UI now says so.
 6. **Plain TCP bootstrap**: is `adb tcpip:<port>` still required? If yes, implement
    it; if no, remove it from DESIGN.md §7.
 7. **Network-change TLS switch**: is DESIGN.md §7's TLS fallback still desired?

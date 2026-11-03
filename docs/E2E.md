@@ -30,8 +30,8 @@ The phone test is the real product path:
 
    The identity must be `uid=2000(shell)`.
 
-7. Remove the developer key in *Keys* and confirm that the next connection is
-   rejected.
+7. Remove the developer key in *Keys* and confirm that an open connection drops
+   and the next connection is rejected.
 8. Reboot the phone with Wi-Fi on and confirm the app re-asserts the bootstrap,
    redeploys and turns wireless debugging off again.
 

@@ -61,8 +61,8 @@ network.
 - Only keys in `/data/local/tmp/adb-anywhere/adb_keys` are accepted. Keys offered
   by clients are never auto-accepted.
 - The policy file gives the app key the `app` role and developer keys the
-  `developer` role. Removing a key removes it from both files and the daemon
-  reloads them.
+  `developer` role. Removing a key removes it from both files and restarts the
+  daemon, so the sessions that the key authenticated end.
 - Android's wireless debugging is turned off after the daemon is verified. *Keep
   system adb off* also sets `ADB_ENABLED=0` and restores the original value when
   turned off.
