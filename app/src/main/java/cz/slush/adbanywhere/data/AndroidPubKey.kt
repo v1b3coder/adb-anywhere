@@ -37,7 +37,8 @@ object AndroidPubKey {
         require(publicKey.modulus.bitLength() == 2048) { "ADB keys must be RSA-2048" }
         val modulus = publicKey.modulus
         val n = littleEndianFixed(modulus, MODULUS_SIZE)
-        val rr = littleEndianFixed(BigInteger.TWO.pow(MODULUS_SIZE * 8 * 2).mod(modulus), MODULUS_SIZE)
+        // BigInteger.TWO is API 33; shiftLeft keeps the value and minSdk 31.
+        val rr = littleEndianFixed(BigInteger.ONE.shiftLeft(MODULUS_SIZE * 8 * 2).mod(modulus), MODULUS_SIZE)
         val n0inv = modulus.mod(TWO_32).modInverse(TWO_32).negate().mod(TWO_32)
         return ByteBuffer.allocate(ENCODED_SIZE)
             .order(ByteOrder.LITTLE_ENDIAN)

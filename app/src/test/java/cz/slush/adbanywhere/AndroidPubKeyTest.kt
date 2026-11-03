@@ -42,6 +42,18 @@ class AndroidPubKeyTest {
     }
 
     @Test
+    fun encodeReproducesAndroidFixtureBytes() {
+        val text = javaClass.classLoader!!.getResourceAsStream("adbkey.pub")!!
+            .bufferedReader().readText()
+        val raw = Base64.getMimeDecoder().decode(text.trim().substringBefore(' '))
+        val key = AndroidPubKey.decode(raw)!!
+        val publicKey = java.security.KeyFactory.getInstance("RSA")
+            .generatePublic(java.security.spec.RSAPublicKeySpec(key.modulus, key.exponent)) as RSAPublicKey
+        // n0inv and rr are recomputed here; they must match Android's own encoding.
+        assertTrue(raw.contentEquals(AndroidPubKey.encode(publicKey)))
+    }
+
+    @Test
     fun parseSshRsaKey() {
         val publicKey = keyPair().public as RSAPublicKey
         val e = mpint(publicKey.publicExponent)
