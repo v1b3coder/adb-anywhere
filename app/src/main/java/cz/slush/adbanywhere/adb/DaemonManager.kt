@@ -116,10 +116,24 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
         if (!result.ok) {
             throw IOException("cannot restart daemon: ${result.stderr.ifBlank { result.stdout }.trim()}")
         }
-        waitForPort(shell, loopbackPort)
+        waitForRestart(shell, loopbackPort)
         if (!vpnIp.isNullOrBlank() && !shell.probe(vpnIp, vpnPort)) {
             throw IOException("daemon did not bind $vpnIp:$vpnPort")
         }
+    }
+
+    /**
+     * Waits for the old daemon to release the loopback port and the new one to
+     * accept on it. Waiting only for an open port would return while the old
+     * daemon still listens, and the caller would verify a process that is about to
+     * die.
+     */
+    private fun waitForRestart(shell: Shell, port: Int, timeoutMs: Long = 10_000) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline && shell.probe("127.0.0.1", port)) {
+            Thread.sleep(50)
+        }
+        waitForPort(shell, port, timeoutMs)
     }
 
     private fun startCommand(shell: Shell, vpnIp: String?, loopbackPort: Int, vpnPort: Int): String {
