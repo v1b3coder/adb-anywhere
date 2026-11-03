@@ -1,0 +1,18 @@
+# Local reference clone of mouldybread/adb-auto-enable; not part of this project
+/vendor/
+
+# Android / Gradle
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+.DS_Store
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Signing material must never be committed
+*.jks
+*.keystore
+keystore.properties
