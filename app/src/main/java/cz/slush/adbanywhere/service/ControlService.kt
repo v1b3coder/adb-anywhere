@@ -43,6 +43,7 @@ import cz.slush.adbanywhere.data.Prefs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -154,6 +155,10 @@ class ControlService : Service() {
                     vpnPort = prefs.vpnPort,
                 )
             }
+            // A failed attempt must undo what it changed: it may have written the
+            // bootstrap settings or reached a shell on the device.
+            var cleanupRequired = false
+            var adbEnabledBefore = -1
             try {
                 val vpnIp = VpnDetector.currentVpnAddress(this)
                 prefs.lastVpnIp = vpnIp ?: ""
@@ -181,7 +186,16 @@ class ControlService : Service() {
                 ) {
                     // The one-time grant persists, so the app can re-open the
                     // bootstrap path after a reboot without touching adb.
-                    if (prefs.keepSystemAdbOff) SystemSettings.setAdbEnabled(this, true)
+                    cleanupRequired = true
+                    if (prefs.keepSystemAdbOff) {
+                        // Record the value this run replaces, so a failure can
+                        // restore it and a later harden() keeps the real original.
+                        if (prefs.originalAdbEnabled.isEmpty()) {
+                            prefs.originalAdbEnabled = SystemSettings.adbEnabled(this).toString()
+                        }
+                        adbEnabledBefore = SystemSettings.adbEnabled(this)
+                        SystemSettings.setAdbEnabled(this, true)
+                    }
                     if (SystemSettings.isWifiConnected(this)) {
                         SystemSettings.setAdbWifiEnabled(this, true)
                     }
@@ -190,6 +204,7 @@ class ControlService : Service() {
                 val systemAlive = if (daemonAlive) false
                 else withContext(Dispatchers.IO) { system.ensureConnected() }
                 Log.i("AdbAnywhere", "setup systemAlive=$systemAlive")
+                cleanupRequired = cleanupRequired || daemonAlive || systemAlive
                 if (!daemonAlive && !systemAlive) {
                     if (!prefs.paired) {
                         needsPairing()
@@ -282,9 +297,52 @@ class ControlService : Service() {
             } catch (e: Exception) {
                 Log.i("AdbAnywhere", "setup failed: ${e.message}", e)
                 fail(e.message ?: "Setup failed")
+            } finally {
+                if (cleanupRequired && ControlBus.state.value.phase != Phase.Running) {
+                    abortSetup(adbEnabledBefore)?.let { warning ->
+                        val error = ControlBus.state.value.error
+                        fail(if (error.isEmpty()) warning else "$error $warning")
+                    }
+                }
             }
         }
     }
+
+    /**
+     * Undoes a failed setup attempt: closes the system TLS listener, stops the
+     * patched daemon and restores the ADB_ENABLED value the bootstrap replaced.
+     * Returns a warning when the listener could not be closed.
+     */
+    private suspend fun abortSetup(adbEnabledBefore: Int): String? =
+        withContext(Dispatchers.IO + NonCancellable) {
+            val context = this@ControlService
+            val stopped = runCatching {
+                val shell = runCatching { daemonShell() }.getOrNull() ?: system.shell
+                try {
+                    daemon.stop(shell)
+                } finally {
+                    shell.close()
+                }
+            }.onFailure {
+                Log.i("AdbAnywhere", "setup cleanup cannot stop the daemon: ${it.message}")
+            }.isSuccess
+            val wifiOff = SystemSettings.setAdbWifiEnabled(context, false) &&
+                SystemSettings.adbWifiEnabled(context) == 0
+            if (adbEnabledBefore >= 0) {
+                SystemSettings.setAdbEnabled(context, adbEnabledBefore == 1)
+            }
+            Log.i("AdbAnywhere", "setup cleanup stopped=$stopped wifiOff=$wifiOff")
+            val warnings = buildList {
+                if (!stopped) add("the patched adbd may still be running")
+                if (!wifiOff) add("system wireless debugging is still on")
+            }
+            if (warnings.isEmpty()) {
+                null
+            } else {
+                "Cleanup incomplete: ${warnings.joinToString(" and ")}. " +
+                    "Turn wireless debugging off in Settings, or reboot."
+            }
+        }
 
     private suspend fun pair(codeText: String) {
         val code = PairingCode.parse(codeText)
