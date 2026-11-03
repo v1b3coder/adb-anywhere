@@ -100,28 +100,71 @@ class Shell(private val manager: AdbManager) {
         return ShellResult(text.substring(0, index), "", exit)
     }
 
+    fun writeTextFile(path: String, text: String) {
+        val quoted = quote(path)
+        val bytes = text.toByteArray(StandardCharsets.UTF_8)
+        exec("printf '%s' ${quote(text)} > $quoted").requireOk("write $path")
+        val size = exec("wc -c < $quoted").stdout.trim().toLongOrNull()
+        if (size != bytes.size.toLong()) {
+            throw IOException("short write to $path: ${size ?: -1} != ${bytes.size}")
+        }
+    }
+
     fun writeFile(path: String, data: ByteArray) {
         val quoted = quote(path)
-        val stream = manager.openStream("shell:cat > $quoted")
+        val stream = manager.openStream("shell,v2,raw:cat > $quoted")
         try {
-            stream.openOutputStream().use { out ->
-                out.write(data)
-                out.flush()
+            val out = stream.openOutputStream()
+            var offset = 0
+            while (offset < data.size) {
+                val length = minOf(65536, data.size - offset)
+                val header = ByteArray(5)
+                header[0] = 0 // stdin
+                putLe32(header, 1, length)
+                out.write(header)
+                out.write(data, offset, length)
+                offset += length
             }
+            val close = ByteArray(5)
+            close[0] = 4 // close stdin
+            putLe32(close, 1, 0)
+            out.write(close)
+            out.flush()
+
+            val input = BufferedInputStream(stream.openInputStream())
+            var exit = -1
+            while (true) {
+                val header = readFully(input, 5) ?: break
+                val id = header[0].toInt() and 0xff
+                val length = le32(header, 1)
+                val payload = readFully(input, length) ?: break
+                if (id == 3) {
+                    exit = if (payload.isNotEmpty()) payload[0].toInt() and 0xff else 0
+                    break
+                }
+            }
+            if (exit != 0) throw IOException("write to $path failed (exit $exit)")
         } finally {
             runCatching { stream.close() }
         }
-        // The remote cat finishes asynchronously after the stream closes. Poll the
-        // size instead of racing it with an immediate wc.
-        val deadline = System.currentTimeMillis() + 5_000
-        var size: Long? = null
-        while (System.currentTimeMillis() < deadline) {
-            size = exec("wc -c < $quoted").stdout.trim().toLongOrNull()
-            if (size == data.size.toLong()) return
-            Thread.sleep(50)
+        val size = exec("wc -c < $quoted").stdout.trim().toLongOrNull()
+        if (size != data.size.toLong()) {
+            throw IOException("short write to $path: ${size ?: -1} != ${data.size}")
         }
-        throw IOException("short write to $path: ${size ?: -1} != ${data.size}")
     }
+
+    private fun putLe32(buffer: ByteArray, offset: Int, value: Int) {
+        buffer[offset] = (value and 0xff).toByte()
+        buffer[offset + 1] = ((value ushr 8) and 0xff).toByte()
+        buffer[offset + 2] = ((value ushr 16) and 0xff).toByte()
+        buffer[offset + 3] = ((value ushr 24) and 0xff).toByte()
+    }
+
+    private fun le32(buffer: ByteArray, offset: Int): Int =
+        (buffer[offset].toInt() and 0xff) or
+            ((buffer[offset + 1].toInt() and 0xff) shl 8) or
+            ((buffer[offset + 2].toInt() and 0xff) shl 16) or
+            ((buffer[offset + 3].toInt() and 0xff) shl 24)
 
     fun readText(path: String): String = exec("cat ${quote(path)}").stdout
 

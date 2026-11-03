@@ -84,6 +84,10 @@ fun AppRoot(viewModel: AppViewModel) {
         }
     }
 
+    LaunchedEffect(screen) {
+        if (screen == Screen.Logs) viewModel.refreshLogs()
+    }
+
     fun copy(text: String) {
         if (text.isBlank()) return
         val clipboard = context.getSystemService(ClipboardManager::class.java)

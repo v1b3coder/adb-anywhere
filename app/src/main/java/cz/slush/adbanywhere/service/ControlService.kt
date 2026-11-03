@@ -22,6 +22,7 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.RemoteInput
@@ -43,6 +44,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -68,7 +70,7 @@ class ControlService : Service() {
         prefs = Prefs(this)
         keys = AppKeyStore(this)
         system = SystemAdb(this, keys, prefs)
-        daemon = DaemonManager(this)
+        daemon = DaemonManager(this, prefs)
 
         ControlBus.update {
             it.copy(
@@ -94,8 +96,11 @@ class ControlService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_START, ACTION_RESTART, ACTION_APPLY_KEYS, ACTION_APPLY_SETTINGS -> {
+            ACTION_START, ACTION_APPLY_KEYS, ACTION_APPLY_SETTINGS -> {
                 scope.launch { setup() }
+            }
+            ACTION_RESTART -> {
+                scope.launch { setup(forceRestart = true) }
             }
             ACTION_PAIR -> {
                 val code = intent.getStringExtra(EXTRA_CODE)
@@ -134,7 +139,7 @@ class ControlService : Service() {
         super.onDestroy()
     }
 
-    private suspend fun setup() {
+    private suspend fun setup(forceRestart: Boolean = false) {
         setupMutex.withLock {
             ControlBus.update {
                 it.copy(
@@ -162,19 +167,39 @@ class ControlService : Service() {
                 }
 
                 step(0, StepStatus.Active, "Connecting to Android's wireless debugging")
-                if (!system.ensureConnected()) {
+                val previous = ControlBus.state.value
+                val daemonAlive = withContext(Dispatchers.IO) { probeDaemon() }
+                Log.i("AdbAnywhere", "setup daemonAlive=$daemonAlive dir=${prefs.remoteDir}")
+                if (!daemonAlive && prefs.setupComplete) {
+                    // The one-time grant persists, so the app can re-open the
+                    // bootstrap path after a reboot without touching adb.
+                    if (prefs.keepSystemAdbOff) SystemSettings.setAdbEnabled(this, true)
+                    if (SystemSettings.isWifiConnected(this)) {
+                        SystemSettings.setAdbWifiEnabled(this, true)
+                    }
+                    delay(900)
+                }
+                val systemAlive = if (daemonAlive) false
+                else withContext(Dispatchers.IO) { system.ensureConnected() }
+                Log.i("AdbAnywhere", "setup systemAlive=$systemAlive")
+                if (!daemonAlive && !systemAlive) {
                     if (!prefs.paired) {
                         needsPairing()
                     } else {
                         fail(
-                            "Android's wireless debugging is not reachable. Open Settings → Developer " +
-                                "options → Wireless debugging and try again.",
+                            "Android's wireless debugging is not reachable and the daemon is down. " +
+                                "Connect to Wi-Fi once, or open Settings → Developer options → " +
+                                "Wireless debugging and try again.",
                         )
                     }
                     return@withLock
                 }
-                step(0, StepStatus.Done, "Connected with the app key")
-                if (!system.grantSelfPermission()) {
+                step(
+                    0,
+                    StepStatus.Done,
+                    if (daemonAlive) "Daemon is already reachable" else "Connected with the app key",
+                )
+                if (!daemonAlive && !system.grantSelfPermission()) {
                     fail(
                         "WRITE_SECURE_SETTINGS could not be granted. Grant it once with " +
                             "`adb shell pm grant ${packageName} android.permission.WRITE_SECURE_SETTINGS`.",
@@ -183,14 +208,37 @@ class ControlService : Service() {
                 }
 
                 step(1, StepStatus.Active, "Deploying the patched adbd")
-                daemon.deployAndStart(
-                    system.shell,
-                    appKey,
-                    developers,
-                    vpnIp,
-                    prefs.loopbackPort,
-                    prefs.vpnPort,
-                )
+                val shell = if (daemonAlive) {
+                    withContext(Dispatchers.IO) { daemonShell() }
+                } else {
+                    system.shell
+                }
+                val vpnChanged = vpnIp != previous.vpnIp
+                val portsChanged = prefs.loopbackPort != previous.loopbackPort ||
+                    prefs.vpnPort != previous.vpnPort
+                val restart = forceRestart || !daemonAlive || vpnChanged || portsChanged
+                if (daemonAlive && !restart) {
+                    // The daemon reloads keys and policy on the next auth.
+                    daemon.writeKeysAndPolicy(shell, appKey, developers)
+                } else if (daemonAlive) {
+                    daemon.restartDetached(
+                        shell,
+                        appKey,
+                        developers,
+                        vpnIp,
+                        prefs.loopbackPort,
+                        prefs.vpnPort,
+                    )
+                } else {
+                    daemon.deployAndStart(
+                        shell,
+                        appKey,
+                        developers,
+                        vpnIp,
+                        prefs.loopbackPort,
+                        prefs.vpnPort,
+                    )
+                }
                 step(1, StepStatus.Done, "Daemon running")
 
                 step(2, StepStatus.Active, "Verifying loopback and VPN listeners")
@@ -223,6 +271,7 @@ class ControlService : Service() {
                 scheduleWatchdog()
                 refreshLogs()
             } catch (e: Exception) {
+                Log.i("AdbAnywhere", "setup failed: ${e.message}", e)
                 fail(e.message ?: "Setup failed")
             }
         }
@@ -271,6 +320,13 @@ class ControlService : Service() {
         postPairingNotification()
     }
 
+    private suspend fun probeDaemon(): Boolean = withContext(Dispatchers.IO) {
+        val manager = AdbManager(this@ControlService, keys)
+        val ok = manager.connectTo("127.0.0.1", prefs.loopbackPort)
+        manager.disconnectQuietly()
+        ok
+    }
+
     private suspend fun verifyDaemon(vpnIp: String?) = withContext(Dispatchers.IO) {
         val loopback = AdbManager(this@ControlService, keys)
         if (!loopback.connectTo("127.0.0.1", prefs.loopbackPort)) {
@@ -305,34 +361,37 @@ class ControlService : Service() {
     }
 
     private suspend fun harden() = withContext(Dispatchers.IO) {
-        val shell = daemonShell()
-        try {
-            shell.exec("settings put global adb_wifi_enabled 0")
-                .requireOk("turn system wireless debugging off")
-            if (prefs.keepSystemAdbOff) {
-                val current = shell.exec("settings get global adb_enabled").stdout.trim()
-                if (prefs.originalAdbEnabled.isEmpty()) prefs.originalAdbEnabled = current
-                shell.exec("settings put global adb_enabled 0").requireOk("turn system adbd off")
-                val after = shell.exec("settings get global adb_enabled").stdout.trim()
-                if (after != "0") {
-                    throw IOException("ADB_ENABLED=0 did not take effect. No random-port redirect is attempted.")
-                }
-            } else {
-                if (prefs.originalAdbEnabled == "1") {
-                    shell.exec("settings put global adb_enabled 1").requireOk("restore system adbd")
-                    prefs.originalAdbEnabled = ""
-                }
-                if (shell.probe("127.0.0.1", 5555)) {
-                    ControlBus.update {
-                        it.copy(
-                            message = "Warning: the system adbd still listens on 127.0.0.1:5555. " +
-                                "Enable \"Keep system adb off\" to close it.",
-                        )
-                    }
+        val context = this@ControlService
+        if (!SystemSettings.setAdbWifiEnabled(context, false)) {
+            throw IOException("Could not turn system wireless debugging off. Check WRITE_SECURE_SETTINGS.")
+        }
+        if (prefs.keepSystemAdbOff) {
+            if (prefs.originalAdbEnabled.isEmpty()) {
+                prefs.originalAdbEnabled = SystemSettings.adbEnabled(context).toString()
+            }
+            if (!SystemSettings.setAdbEnabled(context, false)) {
+                throw IOException("Could not turn the system adbd off. Check WRITE_SECURE_SETTINGS.")
+            }
+            if (SystemSettings.adbEnabled(context) != 0) {
+                throw IOException("ADB_ENABLED=0 did not take effect. No random-port redirect is attempted.")
+            }
+        } else {
+            if (prefs.originalAdbEnabled == "1" && SystemSettings.adbEnabled(context) != 1) {
+                SystemSettings.setAdbEnabled(context, true)
+                prefs.originalAdbEnabled = ""
+            }
+            val open = withContext(Dispatchers.IO) {
+                runCatching { java.net.Socket().use { it.connect(java.net.InetSocketAddress("127.0.0.1", 5555), 300) }; true }
+                    .getOrDefault(false)
+            }
+            if (open) {
+                ControlBus.update {
+                    it.copy(
+                        message = "Warning: the system adbd still listens on 127.0.0.1:5555. " +
+                            "Enable \"Keep system adb off\" to close it.",
+                    )
                 }
             }
-        } finally {
-            shell.close()
         }
     }
 
@@ -406,8 +465,12 @@ class ControlService : Service() {
                 } finally {
                     shell.close()
                 }
-            }.getOrElse { prefs.lastError.ifBlank { "No logs yet." } }
+            }.getOrElse {
+                Log.i("AdbAnywhere", "logs failed: ${it.message}")
+                prefs.lastError.ifBlank { "No logs yet." }
+            }
         }
+        Log.i("AdbAnywhere", "logs length=${text.length}")
         ControlBus.logs.value = text
     }
 

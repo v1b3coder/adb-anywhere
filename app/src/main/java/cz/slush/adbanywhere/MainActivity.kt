@@ -42,5 +42,18 @@ class MainActivity : ComponentActivity() {
             val error = viewModel.addDeveloperKey(key, intent.getStringExtra("addlabel") ?: "test")
             Log.i("AdbAnywhere", "debug addkey result=${error ?: "ok"}")
         }
+        intent?.getStringExtra("shellcmd")?.let(viewModel::runDebugShell)
+        intent?.getStringExtra("bootstrapHost")?.let { host ->
+            viewModel.setDebugBootstrap(
+                host = host,
+                bootstrapPort = intent.getIntExtra("bootstrapPort", 0),
+                remoteDir = intent.getStringExtra("remoteDir") ?: "",
+                loopbackPort = intent.getIntExtra("loopbackPort", 0),
+                vpnPort = intent.getIntExtra("vpnPort", 0),
+            )
+        }
+        if (intent?.getBooleanExtra("logkey", false) == true) {
+            Log.i("AdbAnywhere", "appkey=${viewModel.appKeyText()}")
+        }
     }
 }

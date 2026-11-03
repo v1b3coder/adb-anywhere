@@ -52,6 +52,18 @@ class Prefs(context: Context) {
         get() = prefs.getString("last_error", "") ?: ""
         set(value) = prefs.edit().putString("last_error", value).apply()
 
+    var bootstrapHost: String
+        get() = prefs.getString("bootstrap_host", "") ?: ""
+        set(value) = prefs.edit().putString("bootstrap_host", value).apply()
+
+    var bootstrapPort: Int
+        get() = prefs.getInt("bootstrap_port", 0)
+        set(value) = prefs.edit().putInt("bootstrap_port", value).apply()
+
+    var remoteDir: String
+        get() = prefs.getString("remote_dir", "/data/local/tmp/adb-anywhere") ?: "/data/local/tmp/adb-anywhere"
+        set(value) = prefs.edit().putString("remote_dir", value.trim()).apply()
+
     companion object {
         const val DEFAULT_LOOPBACK_PORT = 15037
         const val DEFAULT_VPN_PORT = 15038

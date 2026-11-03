@@ -27,6 +27,22 @@ class SystemAdb(
     suspend fun ensureConnected(): Boolean = withContext(Dispatchers.IO) {
         if (manager.isConnected) return@withContext true
 
+        // A previously authorized ADB channel can bootstrap the app when the
+        // system wireless debugging UI is not reachable. This is the same path
+        // as USB `adb tcpip` followed by `adb connect`, but the address is
+        // supplied by the debug-only intent used in the end-to-end test.
+        if (prefs.bootstrapHost.isNotBlank() && prefs.bootstrapPort > 0) {
+            android.util.Log.i(
+                "AdbAnywhere",
+                "system bootstrap ${prefs.bootstrapHost}:${prefs.bootstrapPort}",
+            )
+            if (manager.connectTo(prefs.bootstrapHost, prefs.bootstrapPort)) {
+                android.util.Log.i("AdbAnywhere", "system bootstrap connected")
+                return@withContext true
+            }
+            android.util.Log.i("AdbAnywhere", "system bootstrap failed")
+        }
+
         val candidates = LinkedHashSet<Int>()
         readProp("service.adb.tls.port")?.toIntOrNull()?.let(candidates::add)
         prefs.lastTlsPort.takeIf { it > 0 }?.let(candidates::add)

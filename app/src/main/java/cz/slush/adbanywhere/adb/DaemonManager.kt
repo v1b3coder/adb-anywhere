@@ -6,7 +6,6 @@ package cz.slush.adbanywhere.adb
 
 import android.content.Context
 import android.os.Build
-import android.util.Log
 import cz.slush.adbanywhere.data.AndroidPubKey
 import cz.slush.adbanywhere.data.DeveloperKey
 import cz.slush.adbanywhere.data.Endpoint
@@ -15,13 +14,13 @@ import java.io.File
 import java.io.IOException
 import java.security.MessageDigest
 
-class DaemonManager(private val context: Context) {
-    val remoteDir = "/data/local/tmp/adb-anywhere"
-    val binaryPath = "$remoteDir/adbd"
-    val keysPath = "$remoteDir/adb_keys"
-    val policyPath = "$remoteDir/policy.tsv"
-    val logPath = "$remoteDir/adbd.log"
-    val pidPath = "$remoteDir/adbd.pid"
+class DaemonManager(private val context: Context, private val prefs: cz.slush.adbanywhere.data.Prefs) {
+    val remoteDir: String get() = prefs.remoteDir
+    val binaryPath: String get() = "$remoteDir/adbd"
+    val keysPath: String get() = "$remoteDir/adb_keys"
+    val policyPath: String get() = "$remoteDir/policy.tsv"
+    val logPath: String get() = "$remoteDir/adbd.log"
+    val pidPath: String get() = "$remoteDir/adbd.pid"
 
     fun abi(): String? {
         val supported = setOf("arm64-v8a", "armeabi-v7a", "x86_64")
@@ -33,6 +32,36 @@ class DaemonManager(private val context: Context) {
         return runCatching { context.assets.open("adbd/$abi/adbd").close() }.isSuccess
     }
 
+    fun writeBinary(shell: Shell) {
+        val abi = abi() ?: throw IOException("unsupported ABI: ${Build.SUPPORTED_ABIS.joinToString()}")
+        val bytes = context.assets.open("adbd/$abi/adbd").use { it.readBytes() }
+        shell.mkdirs(remoteDir)
+        val remoteHash = shell.sha256(binaryPath)
+        if (remoteHash == sha256(bytes)) return
+        // Replace through a new inode so a running daemon never sees ETXTBSY.
+        val temporary = "$binaryPath.new"
+        shell.writeFile(temporary, bytes)
+        shell.chmod(temporary, "755")
+        shell.exec("mv -f ${shell.quote(temporary)} ${shell.quote(binaryPath)}")
+            .requireOk("install daemon")
+        val installedHash = shell.sha256(binaryPath)
+        if (installedHash != sha256(bytes)) {
+            throw IOException("daemon checksum mismatch on device")
+        }
+    }
+
+    fun writeKeysAndPolicy(
+        shell: Shell,
+        appKey: AndroidPubKey.Key,
+        developers: List<DeveloperKey>,
+    ) {
+        shell.mkdirs(remoteDir)
+        shell.writeTextFile(keysPath, KeyFiles.keysFile(appKey, developers))
+        shell.chmod(keysPath, "600")
+        shell.writeTextFile(policyPath, KeyFiles.policyFile(appKey, developers))
+        shell.chmod(policyPath, "600")
+    }
+
     fun deployAndStart(
         shell: Shell,
         appKey: AndroidPubKey.Key,
@@ -41,50 +70,67 @@ class DaemonManager(private val context: Context) {
         loopbackPort: Int,
         vpnPort: Int,
     ) {
-        val abi = abi() ?: throw IOException("unsupported ABI: ${Build.SUPPORTED_ABIS.joinToString()}")
-        val bytes = context.assets.open("adbd/$abi/adbd").use { it.readBytes() }
-
-        shell.mkdirs(remoteDir)
-        shell.writeFile(binaryPath, bytes)
-        shell.chmod(binaryPath, "755")
-        shell.writeFile(keysPath, KeyFiles.keysFile(appKey, developers).toByteArray())
-        shell.chmod(keysPath, "600")
-        shell.writeFile(policyPath, KeyFiles.policyFile(appKey, developers).toByteArray())
-        shell.chmod(policyPath, "600")
-
-        Log.i("AdbAnywhere", "verify checksum")
-        val remoteHash = shell.sha256(binaryPath)
-        if (remoteHash != sha256(bytes)) {
-            throw IOException("daemon checksum mismatch on device")
-        }
-
-        Log.i("AdbAnywhere", "stop old daemon")
+        writeBinary(shell)
+        writeKeysAndPolicy(shell, appKey, developers)
         stop(shell)
+        Thread.sleep(300)
         loopbackPortForStop = loopbackPort
-        val spec = Endpoint.listenSpec(loopbackPort, vpnIp, vpnPort)
-        val command = "setsid ${shell.quote(binaryPath)}" +
-            " --listen ${shell.quote(spec)}" +
-            " --keys ${shell.quote(keysPath)}" +
-            " --policy ${shell.quote(policyPath)}" +
-            " --log ${shell.quote(logPath)}" +
-            " --pid-file ${shell.quote(pidPath)}" +
-            " </dev/null >/dev/null 2>${shell.quote(remoteDir + "/adbd.stderr")} & echo \$!"
-        Log.i("AdbAnywhere", "start daemon: $command")
+        val command = startCommand(shell, vpnIp, loopbackPort, vpnPort)
         val result = shell.exec(command, 10_000)
-        Log.i("AdbAnywhere", "start result rc=${result.exitCode} out=${result.stdout.trim()} err=${result.stderr.trim()}")
         if (!result.ok) {
             throw IOException("cannot start daemon: ${result.stderr.ifBlank { result.stdout }.trim()}")
         }
-        Log.i("AdbAnywhere", "wait for loopback")
         waitForPort(shell, loopbackPort)
         val pid = shell.exec("cat ${shell.quote(pidPath)} 2>/dev/null").stdout.trim()
         if (pid.toLongOrNull() == null) {
             throw IOException("daemon did not write a pid file")
         }
-        Log.i("AdbAnywhere", "daemon pid=$pid")
         if (!vpnIp.isNullOrBlank() && !shell.probe(vpnIp, vpnPort)) {
             throw IOException("daemon did not bind $vpnIp:$vpnPort")
         }
+    }
+
+    /**
+     * Restarts the daemon from its own shell. The kill and the new start run in a
+     * detached script so the shell served by the old daemon can die safely.
+     */
+    fun restartDetached(
+        shell: Shell,
+        appKey: AndroidPubKey.Key,
+        developers: List<DeveloperKey>,
+        vpnIp: String?,
+        loopbackPort: Int,
+        vpnPort: Int,
+    ) {
+        writeBinary(shell)
+        writeKeysAndPolicy(shell, appKey, developers)
+        Thread.sleep(200)
+        loopbackPortForStop = loopbackPort
+        val start = startCommand(shell, vpnIp, loopbackPort, vpnPort)
+        val script = "kill \$(cat ${shell.quote(pidPath)}) 2>/dev/null || true; " +
+            "sleep 0.4; $start"
+        val result = shell.exec(
+            "setsid sh -c ${shell.quote(script)} </dev/null >/dev/null 2>&1 & echo \$!",
+            10_000,
+        )
+        if (!result.ok) {
+            throw IOException("cannot restart daemon: ${result.stderr.ifBlank { result.stdout }.trim()}")
+        }
+        waitForPort(shell, loopbackPort)
+        if (!vpnIp.isNullOrBlank() && !shell.probe(vpnIp, vpnPort)) {
+            throw IOException("daemon did not bind $vpnIp:$vpnPort")
+        }
+    }
+
+    private fun startCommand(shell: Shell, vpnIp: String?, loopbackPort: Int, vpnPort: Int): String {
+        val spec = Endpoint.listenSpec(loopbackPort, vpnIp, vpnPort)
+        return "setsid ${shell.quote(binaryPath)}" +
+            " --listen ${shell.quote(spec)}" +
+            " --keys ${shell.quote(keysPath)}" +
+            " --policy ${shell.quote(policyPath)}" +
+            " --log ${shell.quote(logPath)}" +
+            " --pid-file ${shell.quote(pidPath)}" +
+            " </dev/null >/dev/null 2>${shell.quote(remoteDir + "/adbd.stderr")} &"
     }
 
     fun stop(shell: Shell) {
@@ -94,8 +140,10 @@ class DaemonManager(private val context: Context) {
         }
         // Also stop a stale instance that lost its pid file. Filter on the
         // process name so the shell running this command is never matched.
+        val marker = remoteDir
         shell.exec(
-            "ps -A -o PID,NAME,ARGS | awk '\$2==\"adbd\" && /--listen/ {print \$1}' | " +
+            "ps -A -o PID,NAME,ARGS | " +
+                "awk '\$2==\"adbd\" && index(\$0, \"$marker\") {print \$1}' | " +
                 "xargs -r kill 2>/dev/null || true",
         )
         shell.exec("rm -f ${shell.quote(pidPath)}")
@@ -121,10 +169,6 @@ class DaemonManager(private val context: Context) {
         }
         val log = logTail(shell, 5)
         throw IOException("daemon did not listen on 127.0.0.1:$port${if (log.isBlank()) "" else ": ${log.trim()}"}")
-    }
-
-    companion object {
-        private const val TAG = "AdbAnywhere"
     }
 
     private fun sha256(bytes: ByteArray): String =

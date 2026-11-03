@@ -103,6 +103,64 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         return null
     }
 
+    fun setRemoteDir(path: String) {
+        if (path.isBlank() || !path.startsWith("/data/local/tmp/")) return
+        prefs.remoteDir = path
+    }
+
+    fun setDebugBootstrap(
+        host: String,
+        bootstrapPort: Int,
+        remoteDir: String,
+        loopbackPort: Int,
+        vpnPort: Int,
+    ) {
+        if (host.isBlank() || bootstrapPort !in 1024..65535) return
+        if (remoteDir.startsWith("/data/local/tmp/")) prefs.remoteDir = remoteDir
+        if (loopbackPort in 1024..65535 && vpnPort in 1024..65535 &&
+            loopbackPort != vpnPort
+        ) {
+            prefs.loopbackPort = loopbackPort
+            prefs.vpnPort = vpnPort
+        }
+        prefs.bootstrapHost = host
+        prefs.bootstrapPort = bootstrapPort
+        android.util.Log.i(
+            "AdbAnywhere",
+            "debug bootstrap host=$host port=$bootstrapPort dir=${prefs.remoteDir} " +
+                "loop=${prefs.loopbackPort} vpn=${prefs.vpnPort}",
+        )
+        ControlService.start(getApplication(), ControlService.ACTION_START)
+    }
+
+    fun setBootstrap(host: String, port: Int) {
+        if (host.isBlank() || port !in 1024..65535) return
+        prefs.bootstrapHost = host
+        prefs.bootstrapPort = port
+        ControlService.start(getApplication(), ControlService.ACTION_START)
+    }
+
+    fun appKeyText(): String = keyStore.publicKeyB64
+
+    fun runDebugShell(command: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val manager = cz.slush.adbanywhere.adb.AdbManager(getApplication(), keyStore)
+            if (!manager.connectTo("127.0.0.1", prefs.loopbackPort)) {
+                android.util.Log.i("AdbAnywhere", "debug shell connect failed")
+                return@launch
+            }
+            try {
+                val result = cz.slush.adbanywhere.adb.Shell(manager).exec(command)
+                android.util.Log.i(
+                    "AdbAnywhere",
+                    "debug shell rc=${result.exitCode} out=${result.stdout.trim()} err=${result.stderr.trim()}",
+                )
+            } finally {
+                manager.disconnectQuietly()
+            }
+        }
+    }
+
     fun requestBatteryExemption(activity: Activity) {
         val intent = Intent(
             Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
@@ -111,5 +169,4 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         runCatching { activity.startActivity(intent) }
     }
 
-    fun appKeyText(): String = keyStore.publicKeyB64
 }
