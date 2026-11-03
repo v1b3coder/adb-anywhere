@@ -90,18 +90,14 @@ These are facts from AOSP `main`, not assumptions.
 | D2 | Data plane | One patched `adbd` instance with two listeners: `127.0.0.1:<portA>` for the app, `<vpn-ip>:<portB>` for developer machines |
 | D3 | App key | Ephemeral RSA keypair generated on first run; private key in app-private storage; public key in the patched adbd key file |
 | D4 | Developer machine pairing | QR shown by the developer machine, scanned by the app; no pairing listener on the phone |
-| D5 | System `adbd` | Bootstrap only; `ADB_WIFI_ENABLED=0` always after the patched adbd is running; `ADB_ENABLED=0` only with "Keep system adb off" |
-| D6 | Watchdog | Always keeps `ADB_WIFI_ENABLED=0`; keeps `ADB_ENABLED=0` only with "Keep system adb off" |
+| D5 | System adbd hardening | `ADB_WIFI_ENABLED=0` always after the patched adbd is running; `ADB_ENABLED=0` only with "Keep system adb off" (default off; restore the original value when unchecked) |
+| D6 | Watchdog | Keeps the D5 state; probes 5555 only when "Keep system adb off" is on; restarts the patched adbd |
 | D7 | Policy | Patched adbd enforces per-key and per-service rules; VPN ACL is the outer boundary |
-| D8 | UI | Kotlin, Jetpack Compose, Material 3; package `cz.slush.adbanywhere` |
+| D8 | UI stack | Kotlin, Jetpack Compose, Material 3; package `cz.slush.adbanywhere` |
 | D9 | Bootstrap pairing | Notification `RemoteInput` with `code:port` |
-| D10 | System adbd off | Optional, "Keep system adb off"; `ADB_WIFI_ENABLED=0` is mandatory |
-| D11 | Wireless debugging | Off always; the patched adbd ignores the toggle |
-| D12 | Patched adbd transports | TCP only; USB and vsock disabled |
-| D13 | Mandatory hardening | `ADB_WIFI_ENABLED=0` after bootstrap, always |
-| D14 | Optional hardening | `ADB_ENABLED=0` behind "Keep system adb off", default off; restore the original value when unchecked |
-| D15 | Settings UI | "Keep system adb off" checkbox; shows the current ADB state and the residual |
-| D16 | Failure policy | Explicit error and recovery steps; no silent fallback |
+| D10 | Patched adbd transports | TCP only; USB and vsock disabled |
+| D11 | Settings UI | "Keep system adb off" checkbox; shows the current ADB state and the residual |
+| D12 | Failure policy | Explicit error and recovery steps; no silent fallback |
 
 ## 6. Architecture
 
