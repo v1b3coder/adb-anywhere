@@ -69,6 +69,9 @@ These are facts from AOSP `main`, not assumptions.
 8. **`usb:` only removes TCP if `is_usb` is true.**
    `usb:` sets `service.adb.tcp.port=0`; adbd falls back to 5555 when the USB
    gadget endpoint is absent (`main.cpp:293-296`).
+9. **The TLS port is readable by the app.**
+   `service.adb.tls.port` is `adbd_prop`; `getprop` returns it to an
+   unprivileged process. mDNS is a fallback, not the only source.
 
 ## 5. Product decisions
 
@@ -189,6 +192,14 @@ The app's foreground service keeps the system adbd in USB mode.
 12. App sends `usb:` to the system adbd.
 13. App starts the watchdog and shows the endpoint.
 
+### Port discovery
+
+- Primary: `getprop service.adb.tls.port` (`adbd_prop`, readable).
+- Fallback: `NsdManager` discovery of `_adb-tls-connect._tcp`.
+- Last resort: the user enters the port shown in Settings.
+- The plain target port is chosen by the app and set with `tcpip:<port>`;
+  it is stored in prefs and re-applied after boot.
+
 ### Boot
 
 1. `BootReceiver` starts the service on `BOOT_COMPLETED` and
@@ -198,8 +209,11 @@ The app's foreground service keeps the system adbd in USB mode.
 3. Service probes for a system adbd TCP listener: `5555`, the last known port,
    or the TLS port on Wi-Fi.
 4. If reachable, start the patched adbd, verify, then `usb:`.
-5. If not reachable, show "connect USB once" and retry on USB or network
-   changes. This is the top risk.
+5. If not reachable, ask the user to connect to any Wi-Fi once. The app then
+   sets `adb_wifi_enabled=1`, reads `service.adb.tls.port`, connects with its
+   paired key, and switches to the stable port. This is a manual recovery step,
+   not a blocker.
+6. USB is the fallback when no Wi-Fi is available.
 
 ### Network change
 
@@ -277,7 +291,8 @@ The app's foreground service keeps the system adbd in USB mode.
 
 ## 12. Open risks
 
-- Reboot on cellular with no system adbd TCP listener: the top risk.
+- Reboot on cellular with no system adbd TCP listener: the app needs one
+  Wi-Fi connection to bootstrap. This is a manual recovery step, not a blocker.
 - OEM blocks `pm grant WRITE_SECURE_SETTINGS`.
 - `usb:` leaves 5555 when `is_usb` is false.
 - Patched adbd is killed by LMK/Doze; no restart path if the system adbd is
