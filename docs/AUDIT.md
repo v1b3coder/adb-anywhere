@@ -157,11 +157,24 @@ is a thread in that process, and the forked shell children close every descripto
 above 2 (`stream.c:spawn_process`), so the kill drops the sessions that the
 removed key authenticated. Adding a key keeps the light path: `ACTION_APPLY_KEYS`
 rewrites the file and the new key is loaded on the next authentication. The
-removal dialog now says the daemon restarts and open connections drop. Verified
-on the host with the real `adb` client and the host daemon: a live
+removal dialog now says the daemon restarts and open connections drop.
+
+Verified on the host with the real `adb` client and the host daemon: a live
 `shell sleep 120` session ended when the key file was rewritten and the daemon
 killed/restarted, the removed key was rejected (`auth_reject`), and the remaining
-key still got a shell (`auth_ok`). Not re-verified on a device.
+key still got a shell (`auth_ok`).
+
+Verified on the SM-S911B (Android 16) with the real Keys screen and a throwaway
+developer key: tapping Remove restarted the daemon once (`stop`/`start`, `keys=2` =
+app + `phone-laptop`), the throwaway key's live `shell sleep 300` session ended,
+its next connection was rejected (`auth_reject`, "failed to authenticate"), the app
+returned to `Running` without a setup error, and the `phone-laptop` key kept its
+shell. The key file no longer contained the throwaway key. The first device run
+exposed a restart race: the app verified the daemon while the old process was still
+dying, reported `setup failed: Stream closed`, stopped the replacement, and the
+watchdog recovered about three minutes later. `restartDetached()` waited only for
+an open loopback port; `waitForRestart()` now waits for the old listener to close
+first (`14f8664`).
 
 `AppViewModel.removeDeveloperKey()` rewrites the key list and sends
 `ACTION_APPLY_KEYS`. `ControlService.setup()` sees a live daemon and
@@ -764,8 +777,7 @@ Fix: use a Compose-compatible splash/theme and clean up unused resources.
   now closes the system listener and restores `ADB_ENABLED`; not re-verified on a
   device.
 - **Revocation** (P0-3, fixed in `822fc50`): removing a key restarts the
-  daemon, so the sessions that the key authenticated end; not re-verified on a
-  device.
+  daemon, so the sessions that the key authenticated end; verified on the SM-S911B.
 - **System listener not re-asserted/verified** (P0-5, P1-9): the "off" claim is
   a setting write, not a verified closed port.
 - **Exported boot receiver** (P0-7): any app can trigger setup.

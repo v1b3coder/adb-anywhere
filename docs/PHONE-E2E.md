@@ -81,3 +81,46 @@ the app re-asserted `adb_wifi_enabled=1`. The app showed the explicit error
 ("wireless debugging is not reachable ...") and did not fall back to a proxy or a
 random port, matching DESIGN.md section 9. Recovery is the documented one-Wi-Fi
 step: enable Wireless debugging once in Settings.
+
+## Revocation
+
+A throwaway developer key (`audit-b`) was added through the app, connected from
+the host over Tailscale, and removed through the real *Keys* screen while it held a
+live shell session:
+
+```json
+{"event":"auth_ok","message":"... label=audit-b role=developer"}
+{"event":"service_open","message":"... service=shell,v2,...,raw:sleep 300"}
+```
+
+Tapping *Remove* restarted the daemon with the reduced key file (`keys=2` = app +
+`phone-laptop`):
+
+```json
+{"event":"stop","message":"signal"}
+{"event":"start","message":"keys=2 policies=2"}
+{"event":"listen","message":"127.0.0.1:15037"}
+{"event":"listen","message":"100.64.0.10:15038"}
+```
+
+The live `sleep 300` session ended with the old daemon, and the throwaway key's
+next connection was rejected:
+
+```text
+$ adb connect 100.64.0.10:15038
+failed to authenticate to 100.64.0.10:15038
+adb: device unauthorized.
+```
+
+```json
+{"event":"auth_reject","message":"... signature did not match any authorized key"}
+```
+
+The app returned to *Running* without a setup error, the *Keys* screen listed only
+`phone-laptop`, and that key kept its shell.
+
+The first device run exposed a restart race: the app verified the daemon while the
+old process was still dying, reported `setup failed: Stream closed`, stopped the
+replacement daemon, and the watchdog recovered about three minutes later.
+`restartDetached()` waited only for an open loopback port; `waitForRestart()` now
+waits for the old listener to close before the new one is verified (`14f8664`).
