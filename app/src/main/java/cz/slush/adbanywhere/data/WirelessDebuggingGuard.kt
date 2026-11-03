@@ -41,7 +41,8 @@ class WirelessDebuggingGuard(
         }
         throw IOException(
             "System wireless debugging is still on: adb_wifi_enabled=$enabled, " +
-                "service.adb.tls.port=${port ?: ""}${if (open) " (listening)" else ""}.",
+                "service.adb.tls.port=${port ?: ""}${if (open) " (listening)" else ""}. " +
+                "Turn wireless debugging off in Settings, or reboot.",
         )
     }
 
