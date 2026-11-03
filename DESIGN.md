@@ -93,15 +93,15 @@ These are facts from AOSP `main`, not assumptions.
 | D5 | System `adbd` | Bootstrap only; `ADB_WIFI_ENABLED=0` always after the patched adbd is running; `ADB_ENABLED=0` only with "Keep system adb off" |
 | D6 | Watchdog | Always keeps `ADB_WIFI_ENABLED=0`; keeps `ADB_ENABLED=0` only with "Keep system adb off" |
 | D7 | Policy | Patched adbd enforces per-key and per-service rules; VPN ACL is the outer boundary |
-| D8 | Fallback | If the patched adbd cannot run, system adbd + network gating + TCP proxy |
-| D9 | UI | Kotlin, Jetpack Compose, Material 3; package `cz.slush.adbanywhere` |
-| D10 | Bootstrap pairing | Notification `RemoteInput` with `code:port` |
-| D11 | System adbd off | Optional, "Keep system adb off"; `ADB_WIFI_ENABLED=0` is mandatory |
-| D12 | Wireless debugging | Off always; the patched adbd ignores the toggle |
-| D13 | Patched adbd transports | TCP only; USB and vsock disabled |
-| D14 | Mandatory hardening | `ADB_WIFI_ENABLED=0` after bootstrap, always |
-| D15 | Optional hardening | `ADB_ENABLED=0` behind "Keep system adb off", default off; restore the original value when unchecked |
-| D16 | Settings UI | "Keep system adb off" checkbox; shows the current ADB state and the residual |
+| D8 | UI | Kotlin, Jetpack Compose, Material 3; package `cz.slush.adbanywhere` |
+| D9 | Bootstrap pairing | Notification `RemoteInput` with `code:port` |
+| D10 | System adbd off | Optional, "Keep system adb off"; `ADB_WIFI_ENABLED=0` is mandatory |
+| D11 | Wireless debugging | Off always; the patched adbd ignores the toggle |
+| D12 | Patched adbd transports | TCP only; USB and vsock disabled |
+| D13 | Mandatory hardening | `ADB_WIFI_ENABLED=0` after bootstrap, always |
+| D14 | Optional hardening | `ADB_ENABLED=0` behind "Keep system adb off", default off; restore the original value when unchecked |
+| D15 | Settings UI | "Keep system adb off" checkbox; shows the current ADB state and the residual |
+| D16 | Failure policy | Explicit error and recovery steps; no silent fallback |
 
 ## 6. Architecture
 
@@ -337,7 +337,7 @@ has no TCP listener, so there is nothing to monitor or turn off.
 
 | Failure | Response |
 |---|---|
-| Patched adbd dies | Restart via system adbd if reachable; otherwise notify and ask for USB |
+| Patched adbd dies | Restart via system adbd if reachable; otherwise show an explicit error with recovery steps |
 | System adbd returns to TCP | Watchdog sets `ADB_ENABLED=0` if "Keep system adb off" is on; otherwise shows the residual |
 | `ADB_ENABLED=0` does not stop adbd | Move to a random port, log residual, keep patched adbd as the stable endpoint |
 | VPN address changes | Restart patched adbd with the new address; loopback stays |
@@ -345,8 +345,14 @@ has no TCP listener, so there is nothing to monitor or turn off.
 | App key lost | Re-pair via notification; regenerate key; rewrite key file |
 | Developer key leaked | Remove from key file; restart patched adbd; revoke on the developer machine |
 | Doze kills the app | Battery exemption prompt; foreground service; `START_STICKY`; watchdog |
-| OEM blocks `pm grant` | Fall back to baseline; explain and link the upstream issue |
-| Reboot on cellular | Probe 5555, last port, TLS on Wi-Fi, `persist.adb.tcp.port`; otherwise ask for USB |
+| OEM blocks `pm grant` | Show an explicit error: the app cannot self-grant; link the upstream issue and the manual `adb shell pm grant` steps |
+| Reboot on cellular | Probe 5555, last port, TLS on Wi-Fi, `persist.adb.tcp.port`; otherwise show the Wi-Fi/USB recovery steps |
+
+The app never silently falls back. If the patched adbd cannot start, bind its
+listeners, or dies without a restart path, the app shows the exact failure, the
+last log line, and the recovery steps (connect Wi-Fi once, connect USB once, or
+reinstall the patched adbd). It does not enable a proxy or leave the system adbd in
+a different mode.
 
 ## 10. Testing
 
@@ -363,8 +369,9 @@ has no TCP listener, so there is nothing to monitor or turn off.
 - **Phase 0 — probes**: `pm grant`, `ADB_WIFI_ENABLED=0`, `ADB_ENABLED=0`,
   5555 at boot, `persist.adb.tcp.port`, TLS port on Wi-Fi, patched adbd as
   shell, QR pairing, VPN bind/rebind. Output: a report, no production code.
-- **Phase 1 — baseline**: stock system adbd, notification pairing, network
-  gating, TCP proxy, UI. Shippable without the patched adbd.
+- **Phase 1 — control plane**: stock system adbd for bootstrap, notification
+  pairing, network gating, UI. Development milestone only; the app fails
+  explicitly if the patched adbd is unavailable.
 - **Phase 2 — patched adbd**: build, bundle, deploy, two listeners, key
   provisioning, QR pairing, policy and logs, watchdog.
 - **Phase 3 — depth**: per-service and per-command policy, connection log
@@ -383,6 +390,8 @@ has no TCP listener, so there is nothing to monitor or turn off.
   the system adbd for bootstrap; the TCP listener still depends on `is_usb`.
 - Patched adbd is killed by LMK/Doze; no restart path if the system adbd is
   USB-only.
+- No silent fallback: if the patched adbd cannot run, the app shows an explicit
+  error and stops instead of falling back to a proxy.
 - Android 15/16 foreground service limits.
 - AOSP adbd cross-compile and patch maintenance across releases.
 - VPN app excludes the app from the tunnel, so loopback still works but the VPN
