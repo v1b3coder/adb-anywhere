@@ -74,6 +74,12 @@ These are facts from AOSP `main`, not assumptions.
 9. **The TLS port is readable by the app.**
    `service.adb.tls.port` is `adbd_prop`; `getprop` returns it to an
    unprivileged process. mDNS is a fallback, not the only source.
+10. **`adb_enabled=0` stops adbd.**
+    `AdbService.setAdbEnabled(false, USB)` calls `stopAdbd()`, and
+    `UsbDeviceManager` removes ADB from the USB functions and calls
+    `stopAdbdForTransport(USB)` (`AdbService.java:444-469`,
+    `UsbDeviceManager.java:2494-2503`). This is a clean off switch, unlike
+    `usb:`.
 
 ## 5. Product decisions
 
@@ -83,12 +89,14 @@ These are facts from AOSP `main`, not assumptions.
 | D2 | Data plane | One patched `adbd` instance with two listeners: `127.0.0.1:<portA>` for the app, `<vpn-ip>:<portB>` for developer machines |
 | D3 | App key | Ephemeral RSA keypair generated on first run; private key in app-private storage; public key in the patched adbd key file |
 | D4 | Developer machine pairing | QR shown by the developer machine, scanned by the app; no pairing listener on the phone |
-| D5 | System `adbd` | Bootstrap only; put into USB mode with `usb:` after the patched adbd is running |
-| D6 | Watchdog | App foreground service re-applies `usb:` if the system adbd returns to TCP |
+| D5 | System `adbd` | Bootstrap only; stopped with `adb_enabled=0` after the patched adbd is running |
+| D6 | Watchdog | App foreground service keeps `adb_enabled=0`; falls back to `usb:` if the toggle does not stop adbd |
 | D7 | Policy | Patched adbd enforces per-key and per-service rules; VPN ACL is the outer boundary |
 | D8 | Fallback | If the patched adbd cannot run, system adbd + network gating + TCP proxy |
 | D9 | UI | Kotlin, Jetpack Compose, Material 3; package `cz.slush.adbanywhere` |
 | D10 | Bootstrap pairing | Notification `RemoteInput` with `code:port` |
+| D11 | System adbd off | `ADB_ENABLED=0`; `usb:` is only an OEM fallback |
+| D12 | Wireless debugging | Off; the patched adbd ignores the toggle |
 
 ## 6. Architecture
 
@@ -156,24 +164,36 @@ This is out-of-band, one-time, and has no listening socket. A malicious QR can o
 add the key it proves possession of, and the user sees the fingerprint before
 confirming. Replay is limited by `issued_at` and by removing the key.
 
+### System adbd control
+
+- Off: `Settings.Global.ADB_ENABLED=0` via `WRITE_SECURE_SETTINGS`.
+  `AdbService` stops adbd; `UsbDeviceManager` removes ADB from the USB
+  functions.
+- On: `ADB_ENABLED=1` starts adbd for bootstrap. It does not create a TCP
+  listener; that still depends on `is_usb` and `service.adb.tcp.port`.
+- Wireless debugging: `ADB_WIFI_ENABLED=0` stops the TLS server only. The
+  patched adbd ignores it.
+- `usb:` is a fallback for OEMs where `ADB_ENABLED=0` does not stop adbd.
+
 ### Watchdog
 
-The app's foreground service keeps the system adbd in USB mode.
+The app's foreground service keeps the system adbd stopped.
 
+- Primary: set `Settings.Global.ADB_ENABLED=0`. `AdbService` stops adbd and
+  `UsbDeviceManager` removes ADB from the USB functions.
+- Fallback: if adbd is still listening on TCP, connect with the app key and send
+  `usb:`. `usb:` is evaluated at the adbd restart; if the cable is unplugged
+  and the gadget is unbound, it falls back to 5555.
 - Register `UsbManager.ACTION_USB_STATE` (sticky) and
   `ConnectivityManager.NetworkCallback`.
 - Poll every 60 s while the screen is on and every 15 min via
   `AlarmManager.setExactAndAllowWhileIdle` otherwise.
 - Probe `127.0.0.1:5555` and `127.0.0.1:<portA>`.
-- If `5555` is open, connect with the app key and send `usb:`. The connection
-  dies; that is expected.
-- `usb:` is evaluated at the adbd restart. If the cable is unplugged and the
-  gadget is unbound, `usb:` falls back to 5555; probe and move to a random port.
 - If `<portA>` is down, restart the patched adbd through the system adbd if it is
   reachable, otherwise notify the user.
 - Backoff and hysteresis; never fight an explicit user "off".
-- If `usb:` does not remove `5555` (`is_usb` false), move the system adbd to a
-  random port with `tcpip:<random>` and record the residual.
+- If `ADB_ENABLED=0` does not stop adbd on an OEM, fall back to `usb:` and
+  record the residual.
 
 ## 7. Flows
 
@@ -298,7 +318,11 @@ The app's foreground service keeps the system adbd in USB mode.
 - Reboot on cellular with no system adbd TCP listener: the app needs one
   Wi-Fi connection to bootstrap. This is a manual recovery step, not a blocker.
 - OEM blocks `pm grant WRITE_SECURE_SETTINGS`.
+- `adb_enabled=0` may not stop adbd on some OEMs; fall back to `usb:` and
+  record the residual.
 - `usb:` leaves 5555 when `is_usb` is false.
+- After reboot with `ADB_ENABLED=0`, the app must set `ADB_ENABLED=1` to start
+  the system adbd for bootstrap; the TCP listener still depends on `is_usb`.
 - Patched adbd is killed by LMK/Doze; no restart path if the system adbd is
   USB-only.
 - Android 15/16 foreground service limits.
