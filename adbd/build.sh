@@ -51,5 +51,8 @@ for abi in $abis; do
     cmake --build "$build/$abi" --target adbd
     mkdir -p "$build/out/$abi"
     cp "$build/$abi/adbd" "$build/out/$abi/adbd"
+    # Keep symbols, drop debug info: the AOSP build uses strip keep_symbols.
+    strip=$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip
+    "$strip" --strip-debug "$build/out/$abi/adbd"
     echo "built $build/out/$abi/adbd"
 done
