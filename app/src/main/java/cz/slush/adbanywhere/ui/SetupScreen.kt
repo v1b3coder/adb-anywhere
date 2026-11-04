@@ -60,7 +60,7 @@ fun SetupScreen(
         item {
             SectionCard("1. Pair with Android's wireless debugging") {
                 Text(
-                    "Android only lets this app deploy the daemon after a one-time pairing. " +
+                    "Android only lets this app deploy the custom adb after a one-time pairing. " +
                         "Nothing is exposed by this step; it only authorizes this app's key.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -155,9 +155,9 @@ fun SetupScreen(
         }
 
         item {
-            SectionCard("2. Deploy the patched daemon") {
+            SectionCard("2. Deploy the custom adb") {
                 Text(
-                    "The app writes the AOSP adbd and its key file to " +
+                    "The app writes the custom adb and its key file to " +
                         "/data/local/tmp/adb-anywhere, starts it with the exact listeners and " +
                         "verifies shell access before it turns Android's wireless debugging off.",
                     style = MaterialTheme.typography.bodyMedium,

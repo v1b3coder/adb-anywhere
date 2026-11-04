@@ -12,13 +12,13 @@ data class AdbStatus(
     /** D11: the warnings the settings UI shows next to the state. */
     fun warnings(keepSystemAdbOff: Boolean): List<String> = buildList {
         if (adbWifiEnabled != 0) {
-            add("adb_wifi_enabled=$adbWifiEnabled: system wireless debugging is on.")
+            add("Wireless debugging is on.")
         }
         if (port5555Open) {
-            add("127.0.0.1:5555 is open: the system adbd is listening.")
+            add("Port 5555 is open: the system adb is listening.")
         }
         if (keepSystemAdbOff && adbEnabled != 0) {
-            add("adb_enabled=$adbEnabled although \"Keep system adb off\" is on.")
+            add("The system adb is still on although \"Keep system adb off\" is enabled.")
         }
     }
 }

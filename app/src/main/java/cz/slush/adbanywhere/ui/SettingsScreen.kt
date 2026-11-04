@@ -77,7 +77,7 @@ fun SettingsScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        "Keeps Android's adbd stopped with ADB_ENABLED=0. The original value is " +
+                        "Keeps Android's system adb stopped. The original value is " +
                             "restored when this is turned off.",
                         modifier = Modifier.weight(1f),
                         style = MaterialTheme.typography.bodyMedium,
@@ -95,7 +95,7 @@ fun SettingsScreen(
             SectionCard("Battery") {
                 Text(
                     "Allow ADB Anywhere to run in the background so the watchdog can restart " +
-                        "the daemon after Doze.",
+                        "the custom adb after Doze.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -159,7 +159,7 @@ fun SettingsScreen(
 
         item {
             SectionCard(
-                "Current system state",
+                "System adb",
                 trailing = {
                     IconButton(onClick = { reload++ }) {
                         Icon(Icons.Rounded.Refresh, contentDescription = "Refresh the ADB state")
@@ -167,7 +167,7 @@ fun SettingsScreen(
                 },
             ) {
                 KeyValueRow(
-                    "App channel",
+                    "App adb channel",
                     "127.0.0.1:${state.loopbackPort}",
                     mono = true,
                 )
@@ -180,17 +180,17 @@ fun SettingsScreen(
                     )
                 } else {
                     KeyValueRow(
-                        "adb_enabled",
-                        if (current.adbEnabled == 0) "off" else "on (${current.adbEnabled})",
+                        "ADB enabled",
+                        if (current.adbEnabled == 0) "off" else "on",
                         mono = true,
                     )
                     KeyValueRow(
-                        "adb_wifi_enabled",
-                        if (current.adbWifiEnabled == 0) "off" else "on (${current.adbWifiEnabled})",
+                        "Wireless debugging",
+                        if (current.adbWifiEnabled == 0) "off" else "on",
                         mono = true,
                     )
                     KeyValueRow(
-                        "127.0.0.1:5555",
+                        "Port 5555",
                         if (current.port5555Open) "open" else "closed",
                         mono = true,
                     )
@@ -203,7 +203,7 @@ fun SettingsScreen(
                     }
                 }
                 Text(
-                    "System wireless debugging is always turned off after the daemon is verified.",
+                    "Wireless debugging is always turned off after the custom adb is verified.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

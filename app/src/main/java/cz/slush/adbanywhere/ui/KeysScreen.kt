@@ -138,7 +138,7 @@ fun KeysScreen(
             text = {
                 Text(
                     "The machine will no longer be able to connect until it is paired again. " +
-                        "The daemon restarts, so open connections drop.",
+                        "The custom adb restarts, so open connections drop.",
                 )
             },
             confirmButton = {

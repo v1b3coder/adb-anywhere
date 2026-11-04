@@ -2,7 +2,6 @@ package cz.slush.adbanywhere
 
 import cz.slush.adbanywhere.data.AdbStatus
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AdbStatusTest {
@@ -15,7 +14,7 @@ class AdbStatusTest {
     fun warnsAboutTheWirelessDebuggingSetting() {
         val warnings = AdbStatus(0, 1, false).warnings(keepSystemAdbOff = true)
         assertEquals(1, warnings.size)
-        assertTrue(warnings.single().contains("adb_wifi_enabled=1"))
+        assertEquals("Wireless debugging is on.", warnings.single())
     }
 
     @Test
@@ -24,7 +23,7 @@ class AdbStatusTest {
         for (keepOff in listOf(true, false)) {
             val warnings = AdbStatus(0, 0, true).warnings(keepSystemAdbOff = keepOff)
             assertEquals(1, warnings.size)
-            assertTrue(warnings.single().contains("127.0.0.1:5555"))
+            assertEquals("Port 5555 is open: the system adb is listening.", warnings.single())
         }
     }
 
@@ -32,7 +31,10 @@ class AdbStatusTest {
     fun warnsWhenKeepOffDoesNotHoldAdbEnabledDown() {
         val warnings = AdbStatus(1, 0, false).warnings(keepSystemAdbOff = true)
         assertEquals(1, warnings.size)
-        assertTrue(warnings.single().contains("adb_enabled=1"))
+        assertEquals(
+            "The system adb is still on although \"Keep system adb off\" is enabled.",
+            warnings.single(),
+        )
     }
 
     @Test

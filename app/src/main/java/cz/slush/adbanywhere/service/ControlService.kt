@@ -262,7 +262,7 @@ class ControlService : Service() {
                         needsPairing()
                     } else {
                         fail(
-                            "Android's wireless debugging is not reachable and the daemon is down. " +
+                            "Android's wireless debugging is not reachable and the custom adb is down. " +
                                 "Connect to Wi-Fi once, or open Settings → Developer options → " +
                                 "Wireless debugging and try again.",
                         )
@@ -272,7 +272,7 @@ class ControlService : Service() {
                 step(
                     0,
                     StepStatus.Done,
-                    if (daemonAlive) "Daemon is already reachable" else "Connected with the app key",
+                    if (daemonAlive) "Custom adb is already reachable" else "Connected with the app key",
                 )
                 if (!daemonAlive && !system.grantSelfPermission()) {
                     fail(
@@ -282,7 +282,7 @@ class ControlService : Service() {
                     return@withLock
                 }
 
-                step(1, StepStatus.Active, "Deploying the patched adbd")
+                step(1, StepStatus.Active, "Deploying the custom adb")
                 val shell = if (daemonAlive) {
                     withContext(Dispatchers.IO) { daemonShell() }
                 } else {
@@ -316,7 +316,7 @@ class ControlService : Service() {
                         prefs.vpnPort,
                     )
                 }
-                step(1, StepStatus.Done, "Daemon running")
+                step(1, StepStatus.Done, "Custom adb running")
 
                 step(2, StepStatus.Active, "Verifying loopback and VPN listeners")
                 verifyDaemon(vpnIp)
@@ -338,7 +338,7 @@ class ControlService : Service() {
                         endpoint = Endpoint.display(vpnIp, prefs.vpnPort),
                         vpnIp = vpnIp,
                         message = if (vpnIp == null) {
-                            "VPN is down. Only the app can reach the daemon; connect the VPN to expose it."
+                            "VPN is down. Only the app can reach the custom adb; connect the VPN to expose it."
                         } else {
                             "Ready for developer machines."
                         },
@@ -396,7 +396,7 @@ class ControlService : Service() {
             }
             Log.i("AdbAnywhere", "setup cleanup stopped=$stopped listening=$daemonListening")
             if (daemonListening) {
-                "Cleanup incomplete: the patched adbd still listens on " +
+                "Cleanup incomplete: the custom adb still listens on " +
                     "127.0.0.1:${prefs.loopbackPort}. Turn wireless debugging off in " +
                     "Settings, or reboot."
             } else {
@@ -458,14 +458,14 @@ class ControlService : Service() {
         val loopback = AdbManager(this@ControlService, keys)
         if (!loopback.connectTo("127.0.0.1", prefs.loopbackPort)) {
             throw IOException(
-                "The daemon did not accept the app key on 127.0.0.1:${prefs.loopbackPort}.",
+                "The custom adb did not accept the app key on 127.0.0.1:${prefs.loopbackPort}.",
             )
         }
         try {
             val shell = Shell(loopback)
             val identity = shell.exec("id")
             if (!identity.stdout.contains("uid=2000") && !identity.stdout.contains("uid=0")) {
-                throw IOException("The daemon returned an unexpected identity: ${identity.stdout.trim()}")
+                throw IOException("The custom adb returned an unexpected identity: ${identity.stdout.trim()}")
             }
         } finally {
             loopback.disconnectQuietly()
@@ -474,12 +474,12 @@ class ControlService : Service() {
         if (vpnIp != null) {
             val vpn = AdbManager(this@ControlService, keys)
             if (!vpn.connectTo(vpnIp, prefs.vpnPort)) {
-                throw IOException("The daemon did not bind $vpnIp:${prefs.vpnPort}.")
+                throw IOException("The custom adb did not bind $vpnIp:${prefs.vpnPort}.")
             }
             try {
                 val identity = Shell(vpn).exec("id")
                 if (!identity.stdout.contains("uid=")) {
-                    throw IOException("The daemon on $vpnIp did not answer.")
+                    throw IOException("The custom adb on $vpnIp did not answer.")
                 }
             } finally {
                 vpn.disconnectQuietly()
@@ -515,10 +515,10 @@ class ControlService : Service() {
                 prefs.originalAdbEnabled = SystemSettings.adbEnabled(context).toString()
             }
             if (!SystemSettings.setAdbEnabled(context, false)) {
-                throw IOException("Could not turn the system adbd off. Check WRITE_SECURE_SETTINGS.")
+                throw IOException("Could not turn the system adb off. Check WRITE_SECURE_SETTINGS.")
             }
             if (SystemSettings.adbEnabled(context) != 0) {
-                throw IOException("ADB_ENABLED=0 did not take effect. No random-port redirect is attempted.")
+                throw IOException("The system adb could not be turned off. No random-port redirect is attempted.")
             }
         } else {
             if (prefs.originalAdbEnabled == "1" && SystemSettings.adbEnabled(context) != 1) {
@@ -541,7 +541,7 @@ class ControlService : Service() {
     private suspend fun daemonShell(): Shell = withContext(Dispatchers.IO) {
         val manager = AdbManager(this@ControlService, keys)
         if (!manager.connectTo("127.0.0.1", prefs.loopbackPort)) {
-            throw IOException("The daemon is not reachable on 127.0.0.1:${prefs.loopbackPort}.")
+            throw IOException("The custom adb is not reachable on 127.0.0.1:${prefs.loopbackPort}.")
         }
         Shell(manager)
     }
@@ -572,7 +572,7 @@ class ControlService : Service() {
             }.getOrDefault(false)
         }
         if (!alive) {
-            ControlBus.update { it.copy(message = "The daemon is down. Restarting…") }
+            ControlBus.update { it.copy(message = "The custom adb is down. Restarting…") }
             // setup() replaces the watchdog loop; run it outside this loop job so
             // cancelling the old loop cannot cancel the setup that replaces it.
             scope.launch { setup() }
@@ -613,7 +613,7 @@ class ControlService : Service() {
                     }.getOrDefault(false)
                 }
                 if (still) {
-                    fail("ADB_ENABLED=0 did not stop the system adbd. No random-port redirect is attempted.")
+                    fail("The system adb could not be stopped. No random-port redirect is attempted.")
                 }
             }
         }
@@ -698,7 +698,7 @@ class ControlService : Service() {
                         endpoint = "",
                         error = "",
                         message = if (stillListening) {
-                            "Stopped, but the daemon still listens on " +
+                            "Stopped, but the custom adb still listens on " +
                                 "127.0.0.1:${prefs.loopbackPort}. Turn wireless debugging off " +
                                 "in Settings, or reboot."
                         } else {
@@ -754,7 +754,7 @@ class ControlService : Service() {
 
     private fun initialSteps() = listOf(
         SetupStep("Connect to Android's wireless debugging"),
-        SetupStep("Deploy the patched adbd"),
+        SetupStep("Deploy the custom adb"),
         SetupStep("Verify loopback and VPN listeners"),
         SetupStep("Turn system wireless debugging off"),
     )

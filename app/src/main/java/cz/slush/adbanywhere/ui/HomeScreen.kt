@@ -85,8 +85,8 @@ fun HomeScreen(
         item {
             SectionCard("How it works") {
                 Text(
-                    "Android's wireless debugging is only used once, to deploy the patched daemon. " +
-                        "After that the app keeps it off and the daemon binds loopback plus your VPN address.",
+                    "Android's wireless debugging is only used once, to deploy the custom adb. " +
+                        "After that the app keeps it off and the custom adb binds loopback plus your VPN address.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -296,8 +296,8 @@ private fun SecurityRow(status: AdbStatus?, keepSystemAdbOff: Boolean) {
             )
             Text(
                 when {
-                    status == null -> "Run setup to read adb_enabled and the 5555 probe."
-                    off -> "The patched daemon is the only ADB endpoint."
+                    status == null -> "Run setup to read the system adb state."
+                    off -> "The custom adb is the only ADB endpoint."
                     else -> "Open Settings to fix it."
                 },
                 style = MaterialTheme.typography.bodySmall,
@@ -335,10 +335,10 @@ fun phaseTitle(phase: Phase): String = when (phase) {
 }
 
 fun phaseSubtitle(phase: Phase): String = when (phase) {
-    Phase.Running -> "The daemon is listening on the VPN address."
+    Phase.Running -> "The custom adb is listening on the VPN address."
     Phase.NeedsPairing -> "Use Android's wireless debugging once to authorize this app."
     Phase.Pairing -> "Keep the pairing dialog open."
-    Phase.Deploying -> "Deploying and verifying the daemon."
+    Phase.Deploying -> "Deploying and verifying the custom adb."
     Phase.Error -> "Fix the problem below and try again."
     Phase.Stopped -> "Start ADB Anywhere when you need it."
     Phase.Idle -> "Tap Set up to start."
