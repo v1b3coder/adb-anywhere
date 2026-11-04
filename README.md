@@ -92,12 +92,17 @@ submodule. If the clone is absent, the committed binaries are used.
 
 ## Release
 
-Pushing a `vMAJOR.MINOR[.PATCH]` tag runs the release workflow: it runs the JVM
-tests, builds the release APK, signs it with the project key, and publishes it on
-the GitHub release page. `versionName` and `versionCode` come from the tag
-(`versionCode = major*10000 + minor*100 + patch`), so no version bump commit is
-needed. A manual run builds and uploads the APK as a workflow artifact without
-publishing.
+Pushing a `vMAJOR.MINOR[.PATCH]` tag to the `github` remote runs the release
+workflow: it runs the JVM tests, builds the release APK, signs it with the project
+key, and publishes it on the GitHub release page. `versionName` and `versionCode`
+come from the tag (`versionCode = major*10000 + minor*100 + patch`), so no version
+bump commit is needed. A manual run builds and uploads the APK as a workflow
+artifact without publishing.
+
+```sh
+git tag v0.1.0
+git push github v0.1.0   # origin (Gitea) does not run this workflow
+```
 
 Local signed release builds read `signing/keystore.properties`; the keystore and the
 password are not in the repository. Without that file, `assembleRelease` produces an
