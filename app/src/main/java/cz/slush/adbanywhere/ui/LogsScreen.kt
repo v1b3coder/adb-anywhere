@@ -3,6 +3,7 @@
  */
 package cz.slush.adbanywhere.ui
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -54,7 +55,9 @@ fun LogsScreen(
                 logs.ifBlank { "No log lines yet. Refresh after setup." },
                 modifier = Modifier
                     .fillMaxSize()
-                    .verticalScroll(rememberScrollState()),
+                    .verticalScroll(rememberScrollState())
+                    .horizontalScroll(rememberScrollState()),
+                softWrap = false,
                 fontFamily = FontFamily.Monospace,
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
