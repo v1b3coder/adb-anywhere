@@ -16,6 +16,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.RadioButtonUnchecked
 import androidx.compose.material3.Card
@@ -225,7 +226,7 @@ fun KeyCard(key: DeveloperKey, onRemove: () -> Unit) {
             }
             IconButton(onClick = onRemove) {
                 Icon(
-                    Icons.Rounded.ErrorOutline,
+                    Icons.Rounded.Delete,
                     contentDescription = "Remove ${key.label}",
                     tint = MaterialTheme.colorScheme.error,
                 )
