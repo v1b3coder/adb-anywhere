@@ -179,6 +179,7 @@ fun AppRoot(viewModel: AppViewModel) {
                 Screen.Keys -> KeysScreen(
                     keys = keys,
                     onRemove = viewModel::removeDeveloperKey,
+                    onRename = viewModel::renameDeveloperKey,
                     onAdd = viewModel::addDeveloperKey,
                 )
                 Screen.Logs -> LogsScreen(

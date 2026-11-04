@@ -52,10 +52,12 @@ import cz.slush.adbanywhere.data.DeveloperKey
 fun KeysScreen(
     keys: List<DeveloperKey>,
     onRemove: (String) -> Unit,
+    onRename: (String, String) -> Unit,
     onAdd: (String, String) -> String?,
 ) {
     var addOpen by remember { mutableStateOf(false) }
     var removeTarget by remember { mutableStateOf<DeveloperKey?>(null) }
+    var renameTarget by remember { mutableStateOf<DeveloperKey?>(null) }
 
     Box(Modifier.fillMaxSize()) {
         if (keys.isEmpty()) {
@@ -90,7 +92,11 @@ fun KeysScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 items(keys, key = { it.fingerprint }) { key ->
-                    KeyCard(key, onRemove = { removeTarget = key })
+                    KeyCard(
+                        key,
+                        onRename = { renameTarget = key },
+                        onRemove = { removeTarget = key },
+                    )
                 }
             }
             ExtendedFloatingActionButton(
@@ -110,6 +116,17 @@ fun KeysScreen(
                 val error = onAdd(text, label)
                 if (error == null) addOpen = false
                 error
+            },
+        )
+    }
+
+    renameTarget?.let { target ->
+        RenameKeyDialog(
+            current = target.label,
+            onDismiss = { renameTarget = null },
+            onSave = { label ->
+                onRename(target.fingerprint, label)
+                renameTarget = null
             },
         )
     }
@@ -135,6 +152,39 @@ fun KeysScreen(
             },
         )
     }
+}
+
+@Composable
+private fun RenameKeyDialog(
+    current: String,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit,
+) {
+    var label by remember { mutableStateOf(current) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Rename key") },
+        text = {
+            OutlinedTextField(
+                value = label,
+                onValueChange = { label = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Label") },
+                singleLine = true,
+                placeholder = { Text("My laptop") },
+            )
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onSave(label.trim()) },
+                enabled = label.isNotBlank(),
+            ) { Text("Save") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
 }
 
 @Composable

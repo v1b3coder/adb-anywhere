@@ -17,6 +17,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Delete
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.RadioButtonUnchecked
 import androidx.compose.material3.Card
@@ -198,7 +199,7 @@ fun RoleChip(role: String) {
 }
 
 @Composable
-fun KeyCard(key: DeveloperKey, onRemove: () -> Unit) {
+fun KeyCard(key: DeveloperKey, onRename: () -> Unit, onRemove: () -> Unit) {
     Card(
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
@@ -223,6 +224,13 @@ fun KeyCard(key: DeveloperKey, onRemove: () -> Unit) {
                     RoleChip(key.role)
                 }
                 FingerprintText(key.fingerprint)
+            }
+            IconButton(onClick = onRename) {
+                Icon(
+                    Icons.Rounded.Edit,
+                    contentDescription = "Rename ${key.label}",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             IconButton(onClick = onRemove) {
                 Icon(

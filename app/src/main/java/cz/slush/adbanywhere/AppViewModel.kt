@@ -81,6 +81,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         return null
     }
 
+    /** Renames a paired machine. The label is only a comment in the key file. */
+    fun renameDeveloperKey(fingerprint: String, label: String) {
+        val clean = DeveloperKey.sanitize(label)
+        val updated = _keys.value.map {
+            if (it.fingerprint == fingerprint) it.copy(label = clean) else it
+        }
+        prefs.developerKeysJson = DeveloperKey.store(updated)
+        _keys.value = updated
+        applyIfRunning(ControlService.ACTION_APPLY_KEYS)
+    }
+
     fun removeDeveloperKey(fingerprint: String) {
         val updated = _keys.value.filterNot { it.fingerprint == fingerprint }
         prefs.developerKeysJson = DeveloperKey.store(updated)

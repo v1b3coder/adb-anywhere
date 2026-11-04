@@ -96,4 +96,15 @@ class ControlDataTest {
         assertTrue(keys.contains("my laptop"))
     }
 
+    @Test
+    fun renameKeepsTheStoredLabelAndTheKeyFileComment() {
+        val app = key()
+        val dev = key()
+        val stored = DeveloperKey.store(listOf(DeveloperKey(dev, "laptop")))
+        val renamed = DeveloperKey.list(stored).map { it.copy(label = DeveloperKey.sanitize("  new\nlaptop ")) }
+        assertEquals("new laptop", renamed.single().label)
+        assertEquals("new laptop", DeveloperKey.list(DeveloperKey.store(renamed)).single().label)
+        assertTrue(KeyFiles.keysFile(app, renamed).trim().lines().last().endsWith(" new laptop"))
+    }
+
 }
