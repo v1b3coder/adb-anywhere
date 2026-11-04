@@ -1,6 +1,6 @@
 # Builds the vendored adbd fork and publishes the per-ABI binaries as an
 # artifact. A reusable workflow: ci.yml and release.yml both call it, so the gate and
-# the release ship the same daemon. The cache keyed on the adbd tree hash decides
+# the release ship the same daemon. The cache keyed on the build inputs decides
 # whether it actually recompiles, which is a sharper filter than a path trigger.
 name: adbd
 
