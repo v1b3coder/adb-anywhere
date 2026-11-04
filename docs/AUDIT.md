@@ -709,6 +709,12 @@ permission as well.
 
 ### P2-14 — `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` is a Play policy issue
 
+**Status: won't fix — distribution is sideload-only (owner decision).** The app is not
+distributed through Play, so the content-policy rule does not apply. The permission and
+`ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` stay: the daemon must survive Doze to keep
+the listener reachable, and the direct request is the shortest path to that on a device the
+user controls. Revisit only if the app is ever submitted to Play.
+
 Lint warns that `ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` violates the Play Store
 content policy for acceptable use cases. For sideload-only distribution this is fine; for Play
 it is a blocker.
@@ -986,8 +992,8 @@ Gaps:
 
 ## 14. Open questions for the owner
 
-1. **Distribution**: sideload-only or Play Store? This changes the weight of
-   P0-8, P0-9, P2-14, and the signing/CI findings.
+1. **Distribution**: resolved — sideload-only, not Play. P2-14 is therefore a won't fix,
+   and the signing/CI findings carry their own weight (P0-8 and P0-9 are fixed).
 2. **Daemon**: is the independent daemon the intended implementation, or is the
    design's AOSP patch set still the target? If the former, DESIGN.md must be
    rewritten; if the latter, the daemon is a rewrite, not a patch.
