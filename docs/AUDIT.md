@@ -22,7 +22,7 @@ production-ready until the P0 items below are fixed and the design is reconciled
 | Security | 5/10 | Key auth and loopback are good; failure paths can leave the system listener on; revocation is not live; the boot receiver is exported. |
 | Reliability | 4/10 | No backoff, no log rotation, daemon DoS, no USB state, no exact alarm. |
 | Test coverage | 5/10 | Good daemon tests; the wireless-debugging guard now has app unit tests; still missing watchdog/backoff, two-listener/two-key integration, CI, and device matrix. |
-| Release engineering | 2/10 | Unsigned release, lint fails, no CI, no versioning. |
+| Release engineering | 5/10 | Signed tag releases with versioning and CI; lint still fails, no device matrix or update channel. |
 | Design conformance | 4/10 | The daemon is a rewrite, not the design's patched AOSP adbd; several flows are missing. |
 | Documentation | 5/10 | Phone evidence is good; DESIGN.md and E2E.md are stale; the license is inconsistent. |
 
@@ -283,16 +283,14 @@ Fix: `android:exported="false"` and/or check
 
 ### P0-8 — Release artifact is unsigned
 
-`./gradlew :app:assembleRelease` produces
-`app/build/outputs/apk/release/app-release-unsigned.apk`. There is no
-`signingConfig` in `app/build.gradle.kts`, no `keystore.properties`, and no release
-signing setup. A release APK cannot be installed or distributed as-is.
-
-Impact: no production release path. This is a P0 if the app is to be distributed; it
-is at least P1 for a sideload-only project.
-
-Fix: add a release signing config backed by a protected keystore/CI secret, or document
-that releases are signed externally.
+**Status: fixed in `ec83728`.** `app/build.gradle.kts` has a `release` signing config
+that reads `signing/keystore.properties` locally and `RELEASE_*` environment variables
+in CI; the key is not in the repository. `.github/workflows/release.yml` runs the JVM
+tests, builds and signs the APK, verifies the certificate against the
+`RELEASE_CERT_SHA256` repository variable and the version against the tag, and
+publishes `adb-anywhere-<version>.apk` on the release page. Without signing inputs,
+`assembleRelease` still produces an unsigned APK. Debug builds keep the standard
+Android debug key.
 
 ### P0-9 — The lint quality gate fails
 
@@ -521,6 +519,11 @@ main thread.
 
 ### P1-17 — No CI and no device matrix
 
+**Status: partially fixed in `ec83728`.** `.github/workflows/release.yml` runs the JVM
+tests on every release tag and on manual runs; it does not run on pushes or pull
+requests, and it does not run `lint` or `assembleDebug`. The device matrix is still
+absent.
+
 DESIGN.md §10 says CI runs `./gradlew test assembleDebug` and no device tests; the device
 matrix is Pixel/Samsung/OnePlus, Tailscale/WireGuard, reboot, Wi-Fi↔cellular, USB
 attach/detach, and Doze. The repository has no CI workflow, and the only documented device
@@ -536,8 +539,9 @@ and a revocation test.
 
 ### P1-18 — The release build has no versioning/signing/CI path
 
-`versionCode = 1`, `versionName = "0.1.0"`, no signing config, no release notes, no
-update mechanism. This is acceptable for a prototype but not for production.
+**Status: partially fixed in `ec83728`.** Signing, CI and tag-derived versioning are
+in place (P0-8, fixed in `ec83728`). Release notes come from
+`generate_release_notes`. There is still no update mechanism and no rollback plan.
 
 Fix: define versioning, signing, and a release process.
 
@@ -866,12 +870,15 @@ Gaps:
 
 ## 11. Release engineering
 
-- `assembleRelease` produces `app-release-unsigned.apk`; no signing config.
-- `versionCode 1`, `versionName 0.1.0`; no versioning policy.
+- `assembleRelease` is signed when `signing/keystore.properties` or the CI secrets
+  are present (P0-8, fixed in `ec83728`).
+- `versionName`/`versionCode` come from the release tag; a plain checkout keeps
+  `0.1.0`/`1` (P1-18).
 - `isMinifyEnabled = false`; no shrinking/obfuscation. For a small app this is
   acceptable, but it means the debug code paths remain in the APK (they are
   guarded by `BuildConfig.DEBUG` and the manifest placeholder).
-- No CI, no release notes, no update channel, no rollback plan.
+- Tag workflows run the tests, build, sign and publish a release (P1-17 partially
+  fixed in `ec83728`); no update channel and no rollback plan.
 - `syncAdbd` depends on an external checkout; the committed binaries are used if
   it is absent. This is a reproducibility risk unless the committed binaries are
   treated as the source of truth and verified.
@@ -913,7 +920,7 @@ Gaps:
 6. Add explicit ADB state/warning fields to `ControlState`; stop inferring
    "off" from the phase; keep the 5555 warning (P0-6, P2-6).
 7. Set `BootReceiver` `exported=false` and check the action (P0-7).
-8. Add release signing or document external signing (P0-8).
+8. Add release signing or document external signing (P0-8, fixed in `ec83728`).
 9. Fix the lint errors and add lint to CI (P0-9).
 
 ### Phase B — P1 before release
