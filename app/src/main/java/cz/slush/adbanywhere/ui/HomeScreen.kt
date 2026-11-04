@@ -179,6 +179,7 @@ private fun StatusHero(
                                 Phase.Running -> Icons.Rounded.CheckCircle
                                 Phase.Error -> Icons.Rounded.ErrorOutline
                                 Phase.NeedsPairing -> Icons.Outlined.Link
+                                Phase.Stopped -> Icons.Rounded.Stop
                                 else -> Icons.Rounded.PlayArrow
                             },
                             contentDescription = null,
