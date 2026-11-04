@@ -40,12 +40,18 @@ jobs:
           fi
           echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
 
-      # A git tree hash is the cache key: it covers exactly the committed
-      # subtree and, unlike hashFiles, does not follow the broken symlinks that
-      # the vendored trees carry.
+      # The cache key covers the build inputs, not the whole subtree: a README
+      # or licence edit must not trigger a recompile. A git tree hash is used
+      # because hashFiles follows the broken symlinks the vendor trees carry.
       - name: Compute adbd cache key
         id: cachekey
-        run: echo "key=adbd-${RUNNER_OS}-ndk${ANDROID_NDK_VERSION}-$(git rev-parse HEAD:adbd)" >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          tree=$(git rev-parse \
+            HEAD:adbd/CMakeLists.txt HEAD:adbd/build.sh HEAD:adbd/patches \
+            HEAD:adbd/src HEAD:adbd/stubs HEAD:adbd/tests HEAD:adbd/vendor \
+            | sha256sum | cut -d' ' -f1)
+          echo "key=adbd-${RUNNER_OS}-ndk${ANDROID_NDK_VERSION}-${tree}" >> "$GITHUB_OUTPUT"
 
       - name: Restore adbd binaries
         id: cache
