@@ -147,6 +147,9 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           files: dist/adb-anywhere-*.apk
+          # 0.x previews are experimental; drop this line for 1.0.0.
+          body: |
+            **Experimental.** This is a preview release; the app is not production-ready yet.
           generate_release_notes: true
           fail_on_unmatched_files: true
         env:
