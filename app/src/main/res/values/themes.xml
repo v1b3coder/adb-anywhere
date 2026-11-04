@@ -1,7 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!--
+      Launch window only. Compose draws every screen, so this theme only has to
+      carry the window from the system splash screen to the first Compose frame.
+      The splash screen and the window behind it share one opaque brand color, so a
+      cold start never shows a transparent window. The splash icon defaults to the
+      adaptive launcher icon; the UI theme is Compose Material 3 in Theme.kt.
+    -->
     <style name="Theme.AdbAnywhere" parent="android:Theme.Material.NoActionBar">
-        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowBackground">@color/ic_launcher_background</item>
+        <item name="android:windowSplashScreenBackground">@color/ic_launcher_background</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
     </style>
