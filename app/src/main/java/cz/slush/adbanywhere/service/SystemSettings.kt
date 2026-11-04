@@ -32,6 +32,22 @@ object SystemSettings {
         )
     }.getOrDefault(false)
 
+    /**
+     * DESIGN §7: 0 removes the framework's wireless-debugging timeout, so the
+     * bootstrap path survives while the app is in the background. The key is
+     * @hide, so it is addressed by name like adb_wifi_enabled; the read-back
+     * rejects a write an OEM ignored.
+     */
+    fun ensureNoAdbConnectionTimeout(context: Context): Boolean {
+        val resolver = context.contentResolver
+        fun current(): Int =
+            runCatching { Settings.Global.getInt(resolver, ADB_ALLOWED_CONNECTION_TIME, -1) }
+                .getOrDefault(-1)
+        if (current() == 0) return true
+        runCatching { Settings.Global.putInt(resolver, ADB_ALLOWED_CONNECTION_TIME, 0) }
+        return current() == 0
+    }
+
     /** D11: the state the Settings screen reports, read from the platform. */
     fun status(context: Context): AdbStatus = AdbStatus(
         adbEnabled = adbEnabled(context),
@@ -46,6 +62,7 @@ object SystemSettings {
     }.getOrDefault(false)
 
     private const val PROBE_TIMEOUT_MS = 300
+    private const val ADB_ALLOWED_CONNECTION_TIME = "adb_allowed_connection_time"
 
     fun isWifiConnected(context: Context): Boolean {
         val manager = context.getSystemService(ConnectivityManager::class.java) ?: return false

@@ -245,6 +245,11 @@ class ControlService : Service() {
                     if (SystemSettings.isWifiConnected(this)) {
                         SystemSettings.setAdbWifiEnabled(this, true)
                     }
+                    // The framework disables wireless debugging on its timeout;
+                    // 0 keeps the bootstrap path open after the app backgrounds.
+                    if (!SystemSettings.ensureNoAdbConnectionTimeout(this)) {
+                        Log.i("AdbAnywhere", "adb_allowed_connection_time=0 was not accepted")
+                    }
                     delay(900)
                 }
                 val systemAlive = if (daemonAlive) false
@@ -582,6 +587,9 @@ class ControlService : Service() {
             fail(e.message ?: "System wireless debugging is still on.")
             scheduleWatchdog()
             return
+        }
+        if (!SystemSettings.ensureNoAdbConnectionTimeout(this)) {
+            Log.i("AdbAnywhere", "adb_allowed_connection_time=0 was not accepted")
         }
         if (prefs.keepSystemAdbOff) {
             val open = withContext(Dispatchers.IO) {
