@@ -1,6 +1,6 @@
 --- a/transport.cpp
 +++ b/transport.cpp
-@@ -1159,27 +1159,20 @@
+@@ -1159,6 +1159,9 @@
          // (http://b/24370690)
  
          // clang-format off
@@ -10,10 +10,10 @@
          FeatureSet result {
              kFeatureShell2,
              kFeatureCmd,
-             kFeatureStat2,
+@@ -1166,20 +1169,12 @@
              kFeatureLs2,
              kFeatureFixedPushMkdir,
--            kFeatureApex,
+             kFeatureApex,
 -            kFeatureAbb,
              kFeatureFixedPushSymlinkTimestamp,
              kFeatureAbbExec,
@@ -26,7 +26,7 @@
              kFeatureSendRecv2DryRunSend,
 -            kFeatureOpenscreenMdns,
 -            kFeatureDeviceTrackerProtoFormat,
--            kFeatureDevRaw,
+             kFeatureDevRaw,
 -            kFeatureAppInfo,
              kFeatureServerStatus,
          };

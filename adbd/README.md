@@ -100,7 +100,7 @@ These are the patches, all in `patches/`:
 | `07-adb.cpp` | Rejects `A_STLS` on the daemon side instead of starting a TLS handshake. |
 | `08-adb_trace.cpp` | Substitutes a tag for `LOG()` without `LOG_TAG`, instead of passing null to the logd splitter. |
 | `09-socket_spec.cpp` | Binds any explicit address, loopback or VPN; AOSP only accepts `localhost`, `::1` or every interface. |
-| `10-transport.cpp` | Advertises only the features the daemon implements. Advertising `abb`/`abb_exec`/`sendrecv_v2*` without the code made `adb install` and large `adb push` fail with a closed service or `remote decompress failed`. |
+| `10-transport.cpp` | Advertises only the features the daemon implements: `apex`, `abb_exec`, `sendrecv_v2_zstd` and `devraw` stay, `abb`, Brotli/LZ4, mDNS, `track-app`, `remount_shell`, `app_info` and `devicetracker_proto_format` go. Advertising the missing ones made `adb install` and large `adb push` fail with a closed service or `remote decompress failed`. |
 
 Not implemented: USB, vsock, TLS, pairing, mDNS advertisement, `jdwp:`,
 `track-jdwp`, `track-app`, `abb:` (the shell-protocol variant), `framebuffer:`

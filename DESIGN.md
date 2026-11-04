@@ -129,7 +129,7 @@ a copy, never a merge.
 | `daemon/services.cpp`: reject `abb:`, `jdwp:`, `root:`, `remount:`, `reboot:`, `usb:`, `tcpip:` and the test socket services | The patched adbd must not touch the system adbd or reboot |
 | `transport.cpp`, `adb.cpp`, `adb_auth.h`: no TLS handshake | Plain ADB over the VPN |
 | `compression_utils.h`: keep Zstd, stub Brotli/LZ4 | Compressed `adb push`/`adb pull` without vendoring all three codecs |
-| `transport.cpp`: advertise only the implemented features | `abb_exec` and `sendrecv_v2_zstd` are advertised; `abb`, Brotli, LZ4, mDNS, `track-app`, `remount_shell` and `apex` are not |
+| `transport.cpp`: advertise only the implemented features | `apex`, `abb_exec`, `sendrecv_v2_zstd` and `devraw` are advertised; `abb`, Brotli, LZ4, mDNS, `track-app`, `remount_shell`, `app_info` and `devicetracker_proto_format` are not |
 | `adb_trace.cpp`, `socket_spec.cpp`: null log tag, explicit-address bind | The standalone daemon's two small robustness fixes |
 
 Multi-listener is not a large patch. `setup_adb` already loops over the address
