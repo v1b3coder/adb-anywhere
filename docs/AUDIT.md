@@ -782,7 +782,13 @@ Material 3 in `Theme.kt`.
   reproducible/CI build unless the committed binaries are the source of truth and are
   verified.
 - `Prefs` uses `SharedPreferences.apply()` per field; acceptable, but a single transaction
-  would be cleaner.
+  would be cleaner. **Status: won't fix.** `apply()` updates the in-memory map synchronously
+  before it returns, and every reader (service and UI) is in the app's single process — the
+  service declares no `android:process` — so a partial read is not observable. The two
+  multi-field writers, `setPorts` and `setDebugBootstrap`, complete both writes before they
+  send `ACTION_APPLY_SETTINGS`, which is the only point where the service re-reads them. A
+  `savePorts()`/`saveKeys()` API would add surface and change no behaviour; the second
+  `apply()` costs one small extra XML write on a rare settings change.
 - `Theme.kt` has `SDK_INT >= 31` checks that are always true for `minSdk 31`.
   **Status: fixed in `4a5b8f5`.** `minSdk` is still 31, so the checks were dead and the
   hardcoded fallback palettes were unreachable; the theme now uses the dynamic light/dark
