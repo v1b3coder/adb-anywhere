@@ -9,6 +9,9 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.provider.Settings
+import cz.slush.adbanywhere.data.AdbStatus
+import java.net.InetSocketAddress
+import java.net.Socket
 
 object SystemSettings {
     fun adbEnabled(context: Context): Int =
@@ -28,6 +31,21 @@ object SystemSettings {
             if (enabled) 1 else 0,
         )
     }.getOrDefault(false)
+
+    /** D11: the state the Settings screen reports, read from the platform. */
+    fun status(context: Context): AdbStatus = AdbStatus(
+        adbEnabled = adbEnabled(context),
+        adbWifiEnabled = adbWifiEnabled(context),
+        port5555Open = isLocalPortOpen(5555),
+    )
+
+    /** A connect is enough: adbd listens on 5555 and never answers a probe. */
+    fun isLocalPortOpen(port: Int): Boolean = runCatching {
+        Socket().use { it.connect(InetSocketAddress("127.0.0.1", port), PROBE_TIMEOUT_MS) }
+        true
+    }.getOrDefault(false)
+
+    private const val PROBE_TIMEOUT_MS = 300
 
     fun isWifiConnected(context: Context): Boolean {
         val manager = context.getSystemService(ConnectivityManager::class.java) ?: return false

@@ -40,8 +40,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import cz.slush.adbanywhere.data.AdbStatus
 import cz.slush.adbanywhere.data.Prefs
 import cz.slush.adbanywhere.service.ControlState
+import cz.slush.adbanywhere.service.SystemSettings
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 fun SettingsScreen(
@@ -62,6 +66,11 @@ fun SettingsScreen(
     LaunchedEffect(state.loopbackPort, state.vpnPort) {
         loopback = state.loopbackPort.toString()
         vpn = state.vpnPort.toString()
+    }
+    var status by remember { mutableStateOf<AdbStatus?>(null) }
+    var reload by remember { mutableStateOf(0) }
+    LaunchedEffect(reload, keepSystemAdbOff, state.phase) {
+        status = withContext(Dispatchers.IO) { SystemSettings.status(context) }
     }
 
     LazyColumn(
@@ -87,6 +96,50 @@ fun SettingsScreen(
                         checked = keepSystemAdbOff,
                         onCheckedChange = onToggleKeepOff,
                     )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "Current system state",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                    IconButton(onClick = { reload++ }) {
+                        Icon(Icons.Rounded.Refresh, contentDescription = "Refresh the ADB state")
+                    }
+                }
+                val current = status
+                if (current == null) {
+                    Text(
+                        "Reading the settings…",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    KeyValueRow(
+                        "adb_enabled",
+                        if (current.adbEnabled == 0) "off" else "on (${current.adbEnabled})",
+                        mono = true,
+                    )
+                    KeyValueRow(
+                        "adb_wifi_enabled",
+                        if (current.adbWifiEnabled == 0) "off" else "on (${current.adbWifiEnabled})",
+                        mono = true,
+                    )
+                    KeyValueRow(
+                        "127.0.0.1:5555",
+                        if (current.port5555Open) "open" else "closed",
+                        mono = true,
+                    )
+                    current.warnings(keepSystemAdbOff).forEach { warning ->
+                        Text(
+                            warning,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
                 }
                 Text(
                     "System wireless debugging is always turned off after the daemon is verified.",
