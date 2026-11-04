@@ -25,7 +25,6 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
@@ -162,22 +161,6 @@ fun FingerprintText(fingerprint: String, modifier: Modifier = Modifier) {
 }
 
 @Composable
-fun RoleChip(role: String) {
-    val color = if (role == "app") {
-        MaterialTheme.colorScheme.primaryContainer
-    } else {
-        MaterialTheme.colorScheme.secondaryContainer
-    }
-    Surface(color = color, shape = RoundedCornerShape(50)) {
-        Text(
-            role,
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-            style = MaterialTheme.typography.labelSmall,
-        )
-    }
-}
-
-@Composable
 fun KeyCard(key: DeveloperKey, onRename: () -> Unit, onRemove: () -> Unit) {
     Card(
         shape = RoundedCornerShape(20.dp),
@@ -189,19 +172,13 @@ fun KeyCard(key: DeveloperKey, onRename: () -> Unit, onRemove: () -> Unit) {
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Text(
-                        key.label,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    RoleChip(key.role)
-                }
+                Text(
+                    key.label,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
                 FingerprintText(key.fingerprint)
             }
             IconButton(onClick = onRename) {
