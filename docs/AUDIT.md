@@ -786,7 +786,7 @@ Fix: use a Compose-compatible splash/theme and clean up unused resources.
 | §7 First run | **Met** | Implemented end-to-end (modulo P0-2 cleanup not re-verified on a device). |
 | §7 Port discovery: TLS primary, mDNS fallback, manual port, `tcpip:<port>` | **Partial** | TLS/mDNS/manual implemented; `tcpip:<port>` not (P1-12). |
 | §7 Boot: boot receiver, re-assert `adb_wifi_enabled` and `adb_allowed_connection_time=0`, probe, deploy, harden, manual recovery | **Partial** | Boot receiver and probe implemented; `adb_allowed_connection_time=0` missing (P1-2); `persist.adb.tcp.port` missing (P1-3). |
-| §7 Network change: VPN restart, VPN down, TLS switch | **Partial / contradicts D5** | VPN restart and VPN down implemented; TLS switch not implemented (P1-13). |
+| §7 Network change: VPN restart, VPN down, TLS switch | **Partial / contradicts D5** | VPN restart and VPN down implemented, coalesced, and re-checked by the watchdog; TLS switch not implemented (P1-13). |
 | §7 USB: `ACTION_USB_STATE`, warning, `ADB_ENABLED=0` | **Not met** | No USB receiver; warning lost (P1-4, P0-6). |
 | §8 Security: VPN ACL outer, key file/policy inner, loopback app channel, system adbd off, residual warning, pairing, keys, revocation, no root | **Partial** | Key auth and loopback are good; residual warning lost; revocation now restarts the daemon and closes live sessions (P0-3, fixed in `822fc50`); system adbd is re-asserted and verified by the watchdog (P0-5, fixed in `17277a2`); the UI still infers "off" (P0-6) and `abortSetup()` does not verify the port (P1-9). |
 | §9 Failure modes | **Partial** | Many are explicit; the 5555 warning is missing; a sticky restart or watchdog alarm resumes setup (P0-4, fixed in `284b75b`). |

@@ -113,5 +113,7 @@ unsigned APK as before. Debug builds are signed by the standard Android debug ke
 - On some OEMs, re-asserting `adb_wifi_enabled=1` does not restart the system TLS
   server on a Wi-Fi network without internet. The app reports the failure explicitly;
   enable Wireless debugging once in Settings to recover.
+- A VPN address change restarts the daemon; active ADB sessions drop and must
+  reconnect to the new address.
 - If an OEM blocks `pm grant WRITE_SECURE_SETTINGS`, the app shows the manual
   command and stops.

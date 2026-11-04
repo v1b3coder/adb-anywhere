@@ -48,6 +48,9 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.dropWhile
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -68,6 +71,7 @@ class ControlService : Service() {
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var defaultCallback: ConnectivityManager.NetworkCallback? = null
     private var foregroundStarted = false
+    private val networkChanges = MutableStateFlow(0)
 
     override fun onCreate() {
         super.onCreate()
@@ -95,6 +99,14 @@ class ControlService : Service() {
         scope.launch {
             ControlBus.update { it.copy(appFingerprint = keys.publicKey.fingerprint) }
         }
+        // A provider switch produces onLost and onAvailable separately. Coalesce
+        // them and give the new tunnel time to settle before touching the daemon.
+        scope.launch {
+            networkChanges.dropWhile { it == 0 }.collect {
+                delay(NETWORK_SETTLE_MS)
+                networkChanged()
+            }
+        }
         registerNetwork()
     }
 
@@ -114,7 +126,6 @@ class ControlService : Service() {
                 if (code != null) scope.launch { pair(code) }
             }
             ACTION_WATCHDOG -> if (!resumeAfterRestart()) scope.launch { watchdog() }
-            ACTION_NETWORK -> scope.launch { networkChanged() }
             ACTION_LOGS -> scope.launch { refreshLogs() }
             ACTION_NOTIFY_PAIR -> postPairingNotification()
             ACTION_SET_TLS_PORT -> {
@@ -516,7 +527,7 @@ class ControlService : Service() {
                 delay(60_000)
                 when (ControlBus.state.value.phase) {
                     Phase.Running -> watchdog()
-                    Phase.Error -> if (prefs.setupComplete) setup()
+                    Phase.Error -> if (prefs.setupComplete) scope.launch { setup() }
                     else -> Unit
                 }
             }
@@ -536,7 +547,13 @@ class ControlService : Service() {
         }
         if (!alive) {
             ControlBus.update { it.copy(message = "The daemon is down. Restarting…") }
-            setup()
+            // setup() replaces the watchdog loop; run it outside this loop job so
+            // cancelling the old loop cannot cancel the setup that replaces it.
+            scope.launch { setup() }
+            return
+        }
+        if (vpnAddressChanged()) {
+            scope.launch { setup() }
             return
         }
         // D6: every tick keeps D5, not only the first setup.
@@ -574,14 +591,27 @@ class ControlService : Service() {
         scheduleWatchdog()
     }
 
+    /**
+     * A provider switch produces onLost for the old network and onAvailable for
+     * the new one, sometimes while a setup is still running. setup() is serialized
+     * and compares the address again, so the event is not dropped here. Pairing and
+     * a stopped service do not own a daemon; the next setup reads the address.
+     */
     private suspend fun networkChanged() {
-        val state = ControlBus.state.value
-        if (state.phase != Phase.Running) return
-        val vpnIp = withContext(Dispatchers.IO) { VpnDetector.currentVpnAddress(this@ControlService) }
-        if (vpnIp != state.vpnIp) {
-            prefs.lastVpnIp = vpnIp ?: ""
-            setup()
+        when (ControlBus.state.value.phase) {
+            Phase.Idle, Phase.Stopped, Phase.NeedsPairing, Phase.Pairing -> return
+            else -> Unit
         }
+        if (vpnAddressChanged()) setup()
+    }
+
+    private suspend fun vpnAddressChanged(): Boolean {
+        val vpnIp = withContext(Dispatchers.IO) {
+            VpnDetector.currentVpnAddress(this@ControlService)
+        }
+        if (vpnIp == ControlBus.state.value.vpnIp) return false
+        prefs.lastVpnIp = vpnIp ?: ""
+        return true
     }
 
     private suspend fun refreshLogs() {
@@ -794,7 +824,7 @@ class ControlService : Service() {
     }
 
     private fun notifyNetworkChange() {
-        runCatching { startService(Intent(this, ControlService::class.java).setAction(ACTION_NETWORK)) }
+        networkChanges.update { it + 1 }
     }
 
     private fun scheduleWatchdog() {
@@ -832,13 +862,13 @@ class ControlService : Service() {
         const val ACTION_RESTART = "cz.slush.adbanywhere.RESTART"
         const val ACTION_REVOKE_KEYS = "cz.slush.adbanywhere.REVOKE_KEYS"
         const val ACTION_WATCHDOG = "cz.slush.adbanywhere.WATCHDOG"
-        const val ACTION_NETWORK = "cz.slush.adbanywhere.NETWORK"
         const val ACTION_LOGS = "cz.slush.adbanywhere.LOGS"
         const val ACTION_APPLY_KEYS = "cz.slush.adbanywhere.APPLY_KEYS"
         const val ACTION_APPLY_SETTINGS = "cz.slush.adbanywhere.APPLY_SETTINGS"
         const val ACTION_NOTIFY_PAIR = "cz.slush.adbanywhere.NOTIFY_PAIR"
         const val ACTION_SET_TLS_PORT = "cz.slush.adbanywhere.SET_TLS_PORT"
         const val ACTION_STOP = "cz.slush.adbanywhere.STOP"
+        private const val NETWORK_SETTLE_MS = 1_500L
         const val EXTRA_CODE = "code"
         const val EXTRA_PORT = "port"
         const val EXTRA_PAIR_INPUT = "pair_input"

@@ -309,12 +309,16 @@ has no TCP listener, so there is nothing to monitor or turn off.
 
 ### Network change
 
-1. `NetworkCallback` fires.
+1. `NetworkCallback` fires. The app coalesces the callback pair and waits for
+   the new tunnel to settle before it touches the daemon.
 2. If the VPN address changed, restart the patched adbd with the new address and
-   keep the loopback listener.
+   keep the loopback listener. A change that arrives during a setup is reconciled
+   by the serialized setup, not dropped.
 3. If the VPN is gone, remove the VPN listener; the app keeps the loopback
    listener.
-4. If the active transport is Wi-Fi or Ethernet and no VPN is up, the app
+4. The watchdog re-reads the VPN address, so a missed callback cannot leave the
+   daemon on a stale address.
+5. If the active transport is Wi-Fi or Ethernet and no VPN is up, the app
    switches the developer machine to the system TLS endpoint and shows it. If TLS
    is unavailable, the app shows an explicit error.
 
