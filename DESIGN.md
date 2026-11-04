@@ -268,6 +268,8 @@ has no TCP listener, so there is nothing to monitor or turn off.
 
 1. The status card has a single toggle: ▶️ starts the daemon, 🛑 stops it.
 2. The choice is stored in device-protected prefs as the user's last intent.
+   A fresh install defaults to stopped; an install that already completed setup
+   defaults to running, so an update keeps the daemon supervised.
 3. Nothing brings the daemon up without that intent: opening the app, a
    reboot, a sticky restart and the watchdog all respect it.
 4. Opening the app while it runs re-checks the daemon; it never overrides a stop.

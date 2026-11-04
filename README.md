@@ -60,8 +60,10 @@ network.
 The status card has one toggle: ▶️ starts the daemon, 🛑 stops it. The app stores
 the last choice in device-protected storage, so a stopped app stays stopped when it
 is reopened, after a reboot and after the system restarts the service. Only ▶️ starts
-it again. Stop waits for a deployment in progress to finish before it stops the daemon,
-and it reports the loopback port if the daemon is still listening.
+it again. A fresh install waits for Start; an install that already completed setup
+keeps running across an update. Stop waits for a deployment in progress to finish
+before it stops the daemon, and it reports the loopback port if the daemon is still
+listening.
 
 ## Security
 

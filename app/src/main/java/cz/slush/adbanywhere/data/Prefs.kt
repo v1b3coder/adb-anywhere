@@ -29,13 +29,15 @@ class Prefs(context: Context) {
         set(value) = prefs.edit().putBoolean("setup_complete", value).apply()
 
     /**
-     * The last explicit start or stop. Nothing brings the daemon up without it:
-     * not opening the app, not a reboot and not a sticky restart. The write is
-     * synchronous: a stop that is followed by a hard process kill must not be lost
-     * in a pending apply().
+     * The last explicit start or stop. A fresh install waits for Start; an
+     * install that already completed setup keeps running across an update, so a
+     * deploy does not leave an unsupervised daemon behind. Nothing else brings
+     * the daemon up without this intent: not opening the app, not a reboot and
+     * not a sticky restart. The write is synchronous: a stop that is followed
+     * by a hard process kill must not be lost in a pending apply().
      */
     var userWantsRunning: Boolean
-        get() = prefs.getBoolean("user_wants_running", false)
+        get() = prefs.getBoolean("user_wants_running", setupComplete)
         set(value) {
             prefs.edit().putBoolean("user_wants_running", value).commit()
         }
