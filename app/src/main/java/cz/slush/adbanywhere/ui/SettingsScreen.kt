@@ -5,7 +5,6 @@ package cz.slush.adbanywhere.ui
 
 import android.app.Activity
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -38,7 +37,6 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import cz.slush.adbanywhere.data.AdbStatus
-import cz.slush.adbanywhere.data.Prefs
 import cz.slush.adbanywhere.service.ControlState
 import cz.slush.adbanywhere.service.SystemSettings
 import kotlinx.coroutines.Dispatchers
@@ -73,79 +71,40 @@ fun SettingsScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         item {
-            SectionCard("Security") {
+            SectionCard("Keep system adb off") {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("Keep system adb off", style = MaterialTheme.typography.bodyLarge)
-                        Text(
-                            "Keeps Android's adbd stopped with ADB_ENABLED=0. The original value is " +
-                                "restored when this is turned off.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+                    Text(
+                        "Keeps Android's adbd stopped with ADB_ENABLED=0. The original value is " +
+                            "restored when this is turned off.",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                     Switch(
                         checked = keepSystemAdbOff,
                         onCheckedChange = onToggleKeepOff,
                     )
                 }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        "Current system state",
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.titleSmall,
-                    )
-                    IconButton(onClick = { reload++ }) {
-                        Icon(Icons.Rounded.Refresh, contentDescription = "Refresh the ADB state")
-                    }
-                }
-                KeyValueRow(
-                    "App channel",
-                    "127.0.0.1:${state.loopbackPort}",
-                    mono = true,
-                )
-                val current = status
-                if (current == null) {
-                    Text(
-                        "Reading the settings…",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                } else {
-                    KeyValueRow(
-                        "adb_enabled",
-                        if (current.adbEnabled == 0) "off" else "on (${current.adbEnabled})",
-                        mono = true,
-                    )
-                    KeyValueRow(
-                        "adb_wifi_enabled",
-                        if (current.adbWifiEnabled == 0) "off" else "on (${current.adbWifiEnabled})",
-                        mono = true,
-                    )
-                    KeyValueRow(
-                        "127.0.0.1:5555",
-                        if (current.port5555Open) "open" else "closed",
-                        mono = true,
-                    )
-                    current.warnings(keepSystemAdbOff).forEach { warning ->
-                        Text(
-                            warning,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.error,
-                        )
-                    }
-                }
+            }
+        }
+
+        item {
+            SectionCard("Battery") {
                 Text(
-                    "System wireless debugging is always turned off after the daemon is verified.",
-                    style = MaterialTheme.typography.bodySmall,
+                    "Allow ADB Anywhere to run in the background so the watchdog can restart " +
+                        "the daemon after Doze.",
+                    style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                OutlinedButton(
+                    onClick = { (context as? Activity)?.let(onBatteryExemption) },
+                ) {
+                    Icon(Icons.Outlined.BatterySaver, contentDescription = null)
+                    Text("Allow background", modifier = Modifier.padding(start = 8.dp))
+                }
             }
         }
 
@@ -199,19 +158,55 @@ fun SettingsScreen(
         }
 
         item {
-            SectionCard("Battery") {
+            SectionCard(
+                "Current system state",
+                trailing = {
+                    IconButton(onClick = { reload++ }) {
+                        Icon(Icons.Rounded.Refresh, contentDescription = "Refresh the ADB state")
+                    }
+                },
+            ) {
+                KeyValueRow(
+                    "App channel",
+                    "127.0.0.1:${state.loopbackPort}",
+                    mono = true,
+                )
+                val current = status
+                if (current == null) {
+                    Text(
+                        "Reading the settings…",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    KeyValueRow(
+                        "adb_enabled",
+                        if (current.adbEnabled == 0) "off" else "on (${current.adbEnabled})",
+                        mono = true,
+                    )
+                    KeyValueRow(
+                        "adb_wifi_enabled",
+                        if (current.adbWifiEnabled == 0) "off" else "on (${current.adbWifiEnabled})",
+                        mono = true,
+                    )
+                    KeyValueRow(
+                        "127.0.0.1:5555",
+                        if (current.port5555Open) "open" else "closed",
+                        mono = true,
+                    )
+                    current.warnings(keepSystemAdbOff).forEach { warning ->
+                        Text(
+                            warning,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                }
                 Text(
-                    "Allow ADB Anywhere to run in the background so the watchdog can restart " +
-                        "the daemon after Doze.",
-                    style = MaterialTheme.typography.bodyMedium,
+                    "System wireless debugging is always turned off after the daemon is verified.",
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                OutlinedButton(
-                    onClick = { (context as? Activity)?.let(onBatteryExemption) },
-                ) {
-                    Icon(Icons.Outlined.BatterySaver, contentDescription = null)
-                    Text("Allow background", modifier = Modifier.padding(start = 8.dp))
-                }
             }
         }
 
@@ -231,22 +226,6 @@ fun SettingsScreen(
                         Icon(Icons.Outlined.ContentCopy, contentDescription = "Copy app key")
                     }
                 }
-            }
-        }
-
-        item {
-            SectionCard("Troubleshooting") {
-                Text(
-                    "If setup fails, the app shows the exact failure and the last daemon log line. " +
-                        "It never redirects to a random port.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Text(
-                    "Ports ${Prefs.DEFAULT_LOOPBACK_PORT} and ${Prefs.DEFAULT_VPN_PORT} are the defaults.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
         }
     }
