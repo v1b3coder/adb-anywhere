@@ -51,7 +51,6 @@ import cz.slush.adbanywhere.service.Phase
 @Composable
 fun HomeScreen(
     state: ControlState,
-    keyCount: Int,
     onSetup: () -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
@@ -70,23 +69,6 @@ fun HomeScreen(
                 SectionCard("Setup progress") {
                     state.steps.forEach { StepRow(it) }
                 }
-            }
-        }
-        item {
-            SectionCard("Endpoint") {
-                KeyValueRow(
-                    "Developer machines",
-                    if (state.endpoint.isBlank() || state.endpoint == "not available yet") {
-                        "Connect a VPN to expose the endpoint"
-                    } else {
-                        state.endpoint
-                    },
-                    mono = true,
-                    onCopy = state.endpoint.takeIf { it.isNotBlank() && it != "not available yet" }
-                        ?.let { endpoint -> { onCopy(endpoint) } },
-                )
-                KeyValueRow("App channel", "127.0.0.1:${state.loopbackPort}", mono = true)
-                KeyValueRow("Developer keys", "$keyCount paired", mono = false)
             }
         }
         item {

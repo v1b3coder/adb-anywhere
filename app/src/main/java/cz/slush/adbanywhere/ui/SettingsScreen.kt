@@ -110,6 +110,11 @@ fun SettingsScreen(
                         Icon(Icons.Rounded.Refresh, contentDescription = "Refresh the ADB state")
                     }
                 }
+                KeyValueRow(
+                    "App channel",
+                    "127.0.0.1:${state.loopbackPort}",
+                    mono = true,
+                )
                 val current = status
                 if (current == null) {
                     Text(
