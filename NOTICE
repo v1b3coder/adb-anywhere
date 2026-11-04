@@ -2,9 +2,12 @@ adb-anywhere
 
 Copyright 2026 Marek P.
 
+The app's own code is licensed under the MIT License; see LICENSE.
+
 This product includes software derived from the Android Open Source Project
 (packages/modules/adb), Copyright (C) 2007-2025 The Android Open Source Project,
-licensed under the Apache License, Version 2.0.
+licensed under the Apache License, Version 2.0. The daemon fork, its patches and its
+license text are in adbd/ (see adbd/LICENSE).
 
 This product includes zstd, Copyright (c) Meta Platforms, Inc. and affiliates,
 licensed under the BSD License or GPLv2 (the daemon uses the BSD terms).
@@ -16,9 +19,3 @@ Apache License, Version 2.0.
 The app uses LibADB Android (Apache-2.0), Bouncy Castle (MIT-style Bouncy
 Castle License), Conscrypt (Apache-2.0), CameraX (Apache-2.0) and ZXing
 (Apache-2.0). Their license texts are available from their upstream projects.
-
-Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-this software except in compliance with the License. You may obtain a copy of the
-License at
-
-    http://www.apache.org/licenses/LICENSE-2.0

@@ -114,6 +114,12 @@ Local signed release builds read `signing/keystore.properties`; the keystore and
 password are not in the repository. Without that file, `assembleRelease` produces an
 unsigned APK as before. Debug builds are signed by the standard Android debug key.
 
+## License
+
+The app's own code is MIT; see [LICENSE](LICENSE). The daemon bundled in `adbd/`
+is derived from AOSP `adbd` and stays Apache 2.0; see [adbd/LICENSE](adbd/LICENSE).
+Third-party attributions are in [NOTICE](NOTICE).
+
 ## Limitations
 
 - The daemon runs as the `shell` user, so it gives a shell, not root.

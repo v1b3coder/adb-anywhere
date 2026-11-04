@@ -447,4 +447,5 @@ port.
 Inspired by [mouldybread/adb-auto-enable](https://github.com/mouldybread/adb-auto-enable)
 (MIT). The patched adbd is vendored from AOSP `packages/modules/adb` (Apache 2.0)
 and BoringSSL (ISC); the upstream commits, the patches and the `NOTICE` files are
-in `adbd/`. The app's own code is MIT.
+in `adbd/`. The app's own code is MIT (see `LICENSE`); the vendored daemon stays
+Apache 2.0 (see `adbd/LICENSE`), and third-party attributions are in `NOTICE`.

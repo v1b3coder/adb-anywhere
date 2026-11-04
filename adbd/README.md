@@ -23,8 +23,8 @@ re-vendoring is a straight copy and never a merge.
 | `vendor/zstd` | `facebook/zstd` (`lib/`) | `v1.5.6` (2024-03-30) |
 
 The daemon, its protocol core and the support libraries are Apache-2.0 (BoringSSL
-is ISC, zstd is BSD/GPLv2 dual). See `vendor/adb/NOTICE`,
-`vendor/boringssl/LICENSE` and `vendor/zstd/LICENSE`.
+is ISC, zstd is BSD/GPLv2 dual); the full text is in `LICENSE`. See
+`vendor/adb/NOTICE`, `vendor/boringssl/LICENSE` and `vendor/zstd/LICENSE`.
 
 ## Layout
 
