@@ -141,7 +141,6 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
         return "setsid ${shell.quote(binaryPath)}" +
             " --listen ${shell.quote(spec)}" +
             " --keys ${shell.quote(keysPath)}" +
-            " --policy ${shell.quote(policyPath)}" +
             " --log ${shell.quote(logPath)}" +
             " --pid-file ${shell.quote(pidPath)}" +
             " </dev/null >/dev/null 2>${shell.quote(remoteDir + "/adbd.stderr")} &"

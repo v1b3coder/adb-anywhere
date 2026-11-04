@@ -67,8 +67,8 @@ adbd --listen tcp:127.0.0.1:15037[,tcp:<vpn-ip>:15038] \
   The file is the only authorization source; unknown keys are never prompted for
   or auto-accepted.
 - `--log` redirects the daemon's stderr to a file. `--pid-file` writes the
-  daemon's pid. `--policy` is accepted for compatibility with the app and
-  ignored: this daemon has no per-key policy layer yet.
+  daemon's pid. There is no `--policy` flag: per-key policy is not implemented
+  yet.
 - `--version`, `--device_banner`, `--logpostfsdata`, `--root_seclabel` and
   `--tim_seclabel` are kept from AOSP. The seclabel options are unused because
   the daemon does not change its own SELinux context.
@@ -88,7 +88,7 @@ These are the patches, all in `patches/`:
 
 | Patch | Purpose |
 |---|---|
-| `01-daemon-main.cpp` | TCP-only: no USB, vsock, mDNS, watchdog, jdwp, trade-in, privilege dropping. Adds `--listen`, `--keys`, `--log`, `--pid-file`; accepts `--policy` as a warning. |
+| `01-daemon-main.cpp` | TCP-only: no USB, vsock, mDNS, watchdog, jdwp, trade-in, privilege dropping. Adds `--listen`, `--keys`, `--log`, `--pid-file`. |
 | `02-daemon-auth.cpp` | No TLS or pairing; keeps the RSA key-file verification. Skips the init control socket. |
 | `03-daemon-services.cpp` | Keeps `shell:`, `exec:`, `sync:`, `tcp:` and `framebuffer:`; rejects `abb:`, `jdwp:`, `root:`, `remount:`, `reboot:`, `usb:`, `tcpip:`, `reverse:` and the test socket services. |
 | `04-transport.cpp` | `DoTlsHandshake` returns false; TLS is not built. |
@@ -102,6 +102,25 @@ Not implemented: USB, vsock, TLS, pairing, mDNS advertisement, `reverse:`,
 `jdwp:`, `track-jdwp`, `track-app`, `abb:`, `framebuffer:` over USB, `root:`,
 `remount:`, `reboot:`, `restore:`, `disable-verity:`, `enable-verity:`, `spin`,
 `reconnect`, and the adb client.
+
+## Tests
+
+The AOSP shared-core tests are vendored too and built with `ADBD_TESTS=1`:
+
+```sh
+ADBD_TESTS=1 ABIS=x86_64 ./build.sh
+adb push build/out/x86_64/adbd_tests /data/local/tmp/
+adb shell /data/local/tmp/adbd_tests
+```
+
+`build/out/x86_64/adbd_tests` runs 104 tests from 17 suites: `adb_io`,
+`adb_listeners`, `adb_utils`, `fdevent`, `shell_service_protocol`, `socket`,
+`socket_spec`, `sysdeps`, `transport`, `types` and `test_utils`. They exercise the
+shared protocol core with the same `ADB_HOST=0` configuration as the daemon.
+
+Not ported: the client-side `adb_test` (needs libusb, libmdnssd, OpenScreen,
+protobuf and the TLS stack) and the device `adbd_test` (needs the same plus
+`libbinder`).
 
 ## Verification
 

@@ -47,8 +47,15 @@ for abi in $abis; do
         -DANDROID_ABI="$abi" \
         -DANDROID_PLATFORM="android-$api" \
         -DADBD_SRC="$src" \
+        -DADBD_BUILD_TESTS="${ADBD_TESTS:-0}" \
         -DCMAKE_BUILD_TYPE=Release
     cmake --build "$build/$abi" --target adbd
+    if [ "${ADBD_TESTS:-0}" = 1 ]; then
+        cmake --build "$build/$abi" --target adbd_tests
+        mkdir -p "$build/out/$abi"
+        cp "$build/$abi/tests/adbd_tests" "$build/out/$abi/adbd_tests"
+        echo "built $build/out/$abi/adbd_tests"
+    fi
     mkdir -p "$build/out/$abi"
     cp "$build/$abi/adbd" "$build/out/$abi/adbd"
     # Keep symbols, drop debug info: the AOSP build uses strip keep_symbols.

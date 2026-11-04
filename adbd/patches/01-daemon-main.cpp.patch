@@ -312,19 +312,18 @@
      D("Event loop starting");
      fdevent_loop();
  
-@@ -326,6 +155,11 @@
+@@ -326,6 +155,10 @@
                  {"root_seclabel", required_argument, nullptr, 's'},
                  {"tim_seclabel", required_argument, nullptr, 't'},
                  {"device_banner", required_argument, nullptr, 'b'},
 +                {"listen", required_argument, nullptr, 'L'},
 +                {"keys", required_argument, nullptr, 'k'},
-+                {"policy", required_argument, nullptr, 'p'},
 +                {"log", required_argument, nullptr, 'g'},
 +                {"pid-file", required_argument, nullptr, 'P'},
                  {"version", no_argument, nullptr, 'v'},
                  {"logpostfsdata", no_argument, nullptr, 'l'},
                  {nullptr, no_argument, nullptr, 0},
-@@ -338,17 +172,26 @@
+@@ -338,17 +171,21 @@
          }
  
          switch (c) {
@@ -344,11 +343,6 @@
 +                break;
 +            case 'k':
 +                g_keys_path = optarg;
-+                break;
-+            case 'p':
-+                // Per-key policy is not built into this daemon; the key file is
-+                // the only authorization source.
-+                LOG(WARNING) << "ignoring --policy " << optarg;
 +                break;
 +            case 'g':
 +                g_log_path = optarg;

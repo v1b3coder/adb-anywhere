@@ -73,11 +73,12 @@ set(ADB_CORE_SOURCES
   ${ADB_DIR}/transport.cpp
   ${ADB_DIR}/transport_fd.cpp
   ${ADB_DIR}/types.cpp
+  ${ADB_DIR}/daemon/auth.cpp
+  ${ADB_DIR}/shell_service_protocol.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/stubs/diagnose_usb.cpp
 )
 
 set(ADBD_DAEMON_SOURCES
-  ${ADB_DIR}/shell_service_protocol.cpp
-  ${ADB_DIR}/daemon/auth.cpp
   ${ADB_DIR}/daemon/file_sync_service.cpp
   ${ADB_DIR}/daemon/framebuffer_service.cpp
   ${ADB_DIR}/daemon/logging.cpp
@@ -90,7 +91,6 @@ set(ADBD_DAEMON_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/src/adbd_auth.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/stubs/libc_private.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/stubs/libselinux.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/stubs/diagnose_usb.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/stubs/build/version.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/stubs/log/log_stub.cpp
 )
@@ -137,3 +137,8 @@ target_link_libraries(adbd PRIVATE adbd_core)
 target_compile_options(adbd PRIVATE -Wall -Wextra -Wno-unused-parameter)
 
 install(TARGETS adbd RUNTIME DESTINATION bin)
+
+option(ADBD_BUILD_TESTS "Build the host adb unit tests" OFF)
+if(ADBD_BUILD_TESTS)
+  add_subdirectory(tests)
+endif()
