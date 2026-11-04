@@ -111,27 +111,6 @@ fun PhaseDot(phase: Phase, size: Int = 10) {
 }
 
 @Composable
-fun PhasePill(phase: Phase) {
-    val (text, color) = when (phase) {
-        Phase.Running -> "Running" to MaterialTheme.colorScheme.primaryContainer
-        Phase.NeedsPairing -> "Pairing needed" to MaterialTheme.colorScheme.tertiaryContainer
-        Phase.Pairing -> "Pairing" to MaterialTheme.colorScheme.secondaryContainer
-        Phase.Deploying -> "Setting up" to MaterialTheme.colorScheme.secondaryContainer
-        Phase.Error -> "Needs attention" to MaterialTheme.colorScheme.errorContainer
-        Phase.Stopped -> "Stopped" to MaterialTheme.colorScheme.surfaceVariant
-        Phase.Idle -> "Not set up" to MaterialTheme.colorScheme.surfaceVariant
-    }
-    Surface(color = color, shape = RoundedCornerShape(50)) {
-        Text(
-            text,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = FontWeight.SemiBold,
-        )
-    }
-}
-
-@Composable
 fun StepRow(step: SetupStep) {
     Row(
         modifier = Modifier.fillMaxWidth(),

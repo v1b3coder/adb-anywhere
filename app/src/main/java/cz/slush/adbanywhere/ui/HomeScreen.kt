@@ -31,6 +31,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -198,7 +199,6 @@ private fun StatusHero(
                             color = onContainer.copy(alpha = 0.86f),
                         )
                     }
-                    PhasePill(state.phase)
                 }
 
                 if (state.phase == Phase.Running && state.endpoint.isNotBlank()) {
@@ -238,11 +238,17 @@ private fun StatusHero(
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
+                    // The daemon is only up while the user wants it: a stop is
+                    // reachable in every phase that owns the service.
+                    if (state.phase != Phase.Idle && state.phase != Phase.Stopped) {
+                        FilledTonalIconButton(onClick = onStop) {
+                            Icon(Icons.Rounded.Stop, contentDescription = "Stop")
+                        }
+                    }
                     when (state.phase) {
                         Phase.Running -> {
-                            FilledTonalButton(onClick = onRestart) {
-                                Icon(Icons.Rounded.Refresh, contentDescription = null)
-                                Text("Restart", modifier = Modifier.padding(start = 8.dp))
+                            FilledTonalIconButton(onClick = onRestart) {
+                                Icon(Icons.Rounded.Refresh, contentDescription = "Restart")
                             }
                             Button(onClick = onSetup) {
                                 Text("Re-check")
@@ -276,14 +282,6 @@ private fun StatusHero(
                             Button(onClick = onSetup) {
                                 Text("Set up")
                             }
-                        }
-                    }
-                    // The daemon is only up while the user wants it: a stop is
-                    // reachable in every phase that owns the service.
-                    if (state.phase != Phase.Idle && state.phase != Phase.Stopped) {
-                        FilledTonalButton(onClick = onStop) {
-                            Icon(Icons.Rounded.Stop, contentDescription = null)
-                            Text("Stop", modifier = Modifier.padding(start = 8.dp))
                         }
                     }
                 }
