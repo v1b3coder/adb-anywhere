@@ -103,6 +103,16 @@ void adbd_auth_prompt_user(AdbdAuthContext* ctx, const char* public_key, size_t 
     fprintf(stderr, "adbd: rejecting unlisted key %.*s\n", (int)len, public_key);
 }
 
+// daemon/auth.cpp CHECKs that a disconnected transport carries an auth id, and it
+// only asks for one through this variant. Without it, any unlisted key that
+// disconnects aborts the daemon.
+uint64_t adbd_auth_prompt_user_with_id(AdbdAuthContext* ctx, const char* public_key,
+                                       size_t len, void* opaque) {
+    adbd_auth_prompt_user(ctx, public_key, len, opaque);
+    std::lock_guard<std::mutex> lock(g_lock);
+    return ctx->next_id++;
+}
+
 uint64_t adbd_auth_tls_device_connected(AdbdAuthContext* ctx, AdbTransportType type,
                                         const char* public_key, size_t len) {
     (void)ctx;
