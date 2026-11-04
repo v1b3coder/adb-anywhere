@@ -202,7 +202,7 @@ connections whose fingerprint was revoked and then reloads the keyring. At minim
 **Status: fixed in `284b75b`.** `onStartCommand` now matches a null intent (the
 `START_STICKY` restart) and resumes the full `setup()` when a previous run
 completed setup and this process has not started one yet (`resumeAfterRestart()`,
-gated on `prefs.setupComplete` and `Phase.Idle`). `ACTION_WATCHDOG` takes the same
+gated on `prefs.userWantsRunning`, `prefs.setupComplete` and `Phase.Idle`). `ACTION_WATCHDOG` takes the same
 path, because the 15-minute alarm is the other way a dead process is woken; it used
 to reach `watchdog()`, which returned on a non-`Running` phase and left no alarm
 scheduled. An explicit stop is unaffected: it returns `START_NOT_STICKY` and leaves
@@ -698,7 +698,8 @@ acceptable for ADB's TLS model.
 
 `DebugReceiver` is exported in debug builds and accepts `DEBUG_PAIR` with an arbitrary
 `code:port`; `MainActivity` accepts `addkey`, `shellcmd`, `bootstrapHost`,
-`remoteDir`, `loopbackPort`, `vpnPort`, and `logkey` extras in debug builds. These are
+`remoteDir`, `loopbackPort`, `vpnPort`, `logkey`, `start` and `stop` extras in debug
+builds. These are
 debug-only (`BuildConfig.DEBUG` and `debugReceiverEnabled`), but they are powerful and must
 never be enabled in a release. The release manifest sets `debugReceiverEnabled=false`, and
 `MainActivity.handleIntent` returns early when `!BuildConfig.DEBUG`. This is acceptable if
@@ -737,6 +738,17 @@ and Compose. It works, but it is not a Material 3 XML theme and can flash on lau
 also reports unused `notification_channel_*` strings.
 
 Fix: use a Compose-compatible splash/theme and clean up unused resources.
+
+**Status: fixed in `9c10d0c`.** The theme is now a launch-window theme: the splash
+screen and the window behind it share the opaque brand color, and the splash icon is the
+adaptive launcher icon, so a cold start no longer shows a transparent window. On
+`minSdk 31` the platform splash API is always available, so the unused
+`core-splashscreen` dependency is gone. The two `notification_channel_*` strings are
+removed (the channel names in `AdbAnywhereApp` were already hardcoded) and lint's
+`UnusedResources` is clean. The parent stays `android:Theme.Material.NoActionBar` on
+purpose: the app has no View-based UI, so a Views Material 3 XML theme would pull in the
+Material Components library for attributes no Compose screen reads; the UI theme is Compose
+Material 3 in `Theme.kt`.
 
 ---
 
@@ -985,7 +997,8 @@ Gaps:
 1. Update `docs/E2E.md` and `README.md`.
 2. Remove unused permissions and private API reflection.
 3. Add `LICENSE` and align DESIGN.md §13 with `NOTICE`.
-4. Clean up `ScaffoldTest`, unused strings, and the legacy theme.
+4. Clean up `ScaffoldTest`, unused strings, and the legacy theme (strings and theme
+   fixed in `9c10d0c`).
 5. Document the debug-only surface and the uninstall cleanup.
 
 ---
