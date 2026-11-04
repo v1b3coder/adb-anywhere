@@ -110,36 +110,43 @@ Three ADB processes and one app process:
 | App | app uid | none | Control plane: deploys, keys, policy, watchdog, UI |
 | Developer machine `adb` | host | none | Client |
 
-The patched adbd is a stock AOSP `adbd` with a minimal patch set. It is the
-"internal proxy" in the sense that it is the only endpoint a developer machine can
-reach. There is no separate proxy process.
+The patched adbd is AOSP `adbd` vendored under `adbd/`, built as a standalone
+CMake subproject. It is the "internal proxy" in the sense that it is the only
+endpoint a developer machine can reach. There is no separate proxy process.
+
+The upstream trees under `adbd/vendor/` are pristine. The patches in
+`adbd/patches/` are applied to a build copy by `adbd/build.sh`, so a re-vendor is
+a copy, never a merge.
 
 ### Patch set
 
-All in `daemon/`:
-
 | Patch | Purpose |
 |---|---|
-| `main.cpp`: accept `--listen` or read `service.adb.listen_addrs` | Bind the exact addresses given by the app |
-| `main.cpp`: skip `usb_init()` and `vsock` | Never touch USB or vsock |
-| `adb_wifi.cpp`: skip `start_mdnsd()` and `register_adb_secure_connect_service()` | No mDNS advertisement |
-| `auth.cpp` / `adb_auth.cpp`: key path | Use `/data/local/tmp/adb-anywhere/adb_keys` |
-| `services.cpp`: reject `tcpip:`, `usb:`, `root:`, `unroot:`, `remount:`, `reboot:` | The patched adbd must not touch the system adbd or reboot |
-| `services.cpp`: keep `shell:`, `sync:`, `exec:` | What developer machines need |
-| `services.cpp`: optional `tcp:`, `local:`, `reverse:` | Only if `adb forward`/`reverse` is required |
-| `services.cpp`: policy hook on `OPEN`/`WRTE` | Per-key and per-service allow/deny, structured logs |
-| `auth.cpp`: reload key file on change | Key provisioning without restart |
+| `daemon/main.cpp`: accept `--listen`, `--keys`, `--log`, `--pid-file`; warn on `--policy` | Bind the exact addresses and key file the app gives it |
+| `daemon/main.cpp`: skip USB, vsock, mDNS, watchdog, jdwp, trade-in, privilege dropping | Never touch USB, vsock or the system adbd |
+| `daemon/auth.cpp`: no TLS or pairing | RSA key-file authentication only |
+| `daemon/services.cpp`: keep `shell:`, `exec:`, `sync:`, `tcp:`, `framebuffer:` | What developer machines and screenshots need |
+| `daemon/services.cpp`: reject `abb:`, `jdwp:`, `root:`, `remount:`, `reboot:`, `usb:`, `tcpip:`, `reverse:` and the test socket services | The patched adbd must not touch the system adbd or reboot |
+| `transport.cpp`, `adb.cpp`, `adb_auth.h`: no TLS handshake | Plain ADB over the VPN |
+| `compression_utils.h`: compile out Brotli/LZ4/Zstd | Never advertise `sendrecv_v2` |
+| `adb_trace.cpp`, `socket_spec.cpp`: null log tag, `127.0.0.1` as a loopback literal | The standalone daemon's two small robustness fixes |
 
 Multi-listener is not a large patch. `setup_adb` already loops over the address
 list and `init_transport_socket_server` starts one thread per address
-(`main.cpp:205-208`, `transport_socket_server.cpp:89-92`). The comma-separated
-list already exists in `service.adb.listen_addrs` (`main.cpp:272-303`). The patch
+(`vendor/adb/daemon/main.cpp`, `vendor/adb/daemon/transport_socket_server.cpp`).
+The comma-separated list already exists in `service.adb.listen_addrs`. The patch
 only changes where the list comes from and skips USB, vsock, and mDNS; the listener
-count itself is free. The large work is the cross-compile, deployment, key
-provisioning, and policy, not the number of listeners.
+count itself is free. The large work was the cross-compile, which is now a checked-in
+build script and vendored dependencies, not a per-release patch.
 
-Build targets: `arm64-v8a`, `armeabi-v7a`, `x86_64`. Bundle in the APK as assets.
-AOSP `adbd` is Apache 2.0; ship `NOTICE` and the source offer.
+Build targets: `arm64-v8a`, `armeabi-v7a`, `x86_64` (`adbd/build.sh`). Bundle in
+the APK as assets. AOSP `adbd` is Apache 2.0; ship `NOTICE` and the source offer.
+
+Not implemented: USB, vsock, TLS, pairing, mDNS, `reverse:`, `jdwp:`, `track-jdwp`,
+`track-app`, `abb:`, `root:`, `remount:`, `reboot:`, `restore:`, `disable-verity:`
+and `enable-verity:`. The daemon also has no per-key policy layer yet: `--policy`
+is accepted and ignored, so every key in the key file may open every supported
+service.
 
 ### Key provisioning
 
@@ -387,8 +394,8 @@ a different mode.
 - **Phase 1 — control plane**: stock system adbd for bootstrap, notification
   pairing, network gating, UI. Development milestone only; the app fails
   explicitly if the patched adbd is unavailable.
-- **Phase 2 — patched adbd**: build, bundle, deploy, two listeners, key
-  provisioning, QR and paste pairing, policy and logs, watchdog.
+- **Phase 2 — vendored adbd**: build from `adbd/`, bundle, deploy, two listeners,
+  key provisioning, QR and paste pairing, policy and logs, watchdog.
 - **Phase 3 — depth**: per-service and per-command policy, connection log
   export, recovery hardening.
 
@@ -410,7 +417,11 @@ a different mode.
   error and stops instead of falling back to a proxy or redirecting to a random
 port.
 - Android 15/16 foreground service limits.
-- AOSP adbd cross-compile and patch maintenance across releases.
+- Vendored AOSP adbd re-vendor across releases: the patch set is small, but the
+  vendored trees (`adb`, `libbase`, `libcutils`, `libcrypto_utils`, `libasyncio`,
+  `adbd_auth`, `liblog`, BoringSSL) and the BoringSSL build move with it. The
+  upstream commits are recorded in `adbd/README.md`; a re-vendor is a copy and a
+  patch reapply, not a merge.
 - VPN app excludes the app from the tunnel, so loopback still works but the VPN
   listener is unreachable.
 - QR pairing needs a QR generator on the developer machine; `qrencode` is enough.

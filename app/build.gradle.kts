@@ -104,30 +104,30 @@ configurations.configureEach {
 }
 
 /*
- * The daemon lives in its own repository (a minimal AOSP adb fork) and is cloned
- * next to this project. The build cross-compiles it and copies the per-ABI binaries
- * into assets. If the clone is missing, the committed binaries are used as-is.
+ * The daemon is vendored under adbd/ as a standalone AOSP adbd build. The task
+ * cross-compiles it and copies the per-ABI binaries into assets. If the subproject
+ * is missing, the committed binaries are used as-is.
  */
-val defaultAdbdDir = rootProject.projectDir.parentFile?.resolve("adb-anywhere-adbd")
-    ?: rootProject.projectDir.resolve("../adb-anywhere-adbd")
-val adbdDir = providers.gradleProperty("adbdDir").orElse(defaultAdbdDir.absolutePath)
+val adbdDir = providers.gradleProperty("adbdDir")
+    .map { file(it) }
+    .orElse(rootProject.file("adbd"))
 val syncAdbd = tasks.register("syncAdbd") {
-    val fork = file(adbdDir.get())
+    val subproject = adbdDir.get()
     val assets = file("src/main/assets/adbd")
     doLast {
-        if (!fork.resolve("tools/build-android.sh").exists()) {
-            logger.warn("adb-anywhere-adbd not found at ${fork}; using committed adbd assets")
+        if (!subproject.resolve("build.sh").exists()) {
+            logger.warn("adbd/ not found at ${subproject}; using committed adbd assets")
             return@doLast
         }
-        val process = ProcessBuilder("sh", "-c", "cd '${fork.absolutePath}' && ./tools/build-android.sh")
+        val process = ProcessBuilder("sh", "-c", "cd '${subproject.absolutePath}' && ./build.sh")
             .inheritIO()
             .start()
-        check(process.waitFor() == 0) { "adb-anywhere-adbd build failed" }
+        check(process.waitFor() == 0) { "adbd build failed" }
         copy {
-            from(fork.resolve("out")) { include("*/adbd") }
+            from(subproject.resolve("build/out")) { include("*/adbd") }
             into(assets)
         }
-        logger.lifecycle("adbd synced from ${fork}")
+        logger.lifecycle("adbd synced from ${subproject}")
     }
 }
 

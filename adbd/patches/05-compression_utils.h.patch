@@ -1,0 +1,64 @@
+--- a/compression_utils.h
++++ b/compression_utils.h
+@@ -22,10 +22,12 @@
+ 
+ #include <android-base/logging.h>
+ 
++#if defined(ADB_ENABLE_COMPRESSION)
+ #include <brotli/decode.h>
+ #include <brotli/encode.h>
+ #include <lz4frame.h>
+ #include <zstd.h>
++#endif
+ 
+ #include "types.h"
+ 
+@@ -133,6 +135,8 @@
+     }
+ };
+ 
++#if defined(ADB_ENABLE_COMPRESSION)
++
+ struct BrotliDecoder final : public Decoder {
+     explicit BrotliDecoder(std::span<char> output_buffer)
+         : Decoder(output_buffer),
+@@ -484,3 +488,39 @@
+   private:
+     std::unique_ptr<ZSTD_CStream, size_t (*)(ZSTD_CStream*)> encoder_;
+ };
++
++#else  // ADB_ENABLE_COMPRESSION
++
++// The daemon does not advertise sendrecv_v2, so the compressed decoders and
++// encoders are never selected. Keep the names so the shared sync service compiles.
++struct BrotliDecoder final : public Decoder {
++    explicit BrotliDecoder(std::span<char> output_buffer) : Decoder(output_buffer) {}
++    DecodeResult Decode(std::span<char>*) final { return DecodeResult::Error; }
++};
++
++struct BrotliEncoder final : public Encoder {
++    explicit BrotliEncoder(size_t output_block_size) : Encoder(output_block_size) {}
++    EncodeResult Encode(Block*) final { return EncodeResult::Error; }
++};
++
++struct LZ4Decoder final : public Decoder {
++    explicit LZ4Decoder(std::span<char> output_buffer) : Decoder(output_buffer) {}
++    DecodeResult Decode(std::span<char>*) final { return DecodeResult::Error; }
++};
++
++struct LZ4Encoder final : public Encoder {
++    explicit LZ4Encoder(size_t output_block_size) : Encoder(output_block_size) {}
++    EncodeResult Encode(Block*) final { return EncodeResult::Error; }
++};
++
++struct ZstdDecoder final : public Decoder {
++    explicit ZstdDecoder(std::span<char> output_buffer) : Decoder(output_buffer) {}
++    DecodeResult Decode(std::span<char>*) final { return DecodeResult::Error; }
++};
++
++struct ZstdEncoder final : public Encoder {
++    explicit ZstdEncoder(size_t output_block_size) : Encoder(output_block_size) {}
++    EncodeResult Encode(Block*) final { return EncodeResult::Error; }
++};
++
++#endif  // ADB_ENABLE_COMPRESSION

@@ -1,0 +1,12 @@
+--- a/adb.cpp
++++ b/adb.cpp
+@@ -451,7 +451,8 @@
+         send_tls_request(t);
+         adb_auth_tls_handshake(t);
+ #else
+-        adbd_auth_tls_handshake(t);
++        // TLS is not built into this daemon.
++        t->Kick();
+ #endif
+         break;
+ 

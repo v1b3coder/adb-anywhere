@@ -5,7 +5,7 @@ Android phones, without root.
 
 Android turns wireless debugging off when Wi-Fi disconnects, randomises its port
 after reboot and exposes the stock listener on every interface. `adb-anywhere`
-keeps a patched, minimal `adbd` running as the `shell` user with two explicit
+keeps a patched AOSP `adbd` running as the `shell` user with two explicit
 listeners: loopback for this app and the VPN address for developer machines. The
 app is the only entity that controls the listener, and the only entity that decides
 which machines may connect.
@@ -80,15 +80,10 @@ scripts/e2e-emulator.sh            # end-to-end against a rooted emulator
 `.github/workflows/ci.yml` runs the JVM tests, `lintDebug` and `assembleDebug` on
 every push to `main` and every pull request.
 
-The patched `adbd` is a separate minimal fork, cloned next to this repository:
-
-```sh
-git clone ssh://git@gitea.slush.cz:220/marekp/adb-anywhere-adbd.git ../adb-anywhere-adbd
-```
-
-The Gradle `syncAdbd` task cross-compiles it from `../adb-anywhere-adbd` and
-copies the per-ABI binaries into `app/src/main/assets/adbd/`. It is not a
-submodule. If the clone is absent, the committed binaries are used.
+The patched `adbd` is a standalone AOSP build vendored under
+[`adbd/`](adbd/README.md). The Gradle `syncAdbd` task cross-compiles it and
+copies the per-ABI binaries into `app/src/main/assets/adbd/`. If the NDK is
+absent, the committed binaries are used.
 
 ## Release
 

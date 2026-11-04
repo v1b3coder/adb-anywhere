@@ -1,0 +1,76 @@
+--- a/transport.cpp
++++ b/transport.cpp
+@@ -36,8 +36,6 @@
+ #include <string>
+ #include <thread>
+ 
+-#include <adb/crypto/rsa_2048_key.h>
+-#include <adb/crypto/x509_generator.h>
+ #include <adb/tls/tls_connection.h>
+ #include <android-base/logging.h>
+ #include <android-base/no_destructor.h>
+@@ -62,11 +60,8 @@
+ #include "client/usb.h"
+ #endif
+ 
+-using namespace adb::crypto;
+-using namespace adb::tls;
+ using namespace std::string_literals;
+ using android::base::ScopedLockAssertion;
+-using TlsError = TlsConnection::TlsError;
+ 
+ static void remove_transport(atransport* transport);
+ static void transport_destroy(atransport* transport);
+@@ -511,48 +506,10 @@
+ }
+ 
+ bool FdConnection::DoTlsHandshake(RSA* key, std::string* auth_key) {
+-    bssl::UniquePtr<EVP_PKEY> evp_pkey(EVP_PKEY_new());
+-    if (!EVP_PKEY_set1_RSA(evp_pkey.get(), key)) {
+-        LOG(ERROR) << "EVP_PKEY_set1_RSA failed";
+-        return false;
+-    }
+-    auto x509 = GenerateX509Certificate(evp_pkey.get());
+-    auto x509_str = X509ToPEMString(x509.get());
+-    auto evp_str = Key::ToPEMString(evp_pkey.get());
+-
+-    int osh = cast_handle_to_int(adb_get_os_handle(fd_));
+-#if ADB_HOST
+-    tls_ = TlsConnection::Create(TlsConnection::Role::Client, x509_str, evp_str, osh);
+-#else
+-    tls_ = TlsConnection::Create(TlsConnection::Role::Server, x509_str, evp_str, osh);
+-#endif
+-    CHECK(tls_);
+-#if ADB_HOST
+-    // TLS 1.3 gives the client no message if the server rejected the
+-    // certificate. This will enable a check in the tls connection to check
+-    // whether the client certificate got rejected. Note that this assumes
+-    // that, on handshake success, the server speaks first.
+-    tls_->EnableClientPostHandshakeCheck(true);
+-    // Add callback to set the certificate when server issues the
+-    // CertificateRequest.
+-    tls_->SetCertificateCallback(adb_tls_set_certificate);
+-    // Allow any server certificate
+-    tls_->SetCertVerifyCallback([](X509_STORE_CTX*) { return 1; });
+-#else
+-    // Add callback to check certificate against a list of known public keys
+-    tls_->SetCertVerifyCallback(
+-            [auth_key](X509_STORE_CTX* ctx) { return adbd_tls_verify_cert(ctx, auth_key); });
+-    // Add the list of allowed client CA issuers
+-    auto ca_list = adbd_tls_client_ca_list();
+-    tls_->SetClientCAList(ca_list.get());
+-#endif
+-
+-    auto err = tls_->DoHandshake();
+-    if (err == TlsError::Success) {
+-        return true;
+-    }
+-
+-    tls_.reset();
++    // TLS is deliberately not built into this daemon: the developer machine talks
++    // plain ADB over the VPN.
++    (void)key;
++    (void)auth_key;
+     return false;
+ }
+ 

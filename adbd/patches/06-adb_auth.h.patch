@@ -1,0 +1,13 @@
+--- a/adb_auth.h
++++ b/adb_auth.h
+@@ -62,10 +62,6 @@
+ 
+ void send_auth_request(atransport *t);
+ 
+-void adbd_auth_tls_handshake(atransport* t);
+-int adbd_tls_verify_cert(X509_STORE_CTX* ctx, std::string* auth_key);
+-bssl::UniquePtr<STACK_OF(X509_NAME)> adbd_tls_client_ca_list();
+-
+ #endif // ADB_HOST
+ 
+ #endif // __ADB_AUTH_H

@@ -1,0 +1,13 @@
+--- a/socket_spec.cpp
++++ b/socket_spec.cpp
+@@ -153,8 +153,8 @@
+ }
+ 
+ static bool tcp_host_is_local(std::string_view hostname) {
+-    // FIXME
+-    return hostname.empty() || hostname == "localhost";
++    // The standalone daemon is given an explicit loopback literal by the app.
++    return hostname.empty() || hostname == "localhost" || hostname == "127.0.0.1";
+ }
+ 
+ bool is_socket_spec(std::string_view spec) {
