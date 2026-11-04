@@ -91,7 +91,7 @@ These are facts from AOSP `main`, not assumptions.
 | D3 | App key | Ephemeral RSA keypair generated on first run; private key in app-private storage; public key in the patched adbd key file |
 | D4 | Developer machine pairing | QR or pasted public key from the developer machine; app confirms the fingerprint; user labels the machine; no pairing listener on the phone |
 | D5 | System adbd hardening | `ADB_WIFI_ENABLED=0` always after the patched adbd is running; `ADB_ENABLED=0` only with "Keep system adb off" (default off; restore the original value when unchecked) |
-| D6 | Watchdog | Keeps the D5 state; probes 5555 only when "Keep system adb off" is on; restarts the patched adbd |
+| D6 | Watchdog | Keeps the D5 state; probes 5555 on every tick and sets `ADB_ENABLED=0` only when "Keep system adb off" is on; reports the open listener as the §8 residual warning; restarts the patched adbd |
 | D7 | Policy | Patched adbd enforces per-key and per-service rules; VPN ACL is the outer boundary |
 | D8 | UI stack | Kotlin, Jetpack Compose, Material 3; package `cz.slush.adbanywhere` |
 | D9 | Bootstrap pairing | Notification `RemoteInput` with `code:port` |

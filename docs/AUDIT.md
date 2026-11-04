@@ -232,8 +232,8 @@ that writes `adb_wifi_enabled=0` on every call, even when it already reads off, 
 verifies that `service.adb.tls.port` is empty or that the published port is closed
 before reporting "off"; the watchdog runs the same guard on every tick and boot reaches
 it through `setup()`. The guard is covered by JVM unit tests
-(`WirelessDebuggingGuardTest`). Not re-verified on a device; the UI still infers
-"off" from the phase (P0-6) and `abortSetup()` still checks only the setting (P1-9).
+(`WirelessDebuggingGuardTest`). Not re-verified on a device; `abortSetup()`
+still checks only the setting (P1-9).
 
 DESIGN.md D5/D6 say the app "always keeps the system wireless debugging off" and
 the watchdog "keeps the D5 state". `harden()` sets `adb_wifi_enabled=0` once during
@@ -268,6 +268,19 @@ and DESIGN.md §8's residual-risk requirement.
 Fix: add explicit `adbWifiEnabled`, `adbEnabled`, and `plain5555Open` fields to
 `ControlState`; populate them from `SystemSettings`/`SystemAdb`; show a persistent
 warning instead of inferring from the phase.
+
+**Status: fixed in `2b73e78`.** `ControlState.adbStatus` now carries the platform
+`AdbStatus` (`adb_enabled`, `adb_wifi_enabled` and the `127.0.0.1:5555` probe), and
+`ControlService.refreshAdbStatus()` fills it on service create, at the end of every
+setup attempt (after `harden()` and `abortSetup()`), on every watchdog tick and after
+a stop, always on `Dispatchers.IO`. `harden()` no longer writes a message, so nothing
+overwrites the warning. `HomeScreen`'s `SecurityRow` renders
+`AdbStatus.warnings(keepSystemAdbOff)` in the error color, independent of the phase
+and of later status messages, and says the state was not read yet while `adbStatus` is
+null. The probe now runs in both "Keep system adb off" modes because D11/§8 require
+the warning when the checkbox is off too; DESIGN.md D6 is updated to match.
+`AdbStatusTest` asserts the 5555 warning for both modes. The commit also carries the
+adbd CI workflow from a concurrent change. Not verified on a device.
 
 ### P0-7 — `BootReceiver` is exported and does not check the action
 
@@ -456,7 +469,7 @@ UI; document the log location and retention.
 `harden()` now verifies the TLS listener (P0-5, fixed in `17277a2`), but
 `abortSetup()` writes the setting and checks only `adb_wifi_enabled`, not
 `service.adb.tls.port` or the closed port. If an OEM ignores the write during cleanup,
-the app does not notice and the UI still infers "off" from the phase (P0-6).
+the app does not notice.
 
 Fix: verify and fail explicitly if the TLS port remains.
 
@@ -649,12 +662,13 @@ above.
 `adb_wifi_enabled` and a `127.0.0.1:5555` connect probe from the platform
 (`SystemSettings.status()`), shows them with a refresh action, and renders the
 warnings from `AdbStatus.warnings()` in the error color (`AdbStatusTest`).
-`HomeScreen`'s `SecurityRow` still infers the state from the phase (P0-6).
+`HomeScreen`'s `SecurityRow` now shows the same platform state through
+`ControlState.adbStatus` (P0-6, fixed in `2b73e78`).
 
 D11 says the settings UI "shows the current ADB state and any warning". The Settings
 screen shows the keep-off switch and a generic note; it does not show
 `adb_enabled`/`adb_wifi_enabled` or whether 5555 is open. `HomeScreen`'s
-`SecurityRow` infers the state from the phase (P0-6).
+`SecurityRow` inferred the state from the phase (P0-6, fixed in `2b73e78`).
 
 Fix: read and display the actual settings and the 5555 probe result.
 
@@ -810,7 +824,7 @@ Material 3 in `Theme.kt`.
 | DESIGN.md | Status | Evidence |
 |---|---|---|
 | §2 Goals: reachable across reboots/sleep/network, including mobile data over VPN | **Partial** | Daemon and VPN restart work; a sticky restart or watchdog alarm now resumes setup (P0-4, fixed in `284b75b`), not verified under Doze/LMK; OEM bootstrap limitation is documented. |
-| §2 Never expose plain ADB on an untrusted LAN | **Partial** | Daemon binds loopback + VPN only; setup and the watchdog re-assert and verify the system listener (P0-5, fixed in `17277a2`); the UI still infers "off" (P0-6); failed setup now closes it (P0-2, fixed in `a99716e`). |
+| §2 Never expose plain ADB on an untrusted LAN | **Partial** | Daemon binds loopback + VPN only; setup and the watchdog re-assert and verify the system listener (P0-5, fixed in `17277a2`); the UI shows the platform state and the residual warning (P0-6, fixed in `2b73e78`); failed setup now closes it (P0-2, fixed in `a99716e`). |
 | §2 App is the only entity that controls the listener / decides who connects | **Partial** | App controls deployment, but shell can rewrite the key file; revocation restarts the daemon and closes live sessions (P0-3, fixed in `822fc50`); loopback can be spoofed (P1-14). |
 | §2 No root, no custom ROM, no permanent web server | **Met** | Daemon runs as shell; no web server. |
 | §4 Verified platform constraints | **Mostly met** | Implementation relies on `ADB_ENABLED`, `adb_wifi_enabled`, `service.adb.tls.port`, `pm grant`; §4.6 key file path is replaced by the daemon's key file. |
@@ -819,13 +833,13 @@ Material 3 in `Theme.kt`.
 | §5 D3 App key ephemeral, private in app storage, public in daemon key file | **Met** | `AppKeyStore`, `KeyFiles`, `DaemonManager`. |
 | §5 D4 QR/paste pairing, fingerprint confirmation, label, no listener | **Met** | `KeysScreen`, `AndroidPubKey`, `DeveloperKey`; no pairing listener. |
 | §5 D5 `ADB_WIFI_ENABLED=0` always; `ADB_ENABLED=0` only with keep-off; restore original | **Partial** | `harden()` and the watchdog re-assert and verify `ADB_WIFI_ENABLED=0` (P0-5, fixed in `17277a2`); `ADB_ENABLED=0` still only with keep-off; failed setup restores the bootstrap and the pre-bootstrap `ADB_ENABLED` (P0-2, fixed in `a99716e`). |
-| §5 D6 Watchdog keeps D5, probes 5555 only with keep-off, restarts daemon | **Partial** | Restarts daemon; probes 5555 only with keep-off; re-asserts and verifies `ADB_WIFI_ENABLED=0` every tick (P0-5, fixed in `17277a2`); no backoff; a sticky restart or watchdog alarm resumes setup (P0-4, fixed in `284b75b`). |
+| §5 D6 Watchdog keeps D5, probes 5555, restarts daemon | **Partial** | Restarts daemon; sets `ADB_ENABLED=0` only when 5555 is open and keep-off is on; probes 5555 in both keep-off modes for the §8 residual warning (P0-6, fixed in `2b73e78`); re-asserts and verifies `ADB_WIFI_ENABLED=0` every tick (P0-5, fixed in `17277a2`); no backoff; a sticky restart or watchdog alarm resumes setup (P0-4, fixed in `284b75b`). |
 | §5 D7 Patched adbd per-key/per-service policy | **Partial** | Roles exist, but both allow all services (P1-11). |
 | §5 D8 Kotlin/Compose/Material 3/package | **Met** | App sources and manifest. |
 | §5 D9 Bootstrap pairing notification with `code:port` | **Met** | `ControlService.postPairingNotification`, `PairReplyReceiver`. |
 | §5 D10 TCP only; USB/vsock disabled | **Met** | Daemon has no USB/vsock code. |
-| §5 D11 Settings UI shows current ADB state and warning | **Partial** | Settings reads `adb_enabled`, `adb_wifi_enabled` and the 5555 probe and shows the warnings (P2-6, fixed in `068201e`); `HomeScreen` still infers the state from the phase (P0-6). |
-| §5 D12 Explicit errors, no silent fallback/random-port redirect | **Partial** | Many errors are explicit; some failures are swallowed (`startForeground`, `postPairingNotification`, `scheduleWatchdog`), and the 5555 warning is lost. |
+| §5 D11 Settings UI shows current ADB state and warning | **Partial** | Settings reads `adb_enabled`, `adb_wifi_enabled` and the 5555 probe and shows the warnings (P2-6, fixed in `068201e`); `HomeScreen` shows the same platform state and warnings (P0-6, fixed in `2b73e78`). |
+| §5 D12 Explicit errors, no silent fallback/random-port redirect | **Partial** | Many errors are explicit; some failures are swallowed (`startForeground`, `postPairingNotification`, `scheduleWatchdog`). |
 | §6 Patch set in `daemon/` | **Not met** | No `daemon/` directory; independent daemon (P1-1). |
 | §6 Key provisioning: app key only at startup, developer keys appended | **Partial** | App writes app + developer keys before start; app key is not the only startup key (minor). |
 | §6 Developer machine pairing: QR/paste, fingerprint, label, no listener | **Met** | App UI and key parsing. |
@@ -836,9 +850,9 @@ Material 3 in `Theme.kt`.
 | §7 Port discovery: TLS primary, mDNS fallback, manual port, `tcpip:<port>` | **Partial** | TLS/mDNS/manual implemented; `tcpip:<port>` not (P1-12). |
 | §7 Boot: boot receiver, re-assert `adb_wifi_enabled` and `adb_allowed_connection_time=0`, probe, deploy, harden, manual recovery | **Partial** | Boot receiver and probe implemented; `adb_allowed_connection_time=0` is re-asserted on bootstrap and every watchdog tick (P1-2, fixed in `d546e4b`); `persist.adb.tcp.port` missing (P1-3). |
 | §7 Network change: VPN restart, VPN down, TLS switch | **Partial / contradicts D5** | VPN restart and VPN down implemented, coalesced, and re-checked by the watchdog; TLS switch not implemented (P1-13). |
-| §7 USB: `ACTION_USB_STATE`, warning, `ADB_ENABLED=0` | **Not met** | No USB receiver; warning lost (P1-4, P0-6). |
-| §8 Security: VPN ACL outer, key file/policy inner, loopback app channel, system adbd off, residual warning, pairing, keys, revocation, no root | **Partial** | Key auth and loopback are good; residual warning lost; revocation now restarts the daemon and closes live sessions (P0-3, fixed in `822fc50`); system adbd is re-asserted and verified by the watchdog (P0-5, fixed in `17277a2`); the UI still infers "off" (P0-6) and `abortSetup()` does not verify the port (P1-9). |
-| §9 Failure modes | **Partial** | Many are explicit; the 5555 warning is missing; a sticky restart or watchdog alarm resumes setup (P0-4, fixed in `284b75b`). |
+| §7 USB: `ACTION_USB_STATE`, warning, `ADB_ENABLED=0` | **Not met** | No USB receiver (P1-4). |
+| §8 Security: VPN ACL outer, key file/policy inner, loopback app channel, system adbd off, residual warning, pairing, keys, revocation, no root | **Partial** | Key auth and loopback are good; the residual warning now comes from the platform state (P0-6, fixed in `2b73e78`); revocation now restarts the daemon and closes live sessions (P0-3, fixed in `822fc50`); system adbd is re-asserted and verified by the watchdog (P0-5, fixed in `17277a2`); `abortSetup()` does not verify the port (P1-9). |
+| §9 Failure modes | **Partial** | Many are explicit; a sticky restart or watchdog alarm resumes setup (P0-4, fixed in `284b75b`). |
 | §10 Testing: unit (QR/key/policy/address/watchdog), integration (two listeners/two keys/policy/key reload), device matrix, CI | **Partial** | App tests 29, including `AdbStatusTest` and `WirelessDebuggingGuardTest`; daemon tests 131 checks + integration; CI runs tests and lint on push/PR; no watchdog/backoff tests, no two-listener/two-key integration, no device matrix. |
 | §11 Phasing: Phase 0 report, Phase 1 control plane, Phase 2 patched adbd, Phase 3 depth | **Partial** | Phase 0 report absent; Phase 1/2 functional; Phase 3 not implemented. |
 | §12 Open risks | **Mostly acknowledged** | The design acknowledges the main risks; some are unhandled (process death, failure cleanup). |
@@ -1002,8 +1016,8 @@ Gaps:
 5. Re-assert and verify `adb_wifi_enabled=0` in the watchdog (P0-5, fixed in
    `17277a2`; P1-9 remains for `abortSetup()`).
 6. Add explicit ADB state/warning fields to `ControlState` and stop inferring
-   "off" from the phase in `HomeScreen`; keep the 5555 warning (P0-6). Settings
-   reads the state directly (P2-6, fixed in `068201e`).
+   "off" from the phase in `HomeScreen`; keep the 5555 warning (P0-6, fixed in
+   `2b73e78`). Settings reads the state directly (P2-6, fixed in `068201e`).
 7. Set `BootReceiver` `exported=false` and check the action (P0-7, fixed in
    `c31f59c`).
 8. Add release signing or document external signing (P0-8, fixed in `ec83728`).
