@@ -92,9 +92,11 @@ scripts/e2e-emulator.sh            # end-to-end against a rooted emulator
 every push to `main` and every pull request.
 
 The patched `adbd` is a standalone AOSP build vendored under
-[`adbd/`](adbd/README.md). The Gradle `syncAdbd` task cross-compiles it and
-copies the per-ABI binaries into `app/src/main/assets/adbd/`. If the NDK is
-absent, the committed binaries are used.
+[`adbd/`](adbd/README.md). The Gradle `syncAdbd` task cross-compiles it on
+`preBuild` and copies the per-ABI binaries into `app/src/main/assets/adbd/`,
+which is not committed: a local build compiles them with the local NDK, CI builds
+them and caches the result, and the release ships the binaries built for that
+commit. A local build therefore needs the Android NDK.
 
 ## Release
 

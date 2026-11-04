@@ -105,10 +105,10 @@ configurations.configureEach {
 
 /*
  * The daemon is vendored under adbd/ as a standalone AOSP adbd build. The task
- * cross-compiles it and copies the per-ABI binaries into assets. If the subproject
- * is missing, the committed binaries are used as-is. Pass -PadbdSkipBuild=true to
- * keep the assets untouched, which is what CI and the release build do: they either
- * compile adbd separately or inject a prebuilt artifact.
+ * cross-compiles it and copies the per-ABI binaries into assets, which are not
+ * committed: a local build compiles them with the local NDK, CI builds and caches
+ * them, and the release injects the artifact built for that commit. Pass
+ * -PadbdSkipBuild=true to keep the assets untouched.
  */
 val adbdDir = providers.gradleProperty("adbdDir")
     .map { file(it) }
@@ -124,9 +124,8 @@ val syncAdbd = tasks.register("syncAdbd") {
             logger.lifecycle("adbd build skipped; using assets as-is")
             return@doLast
         }
-        if (!subproject.resolve("build.sh").exists()) {
-            logger.warn("adbd/ not found at ${subproject}; using committed adbd assets")
-            return@doLast
+        check(subproject.resolve("build.sh").exists()) {
+            "adbd/ not found at ${subproject}; pass -PadbdSkipBuild=true to use the assets as-is"
         }
         val process = ProcessBuilder("sh", "-c", "cd '${subproject.absolutePath}' && ./build.sh")
             .inheritIO()

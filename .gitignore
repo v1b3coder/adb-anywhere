@@ -7,6 +7,8 @@ build/
 # Source directories that merely share the name, not build output.
 !adbd/stubs/build/
 !adbd/vendor/boringssl/util/build/
+# Built by syncAdbd locally and injected from the CI artifact; never committed.
+app/src/main/assets/adbd/
 local.properties
 *.iml
 .idea/

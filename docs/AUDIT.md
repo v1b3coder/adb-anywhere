@@ -806,10 +806,10 @@ Material 3 in `Theme.kt`.
 ## 6. P3 findings
 
 - `ScaffoldTest` is a placeholder (`2 + 2 == 4`), not a real test. Replace it or remove it.
-- `syncAdbd` runs an external `tools/build-android.sh` on every `preBuild`; if the fork is
-  absent it warns and uses committed binaries. This is fine for development but not a
-  reproducible/CI build unless the committed binaries are the source of truth and are
-  verified.
+- `syncAdbd` builds the vendored daemon on every `preBuild`. **Status: fixed.** The
+  binaries are no longer committed: CI compiles them in a reusable `adbd` workflow,
+  caches them keyed on the build inputs and the pinned NDK, and both CI and the
+  release ship the artifact built for that commit.
 - `Prefs` uses `SharedPreferences.apply()` per field; acceptable, but a single transaction
   would be cleaner. **Status: won't fix.** `apply()` updates the in-memory map synchronously
   before it returns, and every reader (service and UI) is in the app's single process — the
@@ -997,9 +997,10 @@ Gaps:
   fixed in `ec83728`); push/PR runs the JVM tests, `lintDebug` and
   `assembleDebug` (P0-9, fixed in `ed5d22b`). No update channel and no rollback
   plan.
-- `syncAdbd` depends on an external checkout; the committed binaries are used if
-  it is absent. This is a reproducibility risk unless the committed binaries are
-  treated as the source of truth and verified.
+- `syncAdbd` builds the vendored daemon from source; the binaries are not
+  committed. CI builds them when their inputs change, caches them on the pinned NDK
+  and the release ships the artifact built for that commit, so the shipped daemon is
+  reproducible and a local build needs the NDK.
 - No dependency lockfile/verification; `libadb-android` and `spake2-android` come from
   JitPack and are unverified (P3).
 - No privacy policy/data-safety declaration. The app collects no analytics, but it
