@@ -74,6 +74,7 @@ class ControlService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        AppLog.info("service", "created")
         prefs = Prefs(this)
         keys = AppKeyStore(this)
         system = SystemAdb(this, keys, prefs)
@@ -112,25 +113,34 @@ class ControlService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        AppLog.info("service", "intent ${intent?.action ?: "resume-after-restart"}")
         when (intent?.action) {
             null -> resumeAfterRestart()
             ACTION_START -> {
                 prefs.userWantsRunning = true
+                AppLog.info("service", "user asked to run")
                 scope.launch { setup() }
             }
             // Keys and settings are persisted either way; a stopped app applies them
             // on the next start instead of deploying a daemon the user turned off.
             ACTION_APPLY_KEYS, ACTION_APPLY_SETTINGS -> {
-                if (prefs.userWantsRunning) scope.launch { setup() }
+                if (prefs.userWantsRunning) {
+                    AppLog.info("service", "applying the stored change")
+                    scope.launch { setup() }
+                } else {
+                    AppLog.info("service", "change stored; adb is stopped")
+                }
             }
             ACTION_RESTART -> {
                 prefs.userWantsRunning = true
+                AppLog.info("service", "restart requested")
                 scope.launch { setup(forceRestart = true) }
             }
             // A revocation must terminate sessions that were authenticated with the
             // removed key, so it restarts the daemon like an explicit restart. The UI
             // only sends it while the daemon runs.
             ACTION_REVOKE_KEYS -> {
+                AppLog.info("service", "key revocation; restarting to close sessions")
                 scope.launch { setup(forceRestart = true) }
             }
             ACTION_PAIR -> {
@@ -140,20 +150,29 @@ class ControlService : Service() {
                 if (code != null) {
                     prefs.userWantsRunning = true
                     scope.launch { pair(code) }
+                } else {
+                    AppLog.warn("service", "pair intent without a code")
                 }
             }
             ACTION_WATCHDOG -> if (!resumeAfterRestart()) scope.launch { watchdog() }
             ACTION_LOGS -> scope.launch { refreshLogs() }
-            ACTION_NOTIFY_PAIR -> postPairingNotification()
+            ACTION_NOTIFY_PAIR -> {
+                AppLog.info("service", "pairing notification requested")
+                postPairingNotification()
+            }
             ACTION_SET_TLS_PORT -> {
                 val port = intent.getIntExtra(EXTRA_PORT, 0)
                 if (port in 1024..65535) {
                     prefs.lastTlsPort = port
+                    AppLog.info("settings", "system adb TLS port=$port")
                     scope.launch { setup() }
+                } else {
+                    AppLog.warn("settings", "rejected system adb TLS port=$port")
                 }
             }
             ACTION_STOP -> {
                 prefs.userWantsRunning = false
+                AppLog.info("service", "stop requested")
                 stopEverything()
                 return START_NOT_STICKY
             }
@@ -164,6 +183,7 @@ class ControlService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        AppLog.info("service", "destroyed")
         notificationJob?.cancel()
         watchdogJob?.cancel()
         scope.cancel()
@@ -184,8 +204,15 @@ class ControlService : Service() {
      * stop wins over both the sticky flag and the alarm.
      */
     private fun resumeAfterRestart(): Boolean {
-        if (!prefs.userWantsRunning) return false
-        if (!prefs.setupComplete || ControlBus.state.value.phase != Phase.Idle) return false
+        if (!prefs.userWantsRunning) {
+            AppLog.info("service", "not resumed; the user stopped adb")
+            return false
+        }
+        if (!prefs.setupComplete || ControlBus.state.value.phase != Phase.Idle) {
+            AppLog.info("service", "not resumed; phase=${ControlBus.state.value.phase}")
+            return false
+        }
+        AppLog.info("service", "resuming after a process restart")
         scope.launch { setup() }
         return true
     }
