@@ -20,9 +20,11 @@ re-vendoring is a straight copy and never a merge.
 | `vendor/adbd_auth` | `platform/frameworks/native` (`libs/adbd_auth`) | `4f463a6b1de9198963dc6aff74154a504ba3f8f6` (2025-03-25) |
 | `vendor/liblog` | `platform/system/logging` (`liblog/include`) | `4f463a6b1de9198963dc6aff74154a504ba3f8f6` (2025-03-25) |
 | `vendor/boringssl` | `boringssl` | `fd0ed4d0a1273570612a08a31bace08e4dd73c81` (2026-11-03) |
+| `vendor/zstd` | `facebook/zstd` (`lib/`) | `v1.5.6` (2024-03-30) |
 
 The daemon, its protocol core and the support libraries are Apache-2.0 (BoringSSL
-is ISC). See `vendor/adb/NOTICE` and `vendor/boringssl/LICENSE`.
+is ISC, zstd is BSD/GPLv2 dual). See `vendor/adb/NOTICE`,
+`vendor/boringssl/LICENSE` and `vendor/zstd/LICENSE`.
 
 ## Layout
 
@@ -75,9 +77,9 @@ adbd --listen tcp:127.0.0.1:15037[,tcp:<vpn-ip>:15038] \
 
 ## Supported subset
 
-Transports: TCP only. Services: `shell:` (v1 and v2), `exec:`, `sync:` (v1),
-`tcp:` (forward), `reverse:` (the device listens and forwards to the host) and
-`framebuffer:`.
+Transports: TCP only. Services: `shell:` (v1 and v2), `exec:`, `abb_exec:`
+(streaming install), `sync:` (v1 and v2, zstd), `tcp:` (forward), `reverse:` (the
+device listens and forwards to the host) and `framebuffer:`.
 
 `framebuffer:` is included for screenshots. It shells out to `screencap`, so the
 device needs the platform `screencap` binary. The app's own screenshot path uses
@@ -91,18 +93,19 @@ These are the patches, all in `patches/`:
 |---|---|
 | `01-daemon-main.cpp` | TCP-only: no USB, vsock, mDNS, watchdog, jdwp, trade-in, privilege dropping. Adds `--listen`, `--keys`, `--log`, `--pid-file`. |
 | `02-daemon-auth.cpp` | No TLS or pairing; keeps the RSA key-file verification. Skips the init control socket. |
-| `03-daemon-services.cpp` | Keeps `shell:`, `exec:`, `sync:`, `tcp:`, `reverse:` and `framebuffer:`; rejects `abb:`, `jdwp:`, `root:`, `remount:`, `reboot:`, `usb:`, `tcpip:` and the test socket services. |
+| `03-daemon-services.cpp` | Keeps `shell:`, `exec:`, `abb_exec:`, `sync:`, `tcp:`, `reverse:` and `framebuffer:`; rejects `abb:`, `jdwp:`, `root:`, `remount:`, `reboot:`, `usb:`, `tcpip:` and the test socket services. |
 | `04-transport.cpp` | `DoTlsHandshake` returns false; TLS is not built. |
-| `05-compression_utils.h` | Compiles out Brotli/LZ4/Zstd; the daemon never advertises `sendrecv_v2`. |
+| `05-compression_utils.h` | Keeps Zstd; Brotli and LZ4 stay as stubs because the daemon advertises neither. |
 | `06-adb_auth.h` | Drops the TLS declarations from the shared header. |
 | `07-adb.cpp` | Rejects `A_STLS` on the daemon side instead of starting a TLS handshake. |
 | `08-adb_trace.cpp` | Substitutes a tag for `LOG()` without `LOG_TAG`, instead of passing null to the logd splitter. |
 | `09-socket_spec.cpp` | Binds any explicit address, loopback or VPN; AOSP only accepts `localhost`, `::1` or every interface. |
+| `10-transport.cpp` | Advertises only the features the daemon implements. Advertising `abb`/`abb_exec`/`sendrecv_v2*` without the code made `adb install` and large `adb push` fail with a closed service or `remote decompress failed`. |
 
 Not implemented: USB, vsock, TLS, pairing, mDNS advertisement, `jdwp:`,
-`track-jdwp`, `track-app`, `abb:`, `framebuffer:` over USB, `root:`, `remount:`,
-`reboot:`, `restore:`, `disable-verity:`, `enable-verity:`, `spin`, `reconnect`,
-and the adb client.
+`track-jdwp`, `track-app`, `abb:` (the shell-protocol variant), `framebuffer:`
+over USB, `root:`, `remount:`, `reboot:`, `restore:`, `disable-verity:`,
+`enable-verity:`, `spin`, `reconnect`, and the adb client.
 
 ## Tests
 
@@ -128,6 +131,8 @@ protobuf and the TLS stack) and the device `adbd_test` (needs the same plus
 The real `adb` client (platform-tools) is used against the daemon on an emulator:
 
 - `adb connect 127.0.0.1:<port>` and `adb shell id`
-- `adb push` and `adb pull`
+- `adb push` and `adb pull`, including zstd-compressed pushes of any size
+- `adb install` (streamed through `abb_exec:`) and `adb install --no-streaming`
 - `adb exec-out screencap -p` produces a PNG
-- the daemon rejects a client whose key is not in the key file
+- the daemon rejects a client whose key is not in the key file and survives the
+  disconnect

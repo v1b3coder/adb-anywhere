@@ -23,6 +23,18 @@ set(STUB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/stubs)
 set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 add_subdirectory(${VENDOR_DIR}/boringssl ${CMAKE_BINARY_DIR}/boringssl)
 
+# zstd backs the sendrecv_v2 compression that adb 36 negotiates by default.
+enable_language(ASM)
+file(GLOB ZSTD_SOURCES CONFIGURE_DEPENDS
+  ${VENDOR_DIR}/zstd/lib/common/*.c
+  ${VENDOR_DIR}/zstd/lib/compress/*.c
+  ${VENDOR_DIR}/zstd/lib/decompress/*.c
+)
+file(GLOB ZSTD_ASM ${VENDOR_DIR}/zstd/lib/decompress/*.S)
+add_library(zstd STATIC ${ZSTD_SOURCES} ${ZSTD_ASM})
+target_include_directories(zstd PUBLIC ${VENDOR_DIR}/zstd/lib)
+target_compile_definitions(zstd PRIVATE ZSTD_MULTITHREAD)
+
 set(LIBBASE_SOURCES
   ${VENDOR_DIR}/libbase/abi_compatibility.cpp
   ${VENDOR_DIR}/libbase/chrono_utils.cpp
@@ -130,7 +142,7 @@ target_compile_options(adbd_core PRIVATE
   -Wall -Wextra -Wno-unused-parameter -Wno-deprecated-declarations
 )
 
-target_link_libraries(adbd_core PUBLIC crypto log dl)
+target_link_libraries(adbd_core PUBLIC crypto log dl zstd)
 
 add_executable(adbd ${ADBD_DAEMON_SOURCES})
 target_link_libraries(adbd PRIVATE adbd_core)

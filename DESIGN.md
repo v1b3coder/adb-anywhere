@@ -125,10 +125,11 @@ a copy, never a merge.
 | `daemon/main.cpp`: accept `--listen`, `--keys`, `--log`, `--pid-file` | Bind the exact addresses and key file the app gives it |
 | `daemon/main.cpp`: skip USB, vsock, mDNS, watchdog, jdwp, trade-in, privilege dropping | Never touch USB, vsock or the system adbd |
 | `daemon/auth.cpp`: no TLS or pairing | RSA key-file authentication only |
-| `daemon/services.cpp`: keep `shell:`, `exec:`, `sync:`, `tcp:`, `reverse:`, `framebuffer:` | What developer machines, `adb reverse` and screenshots need |
+| `daemon/services.cpp`: keep `shell:`, `exec:`, `abb_exec:`, `sync:`, `tcp:`, `reverse:`, `framebuffer:` | What developer machines, `adb install`, `adb reverse` and screenshots need |
 | `daemon/services.cpp`: reject `abb:`, `jdwp:`, `root:`, `remount:`, `reboot:`, `usb:`, `tcpip:` and the test socket services | The patched adbd must not touch the system adbd or reboot |
 | `transport.cpp`, `adb.cpp`, `adb_auth.h`: no TLS handshake | Plain ADB over the VPN |
-| `compression_utils.h`: compile out Brotli/LZ4/Zstd | Never advertise `sendrecv_v2` |
+| `compression_utils.h`: keep Zstd, stub Brotli/LZ4 | Compressed `adb push`/`adb pull` without vendoring all three codecs |
+| `transport.cpp`: advertise only the implemented features | `abb_exec` and `sendrecv_v2_zstd` are advertised; `abb`, Brotli, LZ4, mDNS, `track-app`, `remount_shell` and `apex` are not |
 | `adb_trace.cpp`, `socket_spec.cpp`: null log tag, explicit-address bind | The standalone daemon's two small robustness fixes |
 
 Multi-listener is not a large patch. `setup_adb` already loops over the address
@@ -143,8 +144,8 @@ Build targets: `arm64-v8a`, `armeabi-v7a`, `x86_64` (`adbd/build.sh`). Bundle in
 the APK as assets. AOSP `adbd` is Apache 2.0; ship `NOTICE` and the source offer.
 
 Not implemented: USB, vsock, TLS, pairing, mDNS, `jdwp:`, `track-jdwp`,
-`track-app`, `abb:`, `root:`, `remount:`, `reboot:`, `restore:`, `disable-verity:`
-and `enable-verity:`. The daemon also has no per-key policy or filtering layer
+`track-app`, `abb:` (the shell-protocol variant), `root:`, `remount:`, `reboot:`,
+`restore:`, `disable-verity:` and `enable-verity:`. The daemon also has no per-key policy or filtering layer
 yet, so every key in the key file may open every supported service. The app no
 longer writes a `policy.tsv`; filtering will get its own design.
 
