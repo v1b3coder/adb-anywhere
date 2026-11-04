@@ -20,9 +20,12 @@ class AdbStatusTest {
 
     @Test
     fun warnsAboutTheOpenSystemListener() {
-        val warnings = AdbStatus(0, 0, true).warnings(keepSystemAdbOff = true)
-        assertEquals(1, warnings.size)
-        assertTrue(warnings.single().contains("127.0.0.1:5555"))
+        // The 5555 warning must survive either value of "Keep system adb off" (P0-6).
+        for (keepOff in listOf(true, false)) {
+            val warnings = AdbStatus(0, 0, true).warnings(keepSystemAdbOff = keepOff)
+            assertEquals(1, warnings.size)
+            assertTrue(warnings.single().contains("127.0.0.1:5555"))
+        }
     }
 
     @Test

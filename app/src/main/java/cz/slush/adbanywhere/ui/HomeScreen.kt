@@ -45,12 +45,14 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import cz.slush.adbanywhere.data.AdbStatus
 import cz.slush.adbanywhere.service.ControlState
 import cz.slush.adbanywhere.service.Phase
 
 @Composable
 fun HomeScreen(
     state: ControlState,
+    keepSystemAdbOff: Boolean,
     onSetup: () -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
@@ -73,24 +75,7 @@ fun HomeScreen(
         }
         item {
             SectionCard("Security") {
-                SecurityRow(state)
-                if (state.message.contains("Warning")) {
-                    Row(
-                        verticalAlignment = Alignment.Top,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        Icon(
-                            Icons.Outlined.WarningAmber,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.tertiary,
-                        )
-                        Text(
-                            state.message,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
+                SecurityRow(state.adbStatus, keepSystemAdbOff)
                 OutlinedButton(onClick = onOpenSettings) {
                     Icon(Icons.Rounded.Settings, contentDescription = null)
                     Text("Open settings", modifier = Modifier.padding(start = 8.dp))
@@ -273,28 +258,67 @@ private fun StatusHero(
     }
 }
 
+/**
+ * D11/§8: the security row reports the platform ADB state, never the daemon
+ * phase, so it cannot claim "off" while the system listener is on. The warnings
+ * are persistent: they survive every later status message.
+ */
 @Composable
-private fun SecurityRow(state: ControlState) {
-    val off = state.phase == Phase.Running
+private fun SecurityRow(status: AdbStatus?, keepSystemAdbOff: Boolean) {
+    val warnings = status?.warnings(keepSystemAdbOff).orEmpty()
+    val off = status != null && warnings.isEmpty()
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Icon(
-            if (off) Icons.Rounded.CheckCircle else Icons.Rounded.ErrorOutline,
+            when {
+                status == null -> Icons.Outlined.WarningAmber
+                off -> Icons.Rounded.CheckCircle
+                else -> Icons.Rounded.ErrorOutline
+            },
             contentDescription = null,
-            tint = if (off) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+            tint = when {
+                status == null -> MaterialTheme.colorScheme.onSurfaceVariant
+                off -> MaterialTheme.colorScheme.primary
+                else -> MaterialTheme.colorScheme.error
+            },
         )
         Column(Modifier.weight(1f)) {
             Text(
-                if (off) "System wireless debugging is off" else "System wireless debugging is still on",
+                when {
+                    status == null -> "System ADB state is not read yet"
+                    off -> "System wireless debugging is off"
+                    else -> "System ADB needs attention"
+                },
                 style = MaterialTheme.typography.bodyLarge,
             )
             Text(
-                if (off) "The patched daemon is the only ADB endpoint." else "Finish setup to close it.",
+                when {
+                    status == null -> "Run setup to read adb_enabled and the 5555 probe."
+                    off -> "The patched daemon is the only ADB endpoint."
+                    else -> "Open Settings to fix it."
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+    warnings.forEach { warning ->
+        Row(
+            verticalAlignment = Alignment.Top,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Icon(
+                Icons.Outlined.WarningAmber,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.error,
+            )
+            Text(
+                warning,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
             )
         }
     }

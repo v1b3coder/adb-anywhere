@@ -99,6 +99,7 @@ class ControlService : Service() {
         scope.launch {
             ControlBus.update { it.copy(appFingerprint = keys.publicKey.fingerprint) }
         }
+        scope.launch { refreshAdbStatus() }
         // A provider switch produces onLost and onAvailable separately. Coalesce
         // them and give the new tunnel time to settle before touching the daemon.
         scope.launch {
@@ -357,6 +358,9 @@ class ControlService : Service() {
                         fail(if (error.isEmpty()) warning else "$error $warning")
                     }
                 }
+                // D11: read the platform state after the last write, so the UI
+                // shows what is really set instead of the phase.
+                refreshAdbStatus()
             }
         }
     }
@@ -521,19 +525,17 @@ class ControlService : Service() {
                 SystemSettings.setAdbEnabled(context, true)
                 prefs.originalAdbEnabled = ""
             }
-            val open = withContext(Dispatchers.IO) {
-                runCatching { java.net.Socket().use { it.connect(java.net.InetSocketAddress("127.0.0.1", 5555), 300) }; true }
-                    .getOrDefault(false)
-            }
-            if (open) {
-                ControlBus.update {
-                    it.copy(
-                        message = "Warning: the system adbd still listens on 127.0.0.1:5555. " +
-                            "Enable \"Keep system adb off\" to close it.",
-                    )
-                }
-            }
         }
+    }
+
+    /**
+     * D11: the platform ADB state the UI reports. The 5555 probe is blocking
+     * I/O, so it never runs on the main thread. The service re-reads it after
+     * every write and on every watchdog tick.
+     */
+    private suspend fun refreshAdbStatus() = withContext(Dispatchers.IO) {
+        val status = SystemSettings.status(this@ControlService)
+        ControlBus.update { it.copy(adbStatus = status) }
     }
 
     private suspend fun daemonShell(): Shell = withContext(Dispatchers.IO) {
@@ -615,6 +617,7 @@ class ControlService : Service() {
                 }
             }
         }
+        refreshAdbStatus()
         scheduleWatchdog()
     }
 
@@ -684,6 +687,8 @@ class ControlService : Service() {
                 val stillListening = daemonListening()
                 cancelWatchdog()
                 watchdogJob?.cancel()
+                // The system adb state outlives the daemon: keep showing it.
+                refreshAdbStatus()
                 // The notification collector must not re-post the stopped state
                 // after the foreground notification is removed below.
                 notificationJob?.cancel()

@@ -1,0 +1,62 @@
+# Builds the vendored adbd fork. Runs only when the adbd subtree changes, and
+# keeps the per-ABI binaries in a cache keyed on that subtree and the NDK, so the
+# release build can reuse them instead of recompiling.
+name: adbd
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'adbd/**'
+      - '.github/workflows/adbd.yml'
+  pull_request:
+    paths:
+      - 'adbd/**'
+  workflow_call:
+    outputs:
+      artifact:
+        description: Name of the artifact holding the per-ABI adbd binaries
+        value: ${{ jobs.build.outputs.artifact }}
+
+permissions:
+  contents: read
+
+env:
+  # Pinned: the binaries are a cache key input, so the NDK must not float with
+  # the runner image.
+  ANDROID_NDK_VERSION: '27.1.12297006'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      artifact: adbd-${{ github.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Android NDK
+        run: |
+          set -euo pipefail
+          if [ ! -d "$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION" ]; then
+            yes | sdkmanager --install "ndk;$ANDROID_NDK_VERSION"
+          fi
+
+      - name: Restore adbd binaries
+        id: cache
+        uses: actions/cache@v6
+        with:
+          path: adbd/build/out
+          key: adbd-${{ runner.os }}-ndk${{ env.ANDROID_NDK_VERSION }}-${{ hashFiles('adbd/**', '!adbd/build/**') }}
+
+      - name: Build adbd
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: ANDROID_NDK_HOME="$ANDROID_HOME/ndk/${{ env.ANDROID_NDK_VERSION }}" ./adbd/build.sh
+
+      - name: Upload adbd binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: adbd-${{ github.sha }}
+          path: adbd/build/out
+          if-no-files-found: error

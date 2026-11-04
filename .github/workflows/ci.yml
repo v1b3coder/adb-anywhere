@@ -1,6 +1,6 @@
 # Push/PR gate: unit tests, lint and the debug APK. A lint error fails the build.
-# `syncAdbd` builds the vendored adbd fork from source, so the daemon's C++
-# sources are compiled here too; the NDK ships with the runner image.
+# adbd is compiled by the separate adbd workflow, which runs only when that
+# subtree changes; here the committed binaries in assets are used as-is.
 name: CI
 
 on:
@@ -39,7 +39,7 @@ jobs:
           fi
 
       - name: Test, lint and assemble
-        run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+        run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug -PadbdSkipBuild=true
 
       - name: Upload reports
         if: failure()

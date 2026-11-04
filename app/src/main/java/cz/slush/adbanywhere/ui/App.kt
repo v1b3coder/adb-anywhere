@@ -154,6 +154,7 @@ fun AppRoot(viewModel: AppViewModel) {
             when (screen) {
                 Screen.Home -> HomeScreen(
                     state = state,
+                    keepSystemAdbOff = keepOff,
                     onSetup = { screen = Screen.Setup; viewModel.start() },
                     onStart = viewModel::start,
                     onStop = viewModel::stop,

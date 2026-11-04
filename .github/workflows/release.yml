@@ -15,7 +15,13 @@ permissions:
   contents: read
 
 jobs:
+  # The release ships the daemon built by the adbd workflow for this commit,
+  # not a binary from the checkout or a local rebuild.
+  adbd:
+    uses: ./.github/workflows/adbd.yml
+
   release:
+    needs: adbd
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -87,7 +93,7 @@ jobs:
           fi
 
       - name: Run unit tests
-        run: ./gradlew :app:testDebugUnitTest
+        run: ./gradlew :app:testDebugUnitTest -PadbdSkipBuild=true
 
       - name: Decode release keystore
         env:
@@ -96,6 +102,12 @@ jobs:
           set -euo pipefail
           printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.p12"
 
+      - name: Fetch adbd binaries
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ needs.adbd.outputs.artifact }}
+          path: app/src/main/assets/adbd
+
       - name: Build signed release APK
         env:
           RELEASE_KEYSTORE_FILE: ${{ runner.temp }}/release.p12
@@ -103,7 +115,7 @@ jobs:
           RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
           VERSION_NAME: ${{ steps.version.outputs.VERSION_NAME }}
           VERSION_CODE: ${{ steps.version.outputs.VERSION_CODE }}
-        run: ./gradlew :app:assembleRelease -PversionName="$VERSION_NAME" -PversionCode="$VERSION_CODE"
+        run: ./gradlew :app:assembleRelease -PversionName="$VERSION_NAME" -PversionCode="$VERSION_CODE" -PadbdSkipBuild=true
 
       - name: Verify signature and version
         env:
