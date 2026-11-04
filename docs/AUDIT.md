@@ -617,6 +617,12 @@ Fix: remove the unused permissions.
 
 ### P2-6 — `SettingsScreen` does not show the current ADB state
 
+**Status: fixed in `068201e`.** The Settings security card reads `adb_enabled`,
+`adb_wifi_enabled` and a `127.0.0.1:5555` connect probe from the platform
+(`SystemSettings.status()`), shows them with a refresh action, and renders the
+warnings from `AdbStatus.warnings()` in the error color (`AdbStatusTest`).
+`HomeScreen`'s `SecurityRow` still infers the state from the phase (P0-6).
+
 D11 says the settings UI "shows the current ADB state and any warning". The Settings
 screen shows the keep-off switch and a generic note; it does not show
 `adb_enabled`/`adb_wifi_enabled` or whether 5555 is open. `HomeScreen`'s
@@ -763,7 +769,7 @@ Fix: use a Compose-compatible splash/theme and clean up unused resources.
 | §5 D8 Kotlin/Compose/Material 3/package | **Met** | App sources and manifest. |
 | §5 D9 Bootstrap pairing notification with `code:port` | **Met** | `ControlService.postPairingNotification`, `PairReplyReceiver`. |
 | §5 D10 TCP only; USB/vsock disabled | **Met** | Daemon has no USB/vsock code. |
-| §5 D11 Settings UI shows current ADB state and warning | **Partial** | Checkbox exists; state is inferred from phase; warning is discarded (P0-6, P2-6). |
+| §5 D11 Settings UI shows current ADB state and warning | **Partial** | Settings reads `adb_enabled`, `adb_wifi_enabled` and the 5555 probe and shows the warnings (P2-6, fixed in `068201e`); `HomeScreen` still infers the state from the phase (P0-6). |
 | §5 D12 Explicit errors, no silent fallback/random-port redirect | **Partial** | Many errors are explicit; some failures are swallowed (`startForeground`, `postPairingNotification`, `scheduleWatchdog`), and the 5555 warning is lost. |
 | §6 Patch set in `daemon/` | **Not met** | No `daemon/` directory; independent daemon (P1-1). |
 | §6 Key provisioning: app key only at startup, developer keys appended | **Partial** | App writes app + developer keys before start; app key is not the only startup key (minor). |
@@ -778,7 +784,7 @@ Fix: use a Compose-compatible splash/theme and clean up unused resources.
 | §7 USB: `ACTION_USB_STATE`, warning, `ADB_ENABLED=0` | **Not met** | No USB receiver; warning lost (P1-4, P0-6). |
 | §8 Security: VPN ACL outer, key file/policy inner, loopback app channel, system adbd off, residual warning, pairing, keys, revocation, no root | **Partial** | Key auth and loopback are good; residual warning lost; revocation now restarts the daemon and closes live sessions (P0-3, fixed in `822fc50`); system adbd is re-asserted and verified by the watchdog (P0-5, fixed in `17277a2`); the UI still infers "off" (P0-6) and `abortSetup()` does not verify the port (P1-9). |
 | §9 Failure modes | **Partial** | Many are explicit; the 5555 warning is missing; a sticky restart or watchdog alarm resumes setup (P0-4, fixed in `284b75b`). |
-| §10 Testing: unit (QR/key/policy/address/watchdog), integration (two listeners/two keys/policy/key reload), device matrix, CI | **Partial** | App tests 24, including `WirelessDebuggingGuardTest`; daemon tests 131 checks + integration; CI runs tests and lint on push/PR; no watchdog/backoff tests, no two-listener/two-key integration, no device matrix. |
+| §10 Testing: unit (QR/key/policy/address/watchdog), integration (two listeners/two keys/policy/key reload), device matrix, CI | **Partial** | App tests 29, including `AdbStatusTest` and `WirelessDebuggingGuardTest`; daemon tests 131 checks + integration; CI runs tests and lint on push/PR; no watchdog/backoff tests, no two-listener/two-key integration, no device matrix. |
 | §11 Phasing: Phase 0 report, Phase 1 control plane, Phase 2 patched adbd, Phase 3 depth | **Partial** | Phase 0 report absent; Phase 1/2 functional; Phase 3 not implemented. |
 | §12 Open risks | **Mostly acknowledged** | The design acknowledges the main risks; some are unhandled (process death, failure cleanup). |
 | §13 Provenance | **Partial** | NOTICE exists; license inconsistency (P2-15); "stock AOSP adbd" wording is inaccurate (P1-1). |
@@ -938,8 +944,9 @@ Gaps:
    (P0-4).
 5. Re-assert and verify `adb_wifi_enabled=0` in the watchdog (P0-5, fixed in
    `17277a2`; P1-9 remains for `abortSetup()`).
-6. Add explicit ADB state/warning fields to `ControlState`; stop inferring
-   "off" from the phase; keep the 5555 warning (P0-6, P2-6).
+6. Add explicit ADB state/warning fields to `ControlState` and stop inferring
+   "off" from the phase in `HomeScreen`; keep the 5555 warning (P0-6). Settings
+   reads the state directly (P2-6, fixed in `068201e`).
 7. Set `BootReceiver` `exported=false` and check the action (P0-7).
 8. Add release signing or document external signing (P0-8, fixed in `ec83728`).
 9. Fix the lint errors and add lint to CI (P0-9, fixed in `5efcaec` and
