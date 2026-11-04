@@ -61,8 +61,8 @@ adbd --listen tcp:127.0.0.1:15037[,tcp:<vpn-ip>:15038] \
      --pid-file /data/local/tmp/adb-anywhere/adbd.pid
 ```
 
-- `--listen` is a comma-separated list of `tcp:IP:PORT`. `127.0.0.1` and
-  `localhost` are accepted; `::1` is accepted; wildcard binds are refused.
+- `--listen` is a comma-separated list of `tcp:IP:PORT`. Any explicit address is
+  accepted, loopback or VPN; wildcard binds are refused.
 - `--keys` points at an `adb_keys`-format file: `<base64-adbkey-pub> <label>`.
   The file is the only authorization source; unknown keys are never prompted for
   or auto-accepted.
@@ -97,7 +97,7 @@ These are the patches, all in `patches/`:
 | `06-adb_auth.h` | Drops the TLS declarations from the shared header. |
 | `07-adb.cpp` | Rejects `A_STLS` on the daemon side instead of starting a TLS handshake. |
 | `08-adb_trace.cpp` | Substitutes a tag for `LOG()` without `LOG_TAG`, instead of passing null to the logd splitter. |
-| `09-socket_spec.cpp` | Accepts `127.0.0.1` as a loopback literal; AOSP only accepts `localhost` and `::1`. |
+| `09-socket_spec.cpp` | Binds any explicit address, loopback or VPN; AOSP only accepts `localhost`, `::1` or every interface. |
 
 Not implemented: USB, vsock, TLS, pairing, mDNS advertisement, `jdwp:`,
 `track-jdwp`, `track-app`, `abb:`, `framebuffer:` over USB, `root:`, `remount:`,

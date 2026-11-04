@@ -12,8 +12,12 @@ here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 build=${BUILD_DIR:-$here/build}
 src=$build/src
 
-rm -rf "$src"
 mkdir -p "$build"
+# Gradle and a manual test build may run at the same time; serialise them.
+exec 9>"$build/.lock"
+flock 9
+
+rm -rf "$src"
 cp -a "$here/vendor/adb" "$src"
 for p in "$here"/patches/*.patch; do
     patch -p1 -s -d "$src" < "$p"

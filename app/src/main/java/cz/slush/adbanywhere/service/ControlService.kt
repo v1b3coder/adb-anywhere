@@ -327,9 +327,11 @@ class ControlService : Service() {
     }
 
     /**
-     * Undoes a failed setup attempt: closes the system TLS listener, stops the
-     * patched daemon and restores the ADB_ENABLED value the bootstrap replaced.
-     * Returns a warning when the listener could not be closed.
+     * Undoes a failed setup attempt: stops the patched daemon and restores the
+     * ADB_ENABLED value the bootstrap replaced. It deliberately leaves the
+     * system wireless debugging alone: setup did not reach the point where the
+     * patched daemon is verified, and turning it off here would cut the very
+     * connection the retry needs.
      */
     private suspend fun abortSetup(adbEnabledBefore: Int): String? =
         withContext(Dispatchers.IO + NonCancellable) {
@@ -350,21 +352,16 @@ class ControlService : Service() {
                 Socket().use { it.connect(InetSocketAddress("127.0.0.1", prefs.loopbackPort), 300) }
                 true
             }.getOrDefault(false)
-            val wifiOff = SystemSettings.setAdbWifiEnabled(context, false) &&
-                SystemSettings.adbWifiEnabled(context) == 0
             if (adbEnabledBefore >= 0) {
                 SystemSettings.setAdbEnabled(context, adbEnabledBefore == 1)
             }
-            Log.i("AdbAnywhere", "setup cleanup stopped=$stopped listening=$daemonListening wifiOff=$wifiOff")
-            val warnings = buildList {
-                if (daemonListening) add("the patched adbd still listens on 127.0.0.1:${prefs.loopbackPort}")
-                if (!wifiOff) add("system wireless debugging is still on")
-            }
-            if (warnings.isEmpty()) {
-                null
+            Log.i("AdbAnywhere", "setup cleanup stopped=$stopped listening=$daemonListening")
+            if (daemonListening) {
+                "Cleanup incomplete: the patched adbd still listens on " +
+                    "127.0.0.1:${prefs.loopbackPort}. Turn wireless debugging off in " +
+                    "Settings, or reboot."
             } else {
-                "Cleanup incomplete: ${warnings.joinToString(" and ")}. " +
-                    "Turn wireless debugging off in Settings, or reboot."
+                null
             }
         }
 

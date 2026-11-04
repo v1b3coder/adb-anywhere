@@ -129,7 +129,7 @@ a copy, never a merge.
 | `daemon/services.cpp`: reject `abb:`, `jdwp:`, `root:`, `remount:`, `reboot:`, `usb:`, `tcpip:` and the test socket services | The patched adbd must not touch the system adbd or reboot |
 | `transport.cpp`, `adb.cpp`, `adb_auth.h`: no TLS handshake | Plain ADB over the VPN |
 | `compression_utils.h`: compile out Brotli/LZ4/Zstd | Never advertise `sendrecv_v2` |
-| `adb_trace.cpp`, `socket_spec.cpp`: null log tag, `127.0.0.1` as a loopback literal | The standalone daemon's two small robustness fixes |
+| `adb_trace.cpp`, `socket_spec.cpp`: null log tag, explicit-address bind | The standalone daemon's two small robustness fixes |
 
 Multi-listener is not a large patch. `setup_adb` already loops over the address
 list and `init_transport_socket_server` starts one thread per address

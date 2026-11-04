@@ -1,6 +1,17 @@
 --- a/socket_spec.cpp
 +++ b/socket_spec.cpp
-@@ -153,8 +153,8 @@
+@@ -16,6 +16,10 @@
+ 
+ #include "socket_spec.h"
+ 
++#include <netdb.h>
++#include <sys/socket.h>
++#include <unistd.h>
++
+ #include <limits>
+ #include <string>
+ #include <string_view>
+@@ -153,8 +157,8 @@
  }
  
  static bool tcp_host_is_local(std::string_view hostname) {
@@ -11,3 +22,62 @@
  }
  
  bool is_socket_spec(std::string_view spec) {
+@@ -336,6 +340,47 @@
+     return false;
+ }
+ 
++// AOSP's socket_spec_listen only binds loopback or every interface. The
++// standalone daemon is given an explicit VPN address by the app, so bind the
++// address it names.
++static int listen_on_host(std::string_view hostname, int port, int type, std::string* error) {
++    addrinfo hints = {};
++    hints.ai_family = AF_UNSPEC;
++    hints.ai_socktype = type;
++    hints.ai_flags = AI_NUMERICHOST | AI_PASSIVE;
++
++    addrinfo* result = nullptr;
++    std::string host(hostname);
++    std::string port_str = std::to_string(port);
++    int rc = getaddrinfo(host.c_str(), port_str.c_str(), &hints, &result);
++    if (rc != 0) {
++        *error = gai_strerror(rc);
++        return -1;
++    }
++
++    unique_fd fd;
++    for (addrinfo* ai = result; ai != nullptr; ai = ai->ai_next) {
++        fd.reset(socket(ai->ai_family, ai->ai_socktype | SOCK_CLOEXEC, ai->ai_protocol));
++        if (fd == -1) {
++            continue;
++        }
++        int n = 1;
++        adb_setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &n, sizeof(n));
++        if (bind(fd.get(), ai->ai_addr, ai->ai_addrlen) == 0 &&
++            (type != SOCK_STREAM || listen(fd.get(), SOMAXCONN) == 0)) {
++            break;
++        }
++        fd.reset();
++    }
++    freeaddrinfo(result);
++
++    if (fd == -1) {
++        *error = strerror(errno);
++        return -1;
++    }
++    return fd.release();
++}
++
+ int socket_spec_listen(std::string_view spec, std::string* error, int* resolved_port) {
+     if (spec.starts_with("tcp:")) {
+         std::string hostname;
+@@ -356,9 +401,7 @@
+         } else if (hostname == "::1") {
+             result = network_loopback_server(port, SOCK_STREAM, error, false);
+         } else {
+-            // TODO: Implement me.
+-            *error = "listening on specified hostname currently unsupported";
+-            return -1;
++            result = listen_on_host(hostname, port, SOCK_STREAM, error);
+         }
+ 
+         if (result >= 0 && resolved_port) {
