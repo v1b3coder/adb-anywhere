@@ -20,7 +20,7 @@ production-ready until the P0 items below are fixed and the design is reconciled
 | Dimension | Rating | Main reason |
 |---|---|---|
 | Functional core | 7/10 | The real phone path works; process-death recovery is broken. |
-| Security | 5/10 | Key auth and loopback are good; failure paths can leave the system listener on; revocation is not live; the boot receiver is exported. |
+| Security | 5/10 | Key auth and loopback are good; failure paths can leave the system listener on; revocation is not live; the boot receiver was exported (P0-7, fixed). |
 | Reliability | 4/10 | No backoff, no log rotation, daemon DoS, no USB state, no exact alarm. |
 | Test coverage | 5/10 | Good daemon tests; the wireless-debugging guard now has app unit tests; still missing watchdog/backoff, two-listener/two-key integration, and a device matrix. |
 | Release engineering | 6/10 | Signed tag releases with versioning and CI; tests and lint run on push and PR; no device matrix or update channel. |
@@ -271,9 +271,9 @@ warning instead of inferring from the phase.
 
 ### P0-7 — `BootReceiver` is exported and does not check the action
 
-`AndroidManifest.xml:53-56` declares `BootReceiver` with `android:exported="true"`,
-and `BootReceiver.onReceive` starts `ControlService.ACTION_START` for any intent
-(`BootReceiver.kt:12-14`). It does not check `intent.action`.
+`AndroidManifest.xml:53-56` declared `BootReceiver` with `android:exported="true"`,
+and `BootReceiver.onReceive` started `ControlService.ACTION_START` for any intent
+(`BootReceiver.kt:12-14`). It did not check `intent.action`.
 
 Impact: any app on the phone can send an explicit intent with an unprotected action to
 `cz.slush.adbanywhere/.service.BootReceiver` and trigger the control service. If the
@@ -284,6 +284,14 @@ delivered to non-exported receivers.
 
 Fix: `android:exported="false"` and/or check
 `intent.action in {BOOT_COMPLETED, LOCKED_BOOT_COMPLETED, MY_PACKAGE_REPLACED}`.
+
+**Status: fixed in `c31f59c`.** `BootReceiver` is now declared with
+`android:exported="false"`, and `onReceive` only starts `ControlService` for
+`BOOT_COMPLETED`, `LOCKED_BOOT_COMPLETED` and `MY_PACKAGE_REPLACED`. On an
+Android 15 emulator, reinstalling the APK restarted the service through
+`MY_PACKAGE_REPLACED`, an explicit `BOOT_COMPLETED` from the root uid still
+started it, a bogus action from the root uid did not, and a send from the shell
+uid 2000 was refused.
 
 ### P0-8 — Release artifact is unsigned
 
@@ -859,7 +867,8 @@ Material 3 in `Theme.kt`.
 - **System listener on a failed setup** (P1-9): `abortSetup()` checks the setting,
   not the closed port; `harden()` and the watchdog now verify it (P0-5, fixed in
   `17277a2`).
-- **Exported boot receiver** (P0-7): any app can trigger setup.
+- **Exported boot receiver** (P0-7, fixed in `c31f59c`): the receiver is not
+  exported and only acts on the three boot actions.
 - **Local daemon spoofing** (P1-14): loopback identity is not proven.
 - **Daemon DoS** (P1-7): unlimited unauthenticated connections/threads.
 - **Shell = policy authority** (P1-11): any developer key can rewrite the key
@@ -989,7 +998,8 @@ Gaps:
 6. Add explicit ADB state/warning fields to `ControlState` and stop inferring
    "off" from the phase in `HomeScreen`; keep the 5555 warning (P0-6). Settings
    reads the state directly (P2-6, fixed in `068201e`).
-7. Set `BootReceiver` `exported=false` and check the action (P0-7).
+7. Set `BootReceiver` `exported=false` and check the action (P0-7, fixed in
+   `c31f59c`).
 8. Add release signing or document external signing (P0-8, fixed in `ec83728`).
 9. Fix the lint errors and add lint to CI (P0-9, fixed in `5efcaec` and
    `ed5d22b`).
