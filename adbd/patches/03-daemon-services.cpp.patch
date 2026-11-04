@@ -10,7 +10,7 @@
  
  #include "adb.h"
  #include "adb_io.h"
-@@ -51,38 +49,13 @@
+@@ -51,23 +49,16 @@
  #include "services.h"
  #include "socket_spec.h"
  #include "sysdeps.h"
@@ -29,27 +29,14 @@
 -    kick_transport(t);
 -}
 -
--unique_fd reverse_service(std::string_view command, atransport* transport) {
+ unique_fd reverse_service(std::string_view command, atransport* transport) {
 -    // TODO: Switch handle_forward_request to std::string_view.
--    std::string str(command);
--
--    int s[2];
--    if (adb_socketpair(s)) {
--        PLOG(ERROR) << "cannot create service socket pair.";
--        return unique_fd{};
--    }
--    VLOG(SERVICES) << "service socketpair: " << s[0] << ", " << s[1];
--    if (!handle_forward_request(str.c_str(), transport, s[1])) {
--        SendFail(s[1], "not a reverse forwarding command");
--    }
--    adb_close(s[1]);
--    return unique_fd{s[0]};
--}
--
- // Shell service string can look like:
- //   shell[,arg1,arg2,...]:[command]
- unique_fd ShellService(std::string_view args, const atransport* transport) {
-@@ -122,48 +95,6 @@
++    // The device listens on <local> and forwards each connection to <remote> on
++    // the host, through the transport. This is what `adb reverse` needs.
+     std::string str(command);
+ 
+     int s[2];
+@@ -122,48 +113,6 @@
      return StartSubprocess(command, terminal_type.c_str(), type, protocol);
  }
  
@@ -98,7 +85,7 @@
  struct ServiceSocket : public asocket {
      ServiceSocket() = delete;
      explicit ServiceSocket(atransport* transport) {
-@@ -249,80 +180,12 @@
+@@ -249,80 +198,12 @@
      size_t bytes_left_;
  };
  
@@ -179,7 +166,7 @@
      }
  #endif
  
-@@ -345,12 +208,6 @@
+@@ -345,12 +226,6 @@
          }
  
          return fd;
@@ -192,12 +179,10 @@
      } else if (android::base::ConsumePrefix(&name, "shell")) {
          return ShellService(name, transport);
      } else if (android::base::ConsumePrefix(&name, "exec:")) {
-@@ -358,14 +215,15 @@
-                                SubprocessProtocol::kNone);
-     } else if (name.starts_with("sync:")) {
+@@ -360,12 +235,15 @@
          return create_service_thread("sync", file_sync_service);
--    } else if (android::base::ConsumePrefix(&name, "reverse:")) {
--        return reverse_service(name, transport);
+     } else if (android::base::ConsumePrefix(&name, "reverse:")) {
+         return reverse_service(name, transport);
 -    } else if (name == "reconnect") {
 -        return create_service_thread(
 -                "reconnect", std::bind(reconnect_service, std::placeholders::_1, transport));

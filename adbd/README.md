@@ -76,7 +76,8 @@ adbd --listen tcp:127.0.0.1:15037[,tcp:<vpn-ip>:15038] \
 ## Supported subset
 
 Transports: TCP only. Services: `shell:` (v1 and v2), `exec:`, `sync:` (v1),
-`tcp:` (forward) and `framebuffer:`.
+`tcp:` (forward), `reverse:` (the device listens and forwards to the host) and
+`framebuffer:`.
 
 `framebuffer:` is included for screenshots. It shells out to `screencap`, so the
 device needs the platform `screencap` binary. The app's own screenshot path uses
@@ -90,7 +91,7 @@ These are the patches, all in `patches/`:
 |---|---|
 | `01-daemon-main.cpp` | TCP-only: no USB, vsock, mDNS, watchdog, jdwp, trade-in, privilege dropping. Adds `--listen`, `--keys`, `--log`, `--pid-file`. |
 | `02-daemon-auth.cpp` | No TLS or pairing; keeps the RSA key-file verification. Skips the init control socket. |
-| `03-daemon-services.cpp` | Keeps `shell:`, `exec:`, `sync:`, `tcp:` and `framebuffer:`; rejects `abb:`, `jdwp:`, `root:`, `remount:`, `reboot:`, `usb:`, `tcpip:`, `reverse:` and the test socket services. |
+| `03-daemon-services.cpp` | Keeps `shell:`, `exec:`, `sync:`, `tcp:`, `reverse:` and `framebuffer:`; rejects `abb:`, `jdwp:`, `root:`, `remount:`, `reboot:`, `usb:`, `tcpip:` and the test socket services. |
 | `04-transport.cpp` | `DoTlsHandshake` returns false; TLS is not built. |
 | `05-compression_utils.h` | Compiles out Brotli/LZ4/Zstd; the daemon never advertises `sendrecv_v2`. |
 | `06-adb_auth.h` | Drops the TLS declarations from the shared header. |
@@ -98,10 +99,10 @@ These are the patches, all in `patches/`:
 | `08-adb_trace.cpp` | Substitutes a tag for `LOG()` without `LOG_TAG`, instead of passing null to the logd splitter. |
 | `09-socket_spec.cpp` | Accepts `127.0.0.1` as a loopback literal; AOSP only accepts `localhost` and `::1`. |
 
-Not implemented: USB, vsock, TLS, pairing, mDNS advertisement, `reverse:`,
-`jdwp:`, `track-jdwp`, `track-app`, `abb:`, `framebuffer:` over USB, `root:`,
-`remount:`, `reboot:`, `restore:`, `disable-verity:`, `enable-verity:`, `spin`,
-`reconnect`, and the adb client.
+Not implemented: USB, vsock, TLS, pairing, mDNS advertisement, `jdwp:`,
+`track-jdwp`, `track-app`, `abb:`, `framebuffer:` over USB, `root:`, `remount:`,
+`reboot:`, `restore:`, `disable-verity:`, `enable-verity:`, `spin`, `reconnect`,
+and the adb client.
 
 ## Tests
 

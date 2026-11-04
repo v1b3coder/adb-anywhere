@@ -125,8 +125,8 @@ a copy, never a merge.
 | `daemon/main.cpp`: accept `--listen`, `--keys`, `--log`, `--pid-file`; warn on `--policy` | Bind the exact addresses and key file the app gives it |
 | `daemon/main.cpp`: skip USB, vsock, mDNS, watchdog, jdwp, trade-in, privilege dropping | Never touch USB, vsock or the system adbd |
 | `daemon/auth.cpp`: no TLS or pairing | RSA key-file authentication only |
-| `daemon/services.cpp`: keep `shell:`, `exec:`, `sync:`, `tcp:`, `framebuffer:` | What developer machines and screenshots need |
-| `daemon/services.cpp`: reject `abb:`, `jdwp:`, `root:`, `remount:`, `reboot:`, `usb:`, `tcpip:`, `reverse:` and the test socket services | The patched adbd must not touch the system adbd or reboot |
+| `daemon/services.cpp`: keep `shell:`, `exec:`, `sync:`, `tcp:`, `reverse:`, `framebuffer:` | What developer machines, `adb reverse` and screenshots need |
+| `daemon/services.cpp`: reject `abb:`, `jdwp:`, `root:`, `remount:`, `reboot:`, `usb:`, `tcpip:` and the test socket services | The patched adbd must not touch the system adbd or reboot |
 | `transport.cpp`, `adb.cpp`, `adb_auth.h`: no TLS handshake | Plain ADB over the VPN |
 | `compression_utils.h`: compile out Brotli/LZ4/Zstd | Never advertise `sendrecv_v2` |
 | `adb_trace.cpp`, `socket_spec.cpp`: null log tag, `127.0.0.1` as a loopback literal | The standalone daemon's two small robustness fixes |
@@ -142,7 +142,7 @@ build script and vendored dependencies, not a per-release patch.
 Build targets: `arm64-v8a`, `armeabi-v7a`, `x86_64` (`adbd/build.sh`). Bundle in
 the APK as assets. AOSP `adbd` is Apache 2.0; ship `NOTICE` and the source offer.
 
-Not implemented: USB, vsock, TLS, pairing, mDNS, `reverse:`, `jdwp:`, `track-jdwp`,
+Not implemented: USB, vsock, TLS, pairing, mDNS, `jdwp:`, `track-jdwp`,
 `track-app`, `abb:`, `root:`, `remount:`, `reboot:`, `restore:`, `disable-verity:`
 and `enable-verity:`. The daemon also has no per-key policy layer yet: `--policy`
 is accepted and ignored, so every key in the key file may open every supported
