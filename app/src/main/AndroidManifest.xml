@@ -4,6 +4,13 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!--
+      The connectedDevice foreground service type is refused without one of
+      CHANGE_NETWORK_STATE, CHANGE_WIFI_STATE or the Bluetooth/NFC/USB
+      permissions (0c54704). Without it startForeground() throws, the service
+      never reaches the foreground and the system kills the app on the deadline.
+    -->
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />

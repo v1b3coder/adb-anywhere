@@ -609,17 +609,24 @@ Fix: remove the reflection fallback, or use a supported API.
 
 ### P2-5 — Unused permissions
 
-**Status: fixed in `8b14729`.** `app/src/main/AndroidManifest.xml` now declares only
-`ACCESS_NETWORK_STATE` of the four; the three unused entries are gone from the
-merged manifest. The `io.github.muntashirakon.adb` library still contributes
-`WRITE_EXTERNAL_STORAGE`, `READ_EXTERNAL_STORAGE`, and `READ_PHONE_STATE` as
-implied permissions (P2-14).
+**Status: fixed in `8b14729` and corrected with the start/stop control.**
+`app/src/main/AndroidManifest.xml` no longer declares `CHANGE_WIFI_STATE` or
+`ACCESS_WIFI_STATE`. `CHANGE_NETWORK_STATE` stays: it is not used by app code, but
+the `connectedDevice` foreground service type is refused without one of
+`CHANGE_NETWORK_STATE`, `CHANGE_WIFI_STATE` or the Bluetooth/NFC/USB permissions
+(`0c54704`). Removing it made `startForeground()` throw a `SecurityException`; the
+service never reached the foreground, the notification disappeared, and the system
+killed the app with `ForegroundServiceDidNotStartInTimeException` about 15 s after
+each start, including the one a Stop tap performs. The `io.github.muntashirakon.adb`
+library still contributes `WRITE_EXTERNAL_STORAGE`, `READ_EXTERNAL_STORAGE`, and
+`READ_PHONE_STATE` as implied permissions (P2-14).
 
 The manifest declared `CHANGE_NETWORK_STATE`, `CHANGE_WIFI_STATE`, and
 `ACCESS_WIFI_STATE` but the app uses none of them (`grep` finds no use).
 `ACCESS_NETWORK_STATE` is used by `ConnectivityManager`; the others are not.
 
-Fix: remove the unused permissions.
+Fix: remove the unused permissions, except the foreground-service prerequisite
+above.
 
 ### P2-6 — `SettingsScreen` does not show the current ADB state
 
