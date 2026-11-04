@@ -72,9 +72,13 @@ network.
 
 ```sh
 ./gradlew :app:testDebugUnitTest   # JVM tests
+./gradlew :app:lintDebug           # lint gate; errors fail the build
 ./gradlew :app:assembleDebug       # APK
 scripts/e2e-emulator.sh            # end-to-end against a rooted emulator
 ```
+
+`.github/workflows/ci.yml` runs the JVM tests, `lintDebug` and `assembleDebug` on
+every push to `main` and every pull request.
 
 The patched `adbd` is a separate minimal fork, cloned next to this repository:
 

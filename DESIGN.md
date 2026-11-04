@@ -376,7 +376,8 @@ a different mode.
   `shell:`/`sync:`, policy allow/deny, key reload.
 - Device matrix: Pixel, Samsung, OnePlus; Tailscale and WireGuard; reboot,
   Wi-Fi↔cellular, USB attach/detach, Doze.
-- CI: `./gradlew test assembleDebug`; no device tests in CI.
+- CI: `./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug`;
+  no device tests in CI.
 
 ## 11. Phasing
 
