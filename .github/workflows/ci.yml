@@ -1,5 +1,6 @@
 # Push/PR gate: unit tests, lint and the debug APK. A lint error fails the build.
-# The adbd fork is not cloned here, so `syncAdbd` uses the committed binaries.
+# `syncAdbd` builds the vendored adbd fork from source, so the daemon's C++
+# sources are compiled here too; the NDK ships with the runner image.
 name: CI
 
 on:

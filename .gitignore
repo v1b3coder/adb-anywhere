@@ -4,6 +4,9 @@
 # Android / Gradle
 .gradle/
 build/
+# Source directories that merely share the name, not build output.
+!adbd/stubs/build/
+!adbd/vendor/boringssl/util/build/
 local.properties
 *.iml
 .idea/
