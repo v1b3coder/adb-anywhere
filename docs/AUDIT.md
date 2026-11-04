@@ -359,6 +359,13 @@ the app has gone to the background.
 Fix: set `Settings.Global.ADB_ALLOWED_CONNECTION_TIME` to `0` when bootstrapping,
 and re-assert it on boot/watchdog.
 
+**Status: fixed in `d546e4b`.** `SystemSettings.ensureNoAdbConnectionTimeout()`
+writes the key by name (it is `@hide`) and verifies the read-back. `setup()`
+re-asserts it while it re-opens the bootstrap path, so a boot goes through it, and
+`watchdog()` re-asserts it on every tick. A failed write is logged, not fatal: the
+framework default still leaves a window, and an OEM that ignores the key must not
+block setup. Not yet re-verified on a device.
+
 ### P1-3 — The `persist.adb.tcp.port` probe is missing
 
 DESIGN.md §9 says a reboot on cellular probes 5555, the last port, TLS on Wi-Fi, and
@@ -813,7 +820,7 @@ Material 3 in `Theme.kt`.
 | §6 Watchdog: 60 s screen-on / 15 min otherwise, exact alarm, USB + network callbacks, backoff/hysteresis | **Not met** | 60 s always, `setAndAllowWhileIdle`, no USB callback, no backoff (P1-4, P1-5, P1-6). |
 | §7 First run | **Met** | Implemented end-to-end (modulo P0-2 cleanup not re-verified on a device). |
 | §7 Port discovery: TLS primary, mDNS fallback, manual port, `tcpip:<port>` | **Partial** | TLS/mDNS/manual implemented; `tcpip:<port>` not (P1-12). |
-| §7 Boot: boot receiver, re-assert `adb_wifi_enabled` and `adb_allowed_connection_time=0`, probe, deploy, harden, manual recovery | **Partial** | Boot receiver and probe implemented; `adb_allowed_connection_time=0` missing (P1-2); `persist.adb.tcp.port` missing (P1-3). |
+| §7 Boot: boot receiver, re-assert `adb_wifi_enabled` and `adb_allowed_connection_time=0`, probe, deploy, harden, manual recovery | **Partial** | Boot receiver and probe implemented; `adb_allowed_connection_time=0` is re-asserted on bootstrap and every watchdog tick (P1-2, fixed in `d546e4b`); `persist.adb.tcp.port` missing (P1-3). |
 | §7 Network change: VPN restart, VPN down, TLS switch | **Partial / contradicts D5** | VPN restart and VPN down implemented, coalesced, and re-checked by the watchdog; TLS switch not implemented (P1-13). |
 | §7 USB: `ACTION_USB_STATE`, warning, `ADB_ENABLED=0` | **Not met** | No USB receiver; warning lost (P1-4, P0-6). |
 | §8 Security: VPN ACL outer, key file/policy inner, loopback app channel, system adbd off, residual warning, pairing, keys, revocation, no root | **Partial** | Key auth and loopback are good; residual warning lost; revocation now restarts the daemon and closes live sessions (P0-3, fixed in `822fc50`); system adbd is re-asserted and verified by the watchdog (P0-5, fixed in `17277a2`); the UI still infers "off" (P0-6) and `abortSetup()` does not verify the port (P1-9). |
@@ -888,8 +895,9 @@ VPN's ACL is the only network boundary and that the app cannot verify it.
   system settings (`ADB_ENABLED`, `adb_wifi_enabled`) are not restored on
   uninstall. The app cannot run on uninstall without a receiver; document the
   manual cleanup.
-- No `adb_allowed_connection_time=0` (P1-2), so the framework may disable
-  wireless debugging after a timeout.
+- `adb_allowed_connection_time=0` is re-asserted on bootstrap and every
+  watchdog tick (P1-2, fixed in `d546e4b`), so the framework does not disable
+  wireless debugging on its timeout.
 - No `persist.adb.tcp.port` probe (P1-3), so the documented cellular recovery
   is incomplete.
 
@@ -990,8 +998,7 @@ Gaps:
 
 1. Reconcile DESIGN.md with the independent daemon, or replace the daemon with
    the described AOSP fork (P1-1).
-2. Add `adb_allowed_connection_time=0`, `persist.adb.tcp.port` probe, and
-   `ACTION_USB_STATE` (P1-2, P1-3, P1-4).
+2. Add the `persist.adb.tcp.port` probe and `ACTION_USB_STATE` (P1-3, P1-4).
 3. Make the watchdog exact/screen-aware/backoff (P1-5, P1-6).
 4. Cap daemon connections, add pre-auth limits/timeouts, rotate logs
    (P1-7, P1-8).
@@ -1030,8 +1037,10 @@ Gaps:
    it; if no, remove it from DESIGN.md §7.
 7. **Network-change TLS switch**: is DESIGN.md §7's TLS fallback still desired?
    It contradicts D5. Choose one and update the other.
-8. **`adb_allowed_connection_time=0`**: is it safe to set on all target devices?
-   It changes the framework's wireless-debugging timeout behavior.
+8. **`adb_allowed_connection_time=0`**: resolved — the design mandates it
+   (P1-2, fixed in `d546e4b`). The app writes it best-effort and logs a
+   failure, because the write needs `WRITE_SECURE_SETTINGS` and an OEM could
+   ignore it; setup does not fail over it. Not yet re-verified across OEMs.
 
 ---
 
