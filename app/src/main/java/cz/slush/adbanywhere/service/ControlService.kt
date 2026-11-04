@@ -676,12 +676,22 @@ class ControlService : Service() {
             startForeground(state)
             return
         }
-        runCatching {
-            NotificationManagerCompat.from(this).notify(
-                Notifications.SERVICE_ID,
-                buildServiceNotification(state),
-            )
+        // The foreground notification is exempt from POST_NOTIFICATIONS; updating it is not.
+        postNotification(Notifications.SERVICE_ID, buildServiceNotification(state))
+    }
+
+    /**
+     * POST_NOTIFICATIONS is runtime-grantable from API 33. The check stays next to the
+     * call so the guard is visible to lint; runCatching covers a revocation in between.
+     */
+    private fun postNotification(id: Int, notification: Notification) {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return
         }
+        runCatching { NotificationManagerCompat.from(this).notify(id, notification) }
     }
 
     private fun buildServiceNotification(state: ControlState): Notification {
@@ -720,12 +730,6 @@ class ControlService : Service() {
     }
 
     private fun postPairingNotification() {
-        if (Build.VERSION.SDK_INT >= 33 &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
-            PackageManager.PERMISSION_GRANTED
-        ) {
-            return
-        }
         val text = "Open Settings → Developer options → Wireless debugging → Pair device " +
             "with pairing code. Then reply here with code:port."
         val input = RemoteInput.Builder(EXTRA_PAIR_INPUT)
@@ -746,7 +750,7 @@ class ControlService : Service() {
             .setContentIntent(contentPendingIntent())
             .addAction(action)
             .build()
-        runCatching { NotificationManagerCompat.from(this).notify(Notifications.PAIRING_ID, notification) }
+        postNotification(Notifications.PAIRING_ID, notification)
     }
 
     private fun contentPendingIntent(): PendingIntent = PendingIntent.getActivity(
