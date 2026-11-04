@@ -106,8 +106,8 @@ Three ADB processes and one app process:
 | Component | Runs as | Listener | Role |
 |---|---|---|---|
 | System `adbd` | `shell` (retail) | USB (left on); TLS before `ADB_WIFI_ENABLED=0`; TCP 5555 only on some devices | Bootstrap; key auth; system services |
-| Patched `adbd` | `shell` | `127.0.0.1:<portA>` and `<vpn-ip>:<portB>` | Only ADB endpoint for the app and developer machines; policy and logs |
-| App | app uid | none | Control plane: deploys, keys, policy, watchdog, UI |
+| Patched `adbd` | `shell` | `127.0.0.1:<portA>` and `<vpn-ip>:<portB>` | Only ADB endpoint for the app and developer machines; key file and logs |
+| App | app uid | none | Control plane: deploys, keys, watchdog, UI |
 | Developer machine `adb` | host | none | Client |
 
 The patched adbd is AOSP `adbd` vendored under `adbd/`, built as a standalone
@@ -122,7 +122,7 @@ a copy, never a merge.
 
 | Patch | Purpose |
 |---|---|
-| `daemon/main.cpp`: accept `--listen`, `--keys`, `--log`, `--pid-file`; warn on `--policy` | Bind the exact addresses and key file the app gives it |
+| `daemon/main.cpp`: accept `--listen`, `--keys`, `--log`, `--pid-file` | Bind the exact addresses and key file the app gives it |
 | `daemon/main.cpp`: skip USB, vsock, mDNS, watchdog, jdwp, trade-in, privilege dropping | Never touch USB, vsock or the system adbd |
 | `daemon/auth.cpp`: no TLS or pairing | RSA key-file authentication only |
 | `daemon/services.cpp`: keep `shell:`, `exec:`, `sync:`, `tcp:`, `reverse:`, `framebuffer:` | What developer machines, `adb reverse` and screenshots need |
@@ -144,19 +144,18 @@ the APK as assets. AOSP `adbd` is Apache 2.0; ship `NOTICE` and the source offer
 
 Not implemented: USB, vsock, TLS, pairing, mDNS, `jdwp:`, `track-jdwp`,
 `track-app`, `abb:`, `root:`, `remount:`, `reboot:`, `restore:`, `disable-verity:`
-and `enable-verity:`. The daemon also has no per-key policy layer yet: `--policy`
-is accepted and ignored, so every key in the key file may open every supported
-service.
+and `enable-verity:`. The daemon also has no per-key policy or filtering layer
+yet, so every key in the key file may open every supported service. The app no
+longer writes a `policy.tsv`; filtering will get its own design.
 
 ### Key provisioning
 
 - First run: the app generates an ephemeral RSA keypair. The private key stays in
   app-private storage; the public key is written to the patched adbd key file before
   it starts.
-- The patched adbd key file contains only the app key at startup, so the app is the
-  only entity accepted.
-- Developer machine keys are added by QR or pasted public key. Each key has a label and a role:
-  `app` (full access) or `developer` (policy).
+- The patched adbd key file contains the app key and the developer keys the user
+  adds. Unknown keys are never prompted for or auto-accepted.
+- Developer machine keys are added by QR or pasted public key. Each key has a label.
 - The app rewrites the key file through the patched adbd's `shell:`. It never needs
   a second listener.
 - On reinstall, the app generates a new keypair and rewrites the key file. Old keys
@@ -175,8 +174,7 @@ accepts a paste. No companion app is needed.
 3. The app decodes the base64 DER, validates it as an RSA public key, and shows
    the SHA-256 fingerprint.
 4. The user confirms the fingerprint and labels the machine.
-5. The app appends the key to the patched adbd key file with the label and role
-   `developer`.
+5. The app appends the key to the patched adbd key file with the label.
 6. The developer machine runs `adb connect <vpn-name>:<portB>` with its private key.
 
 The public key is public; no signature or nonce is needed to add it. The defense is
@@ -333,12 +331,11 @@ has no TCP listener, so there is nothing to monitor or turn off.
 
 ## 8. Security model
 
-- **Assets**: ADB shell access, the app key, developer machine keys, the policy
-  file.
+- **Assets**: ADB shell access, the app key, developer machine keys.
 - **Outer boundary**: the VPN ACL. The patched adbd's VPN listener is only
   reachable by allowed VPN peers.
-- **Inner boundary**: the patched adbd key file and per-key policy. Only the app and
-  explicitly paired developer machines are accepted.
+- **Inner boundary**: the patched adbd key file. Only the app and explicitly paired
+  developer machines are accepted.
 - **App channel**: loopback, independent of the VPN.
 - **System adbd**: USB (left on); not reachable over TCP after
   `ADB_WIFI_ENABLED=0`.
@@ -377,10 +374,10 @@ a different mode.
 
 ## 10. Testing
 
-- Unit: QR payload parser and public-key validation, key file writer, policy
-  evaluator, address selection, watchdog state machine.
-- Integration: patched adbd on an emulator, two listeners, auth with two keys,
-  `shell:`/`sync:`, policy allow/deny, key reload.
+- Unit: QR payload parser and public-key validation, key file writer, address
+  selection, watchdog state machine.
+- Integration: the vendored adbd's shared-core suite (`ADBD_TESTS=1`), two
+  listeners, auth with two keys, `shell:`/`sync:`/`tcp:`/`reverse:`, key reload.
 - Device matrix: Pixel, Samsung, OnePlus; Tailscale and WireGuard; reboot,
   Wi-Fi↔cellular, USB attach/detach, Doze.
 - CI: `./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug`;
@@ -395,7 +392,7 @@ a different mode.
   pairing, network gating, UI. Development milestone only; the app fails
   explicitly if the patched adbd is unavailable.
 - **Phase 2 — vendored adbd**: build from `adbd/`, bundle, deploy, two listeners,
-  key provisioning, QR and paste pairing, policy and logs, watchdog.
+  key provisioning, QR and paste pairing, logs, watchdog.
 - **Phase 3 — depth**: per-service and per-command policy, connection log
   export, recovery hardening.
 
@@ -429,5 +426,6 @@ port.
 ## 13. Provenance
 
 Inspired by [mouldybread/adb-auto-enable](https://github.com/mouldybread/adb-auto-enable)
-(MIT). The patched adbd is derived from AOSP `packages/modules/adb` (Apache 2.0);
-its `NOTICE` and source offer ship with the app. The app's own code is MIT.
+(MIT). The patched adbd is vendored from AOSP `packages/modules/adb` (Apache 2.0)
+and BoringSSL (ISC); the upstream commits, the patches and the `NOTICE` files are
+in `adbd/`. The app's own code is MIT.

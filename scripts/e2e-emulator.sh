@@ -30,16 +30,17 @@ adb -s "$serial" shell "am start -n $pkg/.MainActivity" >/dev/null
 sleep 6
 
 # Give the app the host key through its debug-only intent, then let the service
-# rewrite the key file and the policy without restarting the daemon.
+# rewrite the key file without restarting the daemon.
 adb -s "$serial" shell "am start -n $pkg/.MainActivity --es addkey '$host_key' --es addlabel e2e-laptop" >/dev/null
 sleep 4
 
-# Prove the daemon accepts the app key and shell v2. The host adb client is
-# exercised by the daemon repository's integration test; the phone VPN path is
-# documented in docs/E2E.md.
+# Prove the daemon started and accepts the app key. The shell output is logged
+# by the app, not by the daemon. The host adb client is exercised by
+# adbd/build/out/*/adbd_tests; the phone VPN path is in docs/E2E.md.
+adb -s "$serial" shell "cat /data/local/tmp/adb-anywhere/adbd.log" | grep -q "adbd started"
 adb -s "$serial" shell "am start -n $pkg/.MainActivity --es shellcmd 'id; echo e2e-daemon-ok'" >/dev/null
 sleep 2
-adb -s "$serial" shell "cat /data/local/tmp/adb-anywhere/adbd.log" | grep -q "e2e-daemon-ok"
+adb -s "$serial" logcat -d -s AdbAnywhere | grep -q "e2e-daemon-ok"
 adb -s "$serial" shell "cat /data/local/tmp/adb-anywhere/adb_keys" | grep -q "$host_key"
 adb -s "$serial" shell "uiautomator dump /sdcard/e2e.xml >/dev/null 2>&1"
 adb -s "$serial" shell "cat /sdcard/e2e.xml" | grep -q 'ADB is reachable'

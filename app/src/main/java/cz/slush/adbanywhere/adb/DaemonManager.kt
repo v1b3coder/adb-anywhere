@@ -1,5 +1,5 @@
 /*
- * DaemonManager - deploys the minimal adbd, writes keys and policy, starts it
+ * DaemonManager - deploys the AOSP adbd, writes its key file, starts it
  * with the exact listener list and verifies the listeners.
  */
 package cz.slush.adbanywhere.adb
@@ -18,7 +18,6 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
     val remoteDir: String get() = prefs.remoteDir
     val binaryPath: String get() = "$remoteDir/adbd"
     val keysPath: String get() = "$remoteDir/adb_keys"
-    val policyPath: String get() = "$remoteDir/policy.tsv"
     val logPath: String get() = "$remoteDir/adbd.log"
     val pidPath: String get() = "$remoteDir/adbd.pid"
 
@@ -50,7 +49,7 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
         }
     }
 
-    fun writeKeysAndPolicy(
+    fun writeKeys(
         shell: Shell,
         appKey: AndroidPubKey.Key,
         developers: List<DeveloperKey>,
@@ -58,8 +57,6 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
         shell.mkdirs(remoteDir)
         shell.writeTextFile(keysPath, KeyFiles.keysFile(appKey, developers))
         shell.chmod(keysPath, "600")
-        shell.writeTextFile(policyPath, KeyFiles.policyFile(appKey, developers))
-        shell.chmod(policyPath, "600")
     }
 
     fun deployAndStart(
@@ -71,7 +68,7 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
         vpnPort: Int,
     ) {
         writeBinary(shell)
-        writeKeysAndPolicy(shell, appKey, developers)
+        writeKeys(shell, appKey, developers)
         stop(shell)
         Thread.sleep(300)
         loopbackPortForStop = loopbackPort
@@ -103,7 +100,7 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
         vpnPort: Int,
     ) {
         writeBinary(shell)
-        writeKeysAndPolicy(shell, appKey, developers)
+        writeKeys(shell, appKey, developers)
         Thread.sleep(200)
         loopbackPortForStop = loopbackPort
         val start = startCommand(shell, vpnIp, loopbackPort, vpnPort)

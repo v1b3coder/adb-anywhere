@@ -157,7 +157,7 @@ fun SetupScreen(
         item {
             SectionCard("2. Deploy the patched daemon") {
                 Text(
-                    "The app writes the minimal adbd, its key file and policy to " +
+                    "The app writes the AOSP adbd and its key file to " +
                         "/data/local/tmp/adb-anywhere, starts it with the exact listeners and " +
                         "verifies shell access before it turns Android's wireless debugging off.",
                     style = MaterialTheme.typography.bodyMedium,

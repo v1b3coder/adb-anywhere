@@ -60,9 +60,9 @@ network.
   `<vpn-ip>:<vpn-port>`. Wildcard binds are refused.
 - Only keys in `/data/local/tmp/adb-anywhere/adb_keys` are accepted. Keys offered
   by clients are never auto-accepted.
-- The policy file gives the app key the `app` role and developer keys the
-  `developer` role. Removing a key removes it from both files and restarts the
-  daemon, so the sessions that the key authenticated end.
+- Removing a key removes it from the key file and restarts the daemon, so the
+  sessions that the key authenticated end. Per-key policy and filtering are not
+  implemented yet: every key in the file may open every supported service.
 - Android's wireless debugging is turned off after the daemon is verified. *Keep
   system adb off* also sets `ADB_ENABLED=0` and restores the original value when
   turned off.

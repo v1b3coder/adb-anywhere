@@ -1,5 +1,9 @@
 # Phone end-to-end evidence
 
+> Historical evidence from the original C daemon. The daemon was replaced by the
+> vendored AOSP `adbd` in `adbd/`; see `adbd/README.md` for the current
+> contract. The app and control-plane flows are unchanged.
+
 Device: Samsung SM-S911B (Galaxy S23), Android 16, stock, no root.
 Transport: Tailscale address `100.64.0.10`.
 
@@ -20,10 +24,9 @@ dialog stayed open, then deployed the daemon with:
 ```
 --listen tcp:127.0.0.1:15037,tcp:100.64.0.10:15038
 --keys /data/local/tmp/adb-anywhere/adb_keys
---policy /data/local/tmp/adb-anywhere/policy.tsv
 ```
 
-The daemon log on the phone showed:
+The original daemon log on the phone showed:
 
 ```json
 {"event":"auth_ok","message":"peer=127.0.0.1:33564 key=508b... label=app role=app"}

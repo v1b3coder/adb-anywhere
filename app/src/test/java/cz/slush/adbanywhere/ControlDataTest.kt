@@ -83,10 +83,6 @@ class ControlDataTest {
         assertEquals(2, lines.size)
         assertTrue(lines[0].endsWith(" app"))
         assertTrue(lines[1].endsWith(" laptop"))
-
-        val policy = KeyFiles.policyFile(app, listOf(developer)).trim().lines()
-        assertEquals("${app.fingerprint} app", policy[0])
-        assertEquals("${dev.fingerprint} developer", policy[1])
     }
 
     @Test
@@ -98,8 +94,6 @@ class ControlDataTest {
         val keys = KeyFiles.keysFile(app, listOf(first, second))
         assertEquals(2, keys.trim().lines().size)
         assertTrue(keys.contains("my laptop"))
-        val policy = KeyFiles.policyFile(app, listOf(first, second))
-        assertEquals(2, policy.trim().lines().size)
     }
 
 }

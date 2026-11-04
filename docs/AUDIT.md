@@ -3,7 +3,8 @@
 
 Date: 2026-11-03
 App commit: `0c54704`
-Daemon commit: `94dcaba` (`../adb-anywhere-adbd`)
+Daemon at audit time: `94dcaba` (`../adb-anywhere-adbd`); replaced after the
+audit by the vendored AOSP adbd in `adbd/` (see `adbd/README.md`).
 Scope: app, bundled daemon, build/release setup, tests, docs, and
 conformance with `DESIGN.md`.
 
@@ -326,7 +327,12 @@ now reports 0 errors and 44 warnings; the warnings do not fail the build.
 
 ### P1-1 — The implementation is not the design's "patched AOSP adbd"
 
-DESIGN.md §6 says: "The patched adbd is a stock AOSP adbd with a minimal patch set.
+**Status: fixed in `c89676e` and `64abac8`.** The separate C daemon was removed;
+`adbd/` now vendors AOSP `adbd` (pristine trees plus focused patches), and
+DESIGN.md §6/§11/§12 describe the vendored daemon, its supported subset and its
+re-vendor process. The original finding follows.
+
+DESIGN.md §6 said: "The patched adbd is a stock AOSP adbd with a minimal patch set.
 All in `daemon/`" and lists AOSP files (`main.cpp`, `adb_wifi.cpp`,
 `auth.cpp`, `services.cpp`). The actual daemon is a ~2.3k-line independent C
 implementation (`src/main.c`, `auth.c`, `stream.c`, `service.c`, `proto.c`,

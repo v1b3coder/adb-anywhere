@@ -260,7 +260,7 @@ class ControlService : Service() {
                     // No key was revoked: the daemon reloads the key file on the
                     // next auth. Revocation sends ACTION_REVOKE_KEYS instead, so
                     // the restart above kills the sessions the key authenticated.
-                    daemon.writeKeysAndPolicy(shell, appKey, developers)
+                    daemon.writeKeys(shell, appKey, developers)
                 } else if (daemonAlive) {
                     daemon.restartDetached(
                         shell,

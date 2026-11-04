@@ -1,5 +1,10 @@
 # End-to-end test
 
+> The phone evidence below was collected with the original C daemon
+> (`../adb-anywhere-adbd`). That daemon was replaced by the vendored AOSP
+> `adbd` in `adbd/`; the current daemon contract, its key file and its tests are
+> documented in `adbd/README.md`. The app and control-plane flows are unchanged.
+
 ## Emulator
 
 `scripts/e2e-emulator.sh` runs the complete control plane on a rooted
@@ -51,8 +56,9 @@ Verified on a Samsung SM-S911B, Android 16, stock, no root:
 - The app turned Android's wireless debugging off (`adb_wifi_enabled=0`) while
   keeping `adb_enabled=1`; the system adbd stayed on USB only and the patched daemon
   remained the only TCP endpoint.
-- The daemon log shows `auth_ok` with `label=app role=app` and
-  `label=phone-laptop role=developer`; `policy.tsv` has the same split.
+- The original daemon log showed `auth_ok` with `label=app role=app` and
+  `label=phone-laptop role=developer`, and `policy.tsv` had the same split. The
+  vendored daemon does not log JSONL and has no policy file.
 
 ### Watchdog limitation found
 
