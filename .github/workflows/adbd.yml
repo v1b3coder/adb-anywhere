@@ -24,8 +24,8 @@ permissions:
 
 env:
   # Pinned: the binaries are a cache key input, so the NDK must not float with
-  # the runner image.
-  ANDROID_NDK_VERSION: '27.1.12297006'
+  # the runner image. This is the version the ubuntu-latest image ships.
+  ANDROID_NDK_VERSION: '27.3.13750724'
 
 jobs:
   build:
@@ -36,12 +36,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Install Android NDK
+      # Fail loudly rather than silently building with a different compiler: the
+      # cache key assumes this NDK produced these binaries.
+      - name: Select Android NDK
         run: |
           set -euo pipefail
-          if [ ! -d "$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION" ]; then
-            yes | sdkmanager --install "ndk;$ANDROID_NDK_VERSION"
+          ndk="$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION"
+          if [ ! -d "$ndk" ]; then
+            echo "::error::NDK $ANDROID_NDK_VERSION is not installed on this runner image"
+            exit 1
           fi
+          echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
 
       - name: Restore adbd binaries
         id: cache
@@ -52,7 +57,7 @@ jobs:
 
       - name: Build adbd
         if: steps.cache.outputs.cache-hit != 'true'
-        run: ANDROID_NDK_HOME="$ANDROID_HOME/ndk/${{ env.ANDROID_NDK_VERSION }}" ./adbd/build.sh
+        run: ./adbd/build.sh
 
       - name: Upload adbd binaries
         uses: actions/upload-artifact@v7
