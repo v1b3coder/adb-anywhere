@@ -193,8 +193,6 @@ fun AppRoot(viewModel: AppViewModel) {
                     onToggleKeepOff = viewModel::setKeepSystemAdbOff,
                     onSavePorts = viewModel::setPorts,
                     onBatteryExemption = { viewModel.requestBatteryExemption(it) },
-                    onRestart = viewModel::restart,
-                    onStop = viewModel::stop,
                     onCopy = ::copy,
                 )
             }

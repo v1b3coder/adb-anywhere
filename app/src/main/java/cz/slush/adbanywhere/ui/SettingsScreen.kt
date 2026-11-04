@@ -15,11 +15,8 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.BatterySaver
 import androidx.compose.material.icons.outlined.ContentCopy
-import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material3.Button
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -55,8 +52,6 @@ fun SettingsScreen(
     onToggleKeepOff: (Boolean) -> Unit,
     onSavePorts: (Int, Int) -> String?,
     onBatteryExemption: (Activity) -> Unit,
-    onRestart: () -> Unit,
-    onStop: () -> Unit,
     onCopy: (String) -> Unit,
 ) {
     val context = LocalContext.current
@@ -221,27 +216,6 @@ fun SettingsScreen(
         }
 
         item {
-            SectionCard("Daemon") {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilledTonalButton(onClick = onRestart) {
-                        Icon(Icons.Rounded.Refresh, contentDescription = null)
-                        Text("Restart", modifier = Modifier.padding(start = 8.dp))
-                    }
-                    OutlinedButton(onClick = onStop) {
-                        Icon(Icons.Rounded.Stop, contentDescription = null)
-                        Text("Stop", modifier = Modifier.padding(start = 8.dp))
-                    }
-                }
-                Text(
-                    "Stopping removes the listeners until the next start. It does not re-enable " +
-                        "Android's wireless debugging.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-
-        item {
             SectionCard("App key") {
                 Text(
                     "This is the app's public key. It is the only key that can use the loopback channel.",
@@ -273,12 +247,6 @@ fun SettingsScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onRestart) {
-                        Icon(Icons.Rounded.PlayArrow, contentDescription = null)
-                        Text("Start again", modifier = Modifier.padding(start = 8.dp))
-                    }
-                }
             }
         }
     }
