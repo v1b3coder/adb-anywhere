@@ -9,6 +9,7 @@ import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import cz.slush.adbanywhere.data.Prefs
+import cz.slush.adbanywhere.service.AppLog
 import cz.slush.adbanywhere.service.ControlBus
 import cz.slush.adbanywhere.service.Notifications
 import cz.slush.adbanywhere.service.Phase
@@ -20,6 +21,8 @@ class AdbAnywhereApp : Application() {
         // A new process has no service and no daemon, so restore the last intent:
         // an app the user stopped comes back as stopped, not as "not set up".
         val prefs = Prefs(this)
+        AppLog.init(this, prefs.diagnosticLog)
+        AppLog.info("app", "process started; diagnostics=${prefs.diagnosticLog}")
         if (prefs.setupComplete && !prefs.userWantsRunning) {
             ControlBus.update { it.copy(phase = Phase.Stopped) }
         }

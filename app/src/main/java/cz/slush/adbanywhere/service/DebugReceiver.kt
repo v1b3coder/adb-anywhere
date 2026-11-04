@@ -16,6 +16,7 @@ class DebugReceiver : BroadcastReceiver() {
         when (intent.action) {
             ACTION_PAIR -> {
                 val code = intent.getStringExtra("code") ?: return
+                AppLog.info("debug", "pair intent received")
                 ControlService.start(context, ControlService.ACTION_PAIR, code)
             }
         }

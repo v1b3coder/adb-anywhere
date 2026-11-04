@@ -46,8 +46,10 @@ import kotlinx.coroutines.withContext
 fun SettingsScreen(
     state: ControlState,
     keepSystemAdbOff: Boolean,
+    diagnosticLog: Boolean,
     appKey: String,
     onToggleKeepOff: (Boolean) -> Unit,
+    onToggleDiagnosticLog: (Boolean) -> Unit,
     onSavePorts: (Int, Int) -> String?,
     onBatteryExemption: (Activity) -> Unit,
     onCopy: (String) -> Unit,
@@ -104,6 +106,27 @@ fun SettingsScreen(
                 ) {
                     Icon(Icons.Outlined.BatterySaver, contentDescription = null)
                     Text("Allow background", modifier = Modifier.padding(start = 8.dp))
+                }
+            }
+        }
+
+        item {
+            SectionCard("Diagnostic log") {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "Records the app's events, actions and applied changes in a bounded " +
+                            "on-device file, shown in Logs → App. Off by default.",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Switch(
+                        checked = diagnosticLog,
+                        onCheckedChange = onToggleDiagnosticLog,
+                    )
                 }
             }
         }

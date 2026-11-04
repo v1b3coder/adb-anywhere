@@ -22,7 +22,6 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Build
 import android.os.IBinder
-import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.RemoteInput
@@ -104,6 +103,7 @@ class ControlService : Service() {
         // them and give the new tunnel time to settle before touching the daemon.
         scope.launch {
             networkChanges.dropWhile { it == 0 }.collect {
+                AppLog.info("network", "change; settling for ${NETWORK_SETTLE_MS} ms")
                 delay(NETWORK_SETTLE_MS)
                 networkChanged()
             }
@@ -192,6 +192,7 @@ class ControlService : Service() {
 
     private suspend fun setup(forceRestart: Boolean = false) {
         setupMutex.withLock {
+            AppLog.info("setup", "started; restart=$forceRestart")
             ControlBus.update {
                 it.copy(
                     phase = Phase.Deploying,
@@ -224,7 +225,7 @@ class ControlService : Service() {
                 step(0, StepStatus.Active, "Connecting to Android's wireless debugging")
                 val previous = ControlBus.state.value
                 val daemonAlive = withContext(Dispatchers.IO) { probeDaemon() }
-                Log.i("AdbAnywhere", "setup daemonAlive=$daemonAlive dir=${prefs.remoteDir}")
+                AppLog.info("setup", "custom adb alive=$daemonAlive dir=${prefs.remoteDir}")
                 if (!daemonAlive && prefs.setupComplete &&
                     ContextCompat.checkSelfPermission(
                         this,
@@ -234,6 +235,7 @@ class ControlService : Service() {
                     // The one-time grant persists, so the app can re-open the
                     // bootstrap path after a reboot without touching adb.
                     cleanupRequired = true
+                    AppLog.info("setup", "bootstrap: opening system wireless debugging")
                     if (prefs.keepSystemAdbOff) {
                         // Record the value this run replaces, so a failure can
                         // restore it and a later harden() keeps the real original.
@@ -242,20 +244,22 @@ class ControlService : Service() {
                         }
                         adbEnabledBefore = SystemSettings.adbEnabled(this)
                         SystemSettings.setAdbEnabled(this, true)
+                        AppLog.info("setup", "bootstrap: adb_enabled $adbEnabledBefore -> 1")
                     }
                     if (SystemSettings.isWifiConnected(this)) {
                         SystemSettings.setAdbWifiEnabled(this, true)
+                        AppLog.info("setup", "bootstrap: adb_wifi_enabled=1")
                     }
                     // The framework disables wireless debugging on its timeout;
                     // 0 keeps the bootstrap path open after the app backgrounds.
                     if (!SystemSettings.ensureNoAdbConnectionTimeout(this)) {
-                        Log.i("AdbAnywhere", "adb_allowed_connection_time=0 was not accepted")
+                        AppLog.warn("setup", "adb_allowed_connection_time=0 was not accepted")
                     }
                     delay(900)
                 }
                 val systemAlive = if (daemonAlive) false
                 else withContext(Dispatchers.IO) { system.ensureConnected() }
-                Log.i("AdbAnywhere", "setup systemAlive=$systemAlive")
+                AppLog.info("setup", "system adb alive=$systemAlive")
                 cleanupRequired = cleanupRequired || daemonAlive || systemAlive
                 if (!daemonAlive && !systemAlive) {
                     if (!prefs.paired) {
@@ -282,6 +286,8 @@ class ControlService : Service() {
                     return@withLock
                 }
 
+                if (!daemonAlive) AppLog.info("setup", "WRITE_SECURE_SETTINGS granted")
+
                 step(1, StepStatus.Active, "Deploying the custom adb")
                 val shell = if (daemonAlive) {
                     withContext(Dispatchers.IO) { daemonShell() }
@@ -292,12 +298,19 @@ class ControlService : Service() {
                 val portsChanged = prefs.loopbackPort != previous.loopbackPort ||
                     prefs.vpnPort != previous.vpnPort
                 val restart = forceRestart || !daemonAlive || vpnChanged || portsChanged
+                AppLog.info(
+                    "setup",
+                    "deploy: adbAlive=$daemonAlive vpnChanged=$vpnChanged " +
+                        "portsChanged=$portsChanged restart=$restart",
+                )
                 if (daemonAlive && !restart) {
                     // No key was revoked: the daemon reloads the key file on the
                     // next auth. Revocation sends ACTION_REVOKE_KEYS instead, so
                     // the restart above kills the sessions the key authenticated.
+                    AppLog.info("adb", "rewriting keys; no restart")
                     daemon.writeKeys(shell, appKey, developers)
                 } else if (daemonAlive) {
+                    AppLog.info("adb", "restarting with the new keys and listeners")
                     daemon.restartDetached(
                         shell,
                         appKey,
@@ -307,6 +320,7 @@ class ControlService : Service() {
                         prefs.vpnPort,
                     )
                 } else {
+                    AppLog.info("adb", "deploying and starting")
                     daemon.deployAndStart(
                         shell,
                         appKey,
@@ -320,6 +334,7 @@ class ControlService : Service() {
 
                 step(2, StepStatus.Active, "Verifying loopback and VPN listeners")
                 verifyDaemon(vpnIp)
+                AppLog.info("setup", "listeners verified")
                 step(
                     2,
                     StepStatus.Done,
@@ -332,6 +347,7 @@ class ControlService : Service() {
                 step(3, StepStatus.Done, "System wireless debugging off")
 
                 prefs.setupComplete = true
+                AppLog.info("setup", "running; endpoint=${Endpoint.display(vpnIp, prefs.vpnPort)}")
                 ControlBus.update {
                     it.copy(
                         phase = Phase.Running,
@@ -349,7 +365,7 @@ class ControlService : Service() {
                 startWatchdogLoop()
                 refreshLogs()
             } catch (e: Exception) {
-                Log.i("AdbAnywhere", "setup failed: ${e.message}", e)
+                AppLog.error("setup", "failed: ${e.message}", e)
                 fail(e.message ?: "Setup failed")
             } finally {
                 if (cleanupRequired && ControlBus.state.value.phase != Phase.Running) {
@@ -383,7 +399,7 @@ class ControlService : Service() {
                     shell.close()
                 }
             }.onFailure {
-                Log.i("AdbAnywhere", "setup cleanup cannot stop the daemon: ${it.message}")
+                AppLog.warn("setup", "cleanup cannot stop adb: ${it.message}")
             }.isSuccess
             // The shell may be gone because the daemon already died; the port
             // is the authority on whether anything still runs.
@@ -394,7 +410,10 @@ class ControlService : Service() {
             if (adbEnabledBefore >= 0) {
                 SystemSettings.setAdbEnabled(context, adbEnabledBefore == 1)
             }
-            Log.i("AdbAnywhere", "setup cleanup stopped=$stopped listening=$daemonListening")
+            AppLog.warn(
+                "setup",
+                "cleanup stopped=$stopped listening=$daemonListening adb_enabled=$adbEnabledBefore",
+            )
             if (daemonListening) {
                 "Cleanup incomplete: the custom adb still listens on " +
                     "127.0.0.1:${prefs.loopbackPort}. Turn wireless debugging off in " +
@@ -407,9 +426,11 @@ class ControlService : Service() {
     private suspend fun pair(codeText: String) {
         val code = PairingCode.parse(codeText)
         if (code == null) {
+            AppLog.error("pair", "pairing value is not code:port")
             fail("Enter the pairing value as code:port, for example 123456:37123.")
             return
         }
+        AppLog.info("pair", "started on 127.0.0.1:${code.port}")
         ControlBus.update {
             it.copy(
                 phase = Phase.Pairing,
@@ -420,6 +441,7 @@ class ControlService : Service() {
         }
         val paired = system.pair(code)
         if (!paired) {
+            AppLog.error("pair", "pairing failed on 127.0.0.1:${code.port}")
             fail(
                 "Pairing failed. Check that the code and port are current and that the pairing " +
                     "dialog is still open, then try again.",
@@ -427,6 +449,7 @@ class ControlService : Service() {
             return
         }
         prefs.paired = true
+        AppLog.info("pair", "paired; starting setup")
         ControlBus.update {
             it.copy(steps = listOf(SetupStep("Pair with Android's wireless debugging", StepStatus.Done, "Paired")))
         }
@@ -434,6 +457,7 @@ class ControlService : Service() {
     }
 
     private fun needsPairing() {
+        AppLog.warn("setup", "pairing required")
         ControlBus.update {
             it.copy(
                 phase = Phase.NeedsPairing,
@@ -510,6 +534,7 @@ class ControlService : Service() {
     private suspend fun harden() = withContext(Dispatchers.IO) {
         val context = this@ControlService
         ensureWifiDebuggingOff()
+        AppLog.info("harden", "system wireless debugging off")
         if (prefs.keepSystemAdbOff) {
             if (prefs.originalAdbEnabled.isEmpty()) {
                 prefs.originalAdbEnabled = SystemSettings.adbEnabled(context).toString()
@@ -520,10 +545,12 @@ class ControlService : Service() {
             if (SystemSettings.adbEnabled(context) != 0) {
                 throw IOException("The system adb could not be turned off. No random-port redirect is attempted.")
             }
+            AppLog.info("harden", "adb_enabled=0")
         } else {
             if (prefs.originalAdbEnabled == "1" && SystemSettings.adbEnabled(context) != 1) {
                 SystemSettings.setAdbEnabled(context, true)
                 prefs.originalAdbEnabled = ""
+                AppLog.info("harden", "restored adb_enabled=1")
             }
         }
     }
@@ -535,6 +562,14 @@ class ControlService : Service() {
      */
     private suspend fun refreshAdbStatus() = withContext(Dispatchers.IO) {
         val status = SystemSettings.status(this@ControlService)
+        val previous = ControlBus.state.value.adbStatus
+        if (previous != status) {
+            AppLog.info(
+                "state",
+                "adb_enabled=${status.adbEnabled} adb_wifi_enabled=${status.adbWifiEnabled} " +
+                    "port5555=${if (status.port5555Open) "open" else "closed"}",
+            )
+        }
         ControlBus.update { it.copy(adbStatus = status) }
     }
 
@@ -548,6 +583,7 @@ class ControlService : Service() {
 
     private fun startWatchdogLoop() {
         watchdogJob?.cancel()
+        AppLog.info("watchdog", "loop started")
         watchdogJob = scope.launch {
             while (true) {
                 delay(60_000)
@@ -572,6 +608,7 @@ class ControlService : Service() {
             }.getOrDefault(false)
         }
         if (!alive) {
+            AppLog.warn("watchdog", "custom adb is down; restarting")
             ControlBus.update { it.copy(message = "The custom adb is down. Restarting…") }
             // setup() replaces the watchdog loop; run it outside this loop job so
             // cancelling the old loop cannot cancel the setup that replaces it.
@@ -579,6 +616,7 @@ class ControlService : Service() {
             return
         }
         if (vpnAddressChanged()) {
+            AppLog.info("watchdog", "vpn address changed; restarting setup")
             scope.launch { setup() }
             return
         }
@@ -586,12 +624,13 @@ class ControlService : Service() {
         try {
             ensureWifiDebuggingOff()
         } catch (e: IOException) {
+            AppLog.error("watchdog", "wireless debugging guard failed: ${e.message}")
             fail(e.message ?: "System wireless debugging is still on.")
             scheduleWatchdog()
             return
         }
         if (!SystemSettings.ensureNoAdbConnectionTimeout(this)) {
-            Log.i("AdbAnywhere", "adb_allowed_connection_time=0 was not accepted")
+            AppLog.warn("watchdog", "adb_allowed_connection_time=0 was not accepted")
         }
         if (prefs.keepSystemAdbOff) {
             val open = withContext(Dispatchers.IO) {
@@ -606,6 +645,7 @@ class ControlService : Service() {
                 }.getOrDefault(false)
             }
             if (open) {
+                AppLog.warn("watchdog", "system adb listens on 5555; turning it off")
                 val still = withContext(Dispatchers.IO) {
                     runCatching {
                         Socket().use { it.connect(InetSocketAddress("127.0.0.1", 5555), 300) }
@@ -618,6 +658,7 @@ class ControlService : Service() {
             }
         }
         refreshAdbStatus()
+        AppLog.info("watchdog", "ok")
         scheduleWatchdog()
     }
 
@@ -628,11 +669,17 @@ class ControlService : Service() {
      * a stopped service do not own a daemon; the next setup reads the address.
      */
     private suspend fun networkChanged() {
-        when (ControlBus.state.value.phase) {
-            Phase.Idle, Phase.Stopped, Phase.NeedsPairing, Phase.Pairing -> return
+        val phase = ControlBus.state.value.phase
+        when (phase) {
+            Phase.Idle, Phase.Stopped, Phase.NeedsPairing, Phase.Pairing -> {
+                AppLog.info("network", "ignored in phase=$phase")
+                return
+            }
             else -> Unit
         }
-        if (vpnAddressChanged()) setup()
+        val changed = vpnAddressChanged()
+        AppLog.info("network", "settled; vpn address changed=$changed")
+        if (changed) setup()
     }
 
     private suspend fun vpnAddressChanged(): Boolean {
@@ -640,6 +687,10 @@ class ControlService : Service() {
             VpnDetector.currentVpnAddress(this@ControlService)
         }
         if (vpnIp == ControlBus.state.value.vpnIp) return false
+        AppLog.info(
+            "network",
+            "vpn address ${ControlBus.state.value.vpnIp ?: "none"} -> ${vpnIp ?: "none"}",
+        )
         prefs.lastVpnIp = vpnIp ?: ""
         return true
     }
@@ -654,11 +705,11 @@ class ControlService : Service() {
                     shell.close()
                 }
             }.getOrElse {
-                Log.i("AdbAnywhere", "logs failed: ${it.message}")
+                AppLog.error("logs", "adb log read failed: ${it.message}")
                 prefs.lastError.ifBlank { "No logs yet." }
             }
         }
-        Log.i("AdbAnywhere", "logs length=${text.length}")
+        AppLog.info("logs", "adb log read; ${text.length} chars")
         ControlBus.logs.value = text
     }
 
@@ -668,6 +719,7 @@ class ControlService : Service() {
      * daemon behind. The loopback port is the authority on whether the stop worked.
      */
     private fun stopEverything() {
+        AppLog.info("service", "stopping adb and the service")
         scope.launch {
             setupMutex.withLock {
                 withContext(Dispatchers.IO) {
@@ -679,7 +731,7 @@ class ControlService : Service() {
                             shell.close()
                         }
                     }.onFailure {
-                        Log.i("AdbAnywhere", "stop cannot reach the daemon: ${it.message}")
+                        AppLog.warn("service", "stop cannot reach adb: ${it.message}")
                     }
                 }
                 // The daemon kills itself through its own shell, so the socket can
@@ -692,6 +744,7 @@ class ControlService : Service() {
                 // The notification collector must not re-post the stopped state
                 // after the foreground notification is removed below.
                 notificationJob?.cancel()
+                AppLog.info("service", "stopped; adb listening=$stillListening")
                 ControlBus.update {
                     it.copy(
                         phase = Phase.Stopped,
@@ -729,6 +782,7 @@ class ControlService : Service() {
     }
 
     private fun fail(message: String) {
+        AppLog.error("setup", message)
         prefs.lastError = message
         ControlBus.update {
             it.copy(
@@ -770,7 +824,7 @@ class ControlService : Service() {
             )
             foregroundStarted = true
         }.onFailure {
-            Log.i("AdbAnywhere", "startForeground failed: $it")
+            AppLog.error("service", "startForeground failed", it)
         }
     }
 
@@ -883,23 +937,24 @@ class ControlService : Service() {
             .addTransportType(NetworkCapabilities.TRANSPORT_VPN)
             .build()
         val callback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) = notifyNetworkChange()
-            override fun onLost(network: Network) = notifyNetworkChange()
+            override fun onAvailable(network: Network) = notifyNetworkChange("vpn available")
+            override fun onLost(network: Network) = notifyNetworkChange("vpn lost")
             override fun onLinkPropertiesChanged(network: Network, properties: LinkProperties) =
-                notifyNetworkChange()
+                notifyNetworkChange("vpn link properties changed")
         }
         networkCallback = callback
         runCatching { manager.registerNetworkCallback(vpnRequest, callback) }
 
         val default = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) = notifyNetworkChange()
-            override fun onLost(network: Network) = notifyNetworkChange()
+            override fun onAvailable(network: Network) = notifyNetworkChange("default network available")
+            override fun onLost(network: Network) = notifyNetworkChange("default network lost")
         }
         defaultCallback = default
         runCatching { manager.registerDefaultNetworkCallback(default) }
     }
 
-    private fun notifyNetworkChange() {
+    private fun notifyNetworkChange(event: String) {
+        AppLog.info("network", event)
         networkChanges.update { it + 1 }
     }
 
@@ -917,6 +972,8 @@ class ControlService : Service() {
                 System.currentTimeMillis() + 15 * 60 * 1000L,
                 pending,
             )
+        }.onFailure {
+            AppLog.warn("watchdog", "alarm not scheduled: ${it.message}")
         }
     }
 

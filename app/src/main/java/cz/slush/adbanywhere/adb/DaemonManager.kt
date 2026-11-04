@@ -10,6 +10,7 @@ import cz.slush.adbanywhere.data.AndroidPubKey
 import cz.slush.adbanywhere.data.DeveloperKey
 import cz.slush.adbanywhere.data.Endpoint
 import cz.slush.adbanywhere.data.KeyFiles
+import cz.slush.adbanywhere.service.AppLog
 import java.io.File
 import java.io.IOException
 import java.security.MessageDigest
@@ -36,7 +37,10 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
         val bytes = context.assets.open("adbd/$abi/adbd").use { it.readBytes() }
         shell.mkdirs(remoteDir)
         val remoteHash = shell.sha256(binaryPath)
-        if (remoteHash == sha256(bytes)) return
+        if (remoteHash == sha256(bytes)) {
+            AppLog.info("adb", "binary already current (abi=$abi)")
+            return
+        }
         // Replace through a new inode so a running daemon never sees ETXTBSY.
         val temporary = "$binaryPath.new"
         shell.writeFile(temporary, bytes)
@@ -47,6 +51,7 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
         if (installedHash != sha256(bytes)) {
             throw IOException("daemon checksum mismatch on device")
         }
+        AppLog.info("adb", "binary installed (abi=$abi, ${bytes.size} bytes)")
     }
 
     fun writeKeys(
@@ -57,6 +62,7 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
         shell.mkdirs(remoteDir)
         shell.writeTextFile(keysPath, KeyFiles.keysFile(appKey, developers))
         shell.chmod(keysPath, "600")
+        AppLog.info("adb", "keys written (app key + ${developers.size} developer keys)")
     }
 
     fun deployAndStart(
@@ -73,6 +79,7 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
         Thread.sleep(300)
         loopbackPortForStop = loopbackPort
         val command = startCommand(shell, vpnIp, loopbackPort, vpnPort)
+        AppLog.info("adb", "starting ${Endpoint.listenSpec(loopbackPort, vpnIp, vpnPort)}")
         val result = shell.exec(command, 10_000)
         if (!result.ok) {
             throw IOException("cannot start daemon: ${result.stderr.ifBlank { result.stdout }.trim()}")
@@ -82,6 +89,7 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
         if (pid.toLongOrNull() == null) {
             throw IOException("daemon did not write a pid file")
         }
+        AppLog.info("adb", "started (pid=$pid)")
         if (!vpnIp.isNullOrBlank() && !shell.probe(vpnIp, vpnPort)) {
             throw IOException("daemon did not bind $vpnIp:$vpnPort")
         }
@@ -104,6 +112,7 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
         Thread.sleep(200)
         loopbackPortForStop = loopbackPort
         val start = startCommand(shell, vpnIp, loopbackPort, vpnPort)
+        AppLog.info("adb", "restarting detached on ${Endpoint.listenSpec(loopbackPort, vpnIp, vpnPort)}")
         val script = "kill \$(cat ${shell.quote(pidPath)}) 2>/dev/null || true; " +
             "sleep 0.4; $start"
         val result = shell.exec(
@@ -146,6 +155,7 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
     fun stop(shell: Shell) {
         val pid = shell.exec("cat ${shell.quote(pidPath)} 2>/dev/null").stdout.trim()
         if (pid.isNotEmpty() && pid.all { it.isDigit() }) {
+            AppLog.info("adb", "stopping pid=$pid")
             shell.exec("kill $pid 2>/dev/null || true")
         }
         // Also stop a stale instance that lost its pid file. Filter on the

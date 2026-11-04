@@ -14,9 +14,14 @@ class BootReceiver : BroadcastReceiver() {
         // The receiver is not exported and the system still reaches it, so only a
         // same-app intent could get here with another action.
         if (intent.action !in ACTIONS) return
+        AppLog.info("boot", "${intent.action} received")
         // The user's last explicit stop outlives the reboot: a boot only resumes
         // the daemon when the user last asked for it to run.
-        if (!Prefs(context).userWantsRunning) return
+        if (!Prefs(context).userWantsRunning) {
+            AppLog.info("boot", "ignored; the user stopped adb")
+            return
+        }
+        AppLog.info("boot", "starting the control service")
         ControlService.start(context, ControlService.ACTION_START)
     }
 

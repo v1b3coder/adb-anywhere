@@ -9,6 +9,7 @@ import cz.slush.adbanywhere.data.AppKeyStore
 import cz.slush.adbanywhere.data.PairingCode
 import cz.slush.adbanywhere.data.Prefs
 import cz.slush.adbanywhere.data.WirelessDebuggingGuard
+import cz.slush.adbanywhere.service.AppLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -33,15 +34,15 @@ class SystemAdb(
         // as USB `adb tcpip` followed by `adb connect`, but the address is
         // supplied by the debug-only intent used in the end-to-end test.
         if (prefs.bootstrapHost.isNotBlank() && prefs.bootstrapPort > 0) {
-            android.util.Log.i(
-                "AdbAnywhere",
-                "system bootstrap ${prefs.bootstrapHost}:${prefs.bootstrapPort}",
+            AppLog.info(
+                "system",
+                "bootstrap ${prefs.bootstrapHost}:${prefs.bootstrapPort}",
             )
             if (manager.connectTo(prefs.bootstrapHost, prefs.bootstrapPort)) {
-                android.util.Log.i("AdbAnywhere", "system bootstrap connected")
+                AppLog.info("system", "bootstrap connected")
                 return@withContext true
             }
-            android.util.Log.i("AdbAnywhere", "system bootstrap failed")
+            AppLog.warn("system", "bootstrap failed")
         }
 
         val candidates = LinkedHashSet<Int>()
@@ -54,6 +55,7 @@ class SystemAdb(
             if (port == prefs.loopbackPort || port == prefs.vpnPort) continue
             if (manager.connectTo("127.0.0.1", port)) {
                 prefs.lastTlsPort = port
+                AppLog.info("system", "connected on 127.0.0.1:$port")
                 return@withContext true
             }
         }
@@ -61,8 +63,10 @@ class SystemAdb(
         val mdnsPort = MdnsDiscovery(context).discover("_adb-tls-connect._tcp")
         if (mdnsPort != null && manager.connectTo("127.0.0.1", mdnsPort)) {
             prefs.lastTlsPort = mdnsPort
+            AppLog.info("system", "connected via mDNS on 127.0.0.1:$mdnsPort")
             return@withContext true
         }
+        AppLog.info("system", "no listener found on ports $candidates")
         false
     }
 

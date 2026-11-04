@@ -15,6 +15,7 @@ import cz.slush.adbanywhere.data.AndroidPubKey
 import cz.slush.adbanywhere.data.AppKeyStore
 import cz.slush.adbanywhere.data.DeveloperKey
 import cz.slush.adbanywhere.data.Prefs
+import cz.slush.adbanywhere.service.AppLog
 import cz.slush.adbanywhere.service.ControlBus
 import cz.slush.adbanywhere.service.ControlService
 import kotlinx.coroutines.Dispatchers
@@ -28,6 +29,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     val state = ControlBus.state
     val logs = ControlBus.logs
+    val appLog = AppLog.entries
+    val diagnosticLog = AppLog.enabled
 
     /** The user's last explicit start or stop. Opening the app never overrides it. */
     val userWantsRunning: Boolean get() = prefs.userWantsRunning
@@ -47,25 +50,52 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun start() = ControlService.start(getApplication(), ControlService.ACTION_START)
+    fun start() {
+        AppLog.info("ui", "start requested")
+        ControlService.start(getApplication(), ControlService.ACTION_START)
+    }
 
-    fun pair(code: String) = ControlService.start(getApplication(), ControlService.ACTION_PAIR, code)
+    fun pair(code: String) {
+        AppLog.info("ui", "pair requested")
+        ControlService.start(getApplication(), ControlService.ACTION_PAIR, code)
+    }
 
-    fun restart() = ControlService.start(getApplication(), ControlService.ACTION_RESTART)
+    fun restart() {
+        AppLog.info("ui", "restart requested")
+        ControlService.start(getApplication(), ControlService.ACTION_RESTART)
+    }
 
-    fun refreshLogs() = ControlService.start(getApplication(), ControlService.ACTION_LOGS)
+    fun refreshLogs() {
+        AppLog.info("ui", "adb log refresh requested")
+        ControlService.start(getApplication(), ControlService.ACTION_LOGS)
+    }
 
-    fun postPairingNotification() =
+    fun postPairingNotification() {
+        AppLog.info("ui", "pairing notification requested")
         ControlService.start(getApplication(), ControlService.ACTION_NOTIFY_PAIR)
+    }
 
-    fun stop() = ControlService.start(getApplication(), ControlService.ACTION_STOP)
+    fun stop() {
+        AppLog.info("ui", "stop requested")
+        ControlService.start(getApplication(), ControlService.ACTION_STOP)
+    }
+
+    /** Turns the app's own event log on or off. Off is the default. */
+    fun setDiagnosticLog(enabled: Boolean) {
+        prefs.diagnosticLog = enabled
+        AppLog.setEnabled(enabled)
+    }
 
     /**
      * Applies a change to the daemon only while the user wants it running. The
      * preference is already stored, so a stopped app applies it on the next start.
      */
     private fun applyIfRunning(action: String) {
-        if (prefs.userWantsRunning) ControlService.start(getApplication(), action)
+        if (prefs.userWantsRunning) {
+            ControlService.start(getApplication(), action)
+        } else {
+            AppLog.info("ui", "change stored; adb is stopped")
+        }
     }
 
     fun addDeveloperKey(text: String, label: String): String? {
@@ -77,6 +107,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val updated = current + key
         prefs.developerKeysJson = DeveloperKey.store(updated)
         _keys.value = updated
+        AppLog.info("keys", "added ${key.label} ${parsed.fingerprint.take(16)}")
         applyIfRunning(ControlService.ACTION_APPLY_KEYS)
         return null
     }
@@ -89,6 +120,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         prefs.developerKeysJson = DeveloperKey.store(updated)
         _keys.value = updated
+        AppLog.info("keys", "renamed ${fingerprint.take(16)} to $clean")
         applyIfRunning(ControlService.ACTION_APPLY_KEYS)
     }
 
@@ -96,6 +128,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val updated = _keys.value.filterNot { it.fingerprint == fingerprint }
         prefs.developerKeysJson = DeveloperKey.store(updated)
         _keys.value = updated
+        AppLog.info("keys", "removed ${fingerprint.take(16)}; restarting to close sessions")
         // Revocation must close live sessions, so the service restarts the daemon
         // instead of only rewriting the key file (DESIGN.md §8).
         applyIfRunning(ControlService.ACTION_REVOKE_KEYS)
@@ -104,6 +137,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun setKeepSystemAdbOff(enabled: Boolean) {
         prefs.keepSystemAdbOff = enabled
         _keepSystemAdbOff.value = enabled
+        AppLog.info("settings", "keep system adb off=$enabled")
         applyIfRunning(ControlService.ACTION_APPLY_SETTINGS)
     }
 
@@ -113,6 +147,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (loopback == vpn) return "The two ports must be different."
         prefs.loopbackPort = loopback
         prefs.vpnPort = vpn
+        AppLog.info("settings", "ports loopback=$loopback vpn=$vpn")
         applyIfRunning(ControlService.ACTION_APPLY_SETTINGS)
         return null
     }
@@ -124,6 +159,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun setTlsPort(port: Int): String? {
         if (port !in 1024..65535) return "The port must be between 1024 and 65535."
         prefs.lastTlsPort = port
+        AppLog.info("settings", "system adb TLS port=$port")
         if (!prefs.userWantsRunning) return null
         val intent = android.content.Intent(getApplication(), ControlService::class.java)
             .setAction(ControlService.ACTION_SET_TLS_PORT)
@@ -135,6 +171,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun setRemoteDir(path: String) {
         if (path.isBlank() || !path.startsWith("/data/local/tmp/")) return
         prefs.remoteDir = path
+        AppLog.info("settings", "remote dir=$path")
     }
 
     fun setDebugBootstrap(
@@ -154,9 +191,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         prefs.bootstrapHost = host
         prefs.bootstrapPort = bootstrapPort
-        android.util.Log.i(
-            "AdbAnywhere",
-            "debug bootstrap host=$host port=$bootstrapPort dir=${prefs.remoteDir} " +
+        AppLog.info(
+            "debug",
+            "bootstrap host=$host port=$bootstrapPort dir=${prefs.remoteDir} " +
                 "loop=${prefs.loopbackPort} vpn=${prefs.vpnPort}",
         )
         ControlService.start(getApplication(), ControlService.ACTION_START)
@@ -166,6 +203,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (host.isBlank() || port !in 1024..65535) return
         prefs.bootstrapHost = host
         prefs.bootstrapPort = port
+        AppLog.info("debug", "bootstrap host=$host port=$port")
         ControlService.start(getApplication(), ControlService.ACTION_START)
     }
 
@@ -175,14 +213,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             val manager = cz.slush.adbanywhere.adb.AdbManager(getApplication(), keyStore)
             if (!manager.connectTo("127.0.0.1", prefs.loopbackPort)) {
-                android.util.Log.i("AdbAnywhere", "debug shell connect failed")
+                AppLog.error("debug", "shell connect to 127.0.0.1:${prefs.loopbackPort} failed")
                 return@launch
             }
             try {
                 val result = cz.slush.adbanywhere.adb.Shell(manager).exec(command)
-                android.util.Log.i(
-                    "AdbAnywhere",
-                    "debug shell rc=${result.exitCode} out=${result.stdout.trim()} err=${result.stderr.trim()}",
+                AppLog.info(
+                    "debug",
+                    "shell rc=${result.exitCode} out=${result.stdout.trim()} err=${result.stderr.trim()}",
                 )
             } finally {
                 manager.disconnectQuietly()
@@ -191,6 +229,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun requestBatteryExemption(activity: Activity) {
+        AppLog.info("ui", "battery exemption requested")
         val intent = Intent(
             Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
             Uri.parse("package:${activity.packageName}"),

@@ -13,6 +13,7 @@ class PairReplyReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val results = RemoteInput.getResultsFromIntent(intent) ?: return
         val text = results.getCharSequence(ControlService.EXTRA_PAIR_INPUT)?.toString() ?: return
+        AppLog.info("pair", "pairing reply received")
         ControlService.start(context, ControlService.ACTION_PAIR, text)
         NotificationManagerCompat.from(context).cancel(Notifications.PAIRING_ID)
     }

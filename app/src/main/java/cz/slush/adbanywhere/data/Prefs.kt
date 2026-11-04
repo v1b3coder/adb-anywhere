@@ -66,6 +66,11 @@ class Prefs(context: Context) {
         get() = prefs.getString("last_error", "") ?: ""
         set(value) = prefs.edit().putString("last_error", value).apply()
 
+    /** Records the app's own event log. Off by default. */
+    var diagnosticLog: Boolean
+        get() = prefs.getBoolean("diagnostic_log", false)
+        set(value) = prefs.edit().putBoolean("diagnostic_log", value).apply()
+
     var bootstrapHost: String
         get() = prefs.getString("bootstrap_host", "") ?: ""
         set(value) = prefs.edit().putString("bootstrap_host", value).apply()

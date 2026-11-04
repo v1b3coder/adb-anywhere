@@ -67,6 +67,8 @@ fun AppRoot(viewModel: AppViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val keys by viewModel.keys.collectAsStateWithLifecycle()
     val logs by viewModel.logs.collectAsStateWithLifecycle()
+    val appLogs by viewModel.appLog.collectAsStateWithLifecycle()
+    val diagnosticLog by viewModel.diagnosticLog.collectAsStateWithLifecycle()
     val appFingerprint by viewModel.appFingerprint.collectAsStateWithLifecycle()
     val keepOff by viewModel.keepSystemAdbOff.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -183,15 +185,19 @@ fun AppRoot(viewModel: AppViewModel) {
                     onAdd = viewModel::addDeveloperKey,
                 )
                 Screen.Logs -> LogsScreen(
-                    logs = logs,
+                    appLogs = appLogs,
+                    daemonLogs = logs,
+                    diagnosticLog = diagnosticLog,
                     onRefresh = viewModel::refreshLogs,
                     onCopy = ::copy,
                 )
                 Screen.Settings -> SettingsScreen(
                     state = state,
                     keepSystemAdbOff = keepOff,
+                    diagnosticLog = diagnosticLog,
                     appKey = appFingerprint,
                     onToggleKeepOff = viewModel::setKeepSystemAdbOff,
+                    onToggleDiagnosticLog = viewModel::setDiagnosticLog,
                     onSavePorts = viewModel::setPorts,
                     onBatteryExemption = { viewModel.requestBatteryExemption(it) },
                     onCopy = ::copy,

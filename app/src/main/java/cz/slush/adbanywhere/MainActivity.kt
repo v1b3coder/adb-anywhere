@@ -11,6 +11,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import cz.slush.adbanywhere.service.AppLog
 import cz.slush.adbanywhere.service.ControlService
 import cz.slush.adbanywhere.ui.AdbAnywhereTheme
 import cz.slush.adbanywhere.ui.AppRoot
@@ -28,7 +29,12 @@ class MainActivity : ComponentActivity() {
         }
         // The daemon only runs while the user wants it: opening the app re-checks
         // a running daemon but never overrides an explicit stop.
-        if (viewModel.userWantsRunning) ControlService.start(this, ControlService.ACTION_START)
+        if (viewModel.userWantsRunning) {
+            AppLog.info("app", "opened; user wants running, re-checking")
+            ControlService.start(this, ControlService.ACTION_START)
+        } else {
+            AppLog.info("app", "opened; adb is stopped by the user")
+        }
         handleIntent(intent)
     }
 
