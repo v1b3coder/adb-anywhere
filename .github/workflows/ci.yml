@@ -1,6 +1,7 @@
 # Push/PR gate: unit tests, lint and the debug APK. A lint error fails the build.
-# adbd is compiled by the separate adbd workflow, which runs only when that
-# subtree changes; here the committed binaries in assets are used as-is.
+# The APK carries the adbd binaries built for this commit, so the gate validates
+# the same daemon the release ships; the adbd cache makes that a no-op unless the
+# adbd subtree changed.
 name: CI
 
 on:
@@ -18,7 +19,11 @@ permissions:
   contents: read
 
 jobs:
+  adbd:
+    uses: ./.github/workflows/adbd.yml
+
   check:
+    needs: adbd
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -37,6 +42,12 @@ jobs:
           if [ ! -d "$ANDROID_HOME/platforms/android-36" ]; then
             sdkmanager --install "platforms;android-36"
           fi
+
+      - name: Fetch adbd binaries
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ needs.adbd.outputs.artifact }}
+          path: app/src/main/assets/adbd
 
       - name: Test, lint and assemble
         run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug -PadbdSkipBuild=true

@@ -1,18 +1,10 @@
-# Builds the vendored adbd fork. Runs only when the adbd subtree changes, and
-# keeps the per-ABI binaries in a cache keyed on that subtree and the NDK, so the
-# release build can reuse them instead of recompiling.
+# Builds the vendored adbd fork and publishes the per-ABI binaries as an
+# artifact. A reusable workflow: ci.yml and release.yml both call it, so the gate and
+# the release ship the same daemon. The cache keyed on the adbd tree hash decides
+# whether it actually recompiles, which is a sharper filter than a path trigger.
 name: adbd
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - 'adbd/**'
-      - '.github/workflows/adbd.yml'
-  pull_request:
-    paths:
-      - 'adbd/**'
   workflow_call:
     outputs:
       artifact:
