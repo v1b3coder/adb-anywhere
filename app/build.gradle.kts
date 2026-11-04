@@ -119,6 +119,22 @@ val skipAdbdBuild = providers.gradleProperty("adbdSkipBuild")
 val syncAdbd = tasks.register("syncAdbd") {
     val subproject = adbdDir.get()
     val assets = file("src/main/assets/adbd")
+    // Declared inputs and outputs, so an unchanged tree with the binaries
+    // already in place makes this a no-op instead of re-copying the vendor tree,
+    // re-applying the patches and re-running cmake on every build. They are only
+    // declared when the tree is there, so a checkout without it still configures.
+    if (subproject.resolve("build.sh").exists()) {
+        inputs.files(
+            subproject.resolve("CMakeLists.txt"),
+            subproject.resolve("build.sh"),
+        )
+        inputs.dir(subproject.resolve("patches"))
+        inputs.dir(subproject.resolve("src"))
+        inputs.dir(subproject.resolve("stubs"))
+        inputs.dir(subproject.resolve("tests"))
+        inputs.dir(subproject.resolve("vendor"))
+    }
+    outputs.dir(assets)
     doLast {
         if (skipAdbdBuild.get()) {
             logger.lifecycle("adbd build skipped; using assets as-is")
