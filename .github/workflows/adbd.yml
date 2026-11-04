@@ -53,7 +53,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: adbd/build/out
-          key: adbd-${{ runner.os }}-ndk${{ env.ANDROID_NDK_VERSION }}-${{ hashFiles('adbd/**', '!adbd/build/**') }}
+          key: adbd-${{ runner.os }}-ndk${{ env.ANDROID_NDK_VERSION }}-${{ hashFiles('adbd/**') }}
 
       - name: Build adbd
         if: steps.cache.outputs.cache-hit != 'true'
