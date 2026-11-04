@@ -730,6 +730,16 @@ JitPack artifact is built on demand.
 Fix: vendor or mirror the dependency, pin a checksum, and document why trust-all is
 acceptable for ADB's TLS model.
 
+**Status: won't fix for the trust-all — accepted by design (owner decision).** Every
+release connect and pair target is loopback or app-controlled: `SystemAdb` dials `127.0.0.1`
+on a port from `service.adb.tls.port`, the last known port, mDNS, or 5555;
+`ControlService` and `AppViewModel` dial `127.0.0.1:loopbackPort`; the VPN check dials
+the app's own daemon. The only arbitrary-host path, `prefs.bootstrapHost`, is set from
+the debug-only intent and is `BuildConfig.DEBUG`-gated. `SslUtils` therefore never sees
+an untrusted peer, and ADB key auth (or the pairing code) is the authentication on every
+path. The supply-chain half is not accepted: it is tracked as the dependency-verification
+P3 below.
+
 ### P2-13 — Debug-only surfaces are broad
 
 `DebugReceiver` is exported in debug builds and accepts `DEBUG_PAIR` with an arbitrary
@@ -821,6 +831,11 @@ Material 3 in `Theme.kt`.
   vector; the pairing action icon still uses the framework glyph.
 - `Docs/E2E.md` and `README.md` use future-dated evidence (2026-11-03); confirm the date
   is intentional.
+- `libadb-android:3.1.1` and its `spake2-android:2.2.1` transitive are JitPack artifacts
+  built on demand from a tag, and nothing verifies their bytes. Add Gradle dependency
+  verification (`gradle/verification-metadata.xml`) with checksums for both. Vendoring is not
+  needed: the library only provides connect, pair and stream multiplexing, and a fork would
+  cost more than it buys. The trust-all half of P2-12 is a won't fix.
 
 ---
 
@@ -985,7 +1000,8 @@ Gaps:
 - `syncAdbd` depends on an external checkout; the committed binaries are used if
   it is absent. This is a reproducibility risk unless the committed binaries are
   treated as the source of truth and verified.
-- No dependency lockfile/verification; `libadb-android` comes from JitPack.
+- No dependency lockfile/verification; `libadb-android` and `spake2-android` come from
+  JitPack and are unverified (P3).
 - No privacy policy/data-safety declaration. The app collects no analytics, but it
   does handle ADB keys and logs; document that.
 
@@ -1053,6 +1069,7 @@ Gaps:
 4. Clean up `ScaffoldTest`, unused strings, and the legacy theme (strings and theme
    fixed in `9c10d0c`).
 5. Document the debug-only surface and the uninstall cleanup.
+6. Pin the JitPack artifacts with Gradle dependency verification (P3).
 
 ---
 
