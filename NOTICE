@@ -6,6 +6,9 @@ This product includes software derived from the Android Open Source Project
 (packages/modules/adb), Copyright (C) 2007-2025 The Android Open Source Project,
 licensed under the Apache License, Version 2.0.
 
+This product includes zstd, Copyright (c) Meta Platforms, Inc. and affiliates,
+licensed under the BSD License or GPLv2 (the daemon uses the BSD terms).
+
 The minimal adbd fork is maintained separately at
 https://gitea.slush.cz/marekp/adb-anywhere-adbd and is licensed under the
 Apache License, Version 2.0.
