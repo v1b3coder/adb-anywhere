@@ -264,9 +264,21 @@ has no TCP listener, so there is nothing to monitor or turn off.
 
 ## 7. Flows
 
+### Start and stop
+
+1. The status card has a single toggle: ▶️ starts the daemon, 🛑 stops it.
+2. The choice is stored in device-protected prefs as the user's last intent.
+3. Nothing brings the daemon up without that intent: opening the app, a
+   reboot, a sticky restart and the watchdog all respect it.
+4. Opening the app while it runs re-checks the daemon; it never overrides a stop.
+5. Stop takes the setup mutex, so a stop during a deployment waits for the
+   deployment and then stops the daemon; the loopback port confirms the stop.
+6. Key and settings changes are stored immediately and applied on the next start
+   while stopped.
+
 ### First run
 
-1. User installs the app and opens it.
+1. User installs the app, opens it and taps ▶️ Start.
 2. App requests notification permission.
 3. App posts the pairing notification with a `code:port` `RemoteInput`.
 4. User opens Settings → Developer options → Wireless debugging → Pair device with
@@ -294,7 +306,7 @@ has no TCP listener, so there is nothing to monitor or turn off.
 ### Boot
 
 1. `BootReceiver` starts the service on `BOOT_COMPLETED` and
-   `LOCKED_BOOT_COMPLETED`.
+   `LOCKED_BOOT_COMPLETED`, but only when the user last started it.
 2. Service re-asserts `adb_wifi_enabled` only when Wi-Fi is up, and
    `adb_allowed_connection_time=0`.
 3. Service probes for a system adbd TCP listener: `5555`, the last known port,

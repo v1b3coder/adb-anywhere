@@ -26,7 +26,12 @@ adb -s "$serial" shell "setprop ctl.restart adbd" >/dev/null 2>&1 || true
 adb -s "$serial" wait-for-device
 sleep 2
 
-adb -s "$serial" shell "am start -n $pkg/.MainActivity" >/dev/null
+# The daemon only starts after an explicit start and the app remembers the
+# last one. Clear the persisted control state so the run does not depend on how
+# the previous run was left. The app key is in files/, not in this file.
+adb -s "$serial" shell "rm -f /data/user_de/0/$pkg/shared_prefs/adb-anywhere.xml"
+
+adb -s "$serial" shell "am start -n $pkg/.MainActivity --ez start true" >/dev/null
 sleep 6
 
 # Give the app the host key through its debug-only intent, then let the service
@@ -71,5 +76,35 @@ done
 adb -s "$serial" shell 'dumpsys notification --noredact' |
     grep -q 'android.title=String (ADB Anywhere is running)'
 echo "sticky restart ok"
+
+# A stop is remembered: after the process is killed and the app is reopened the
+# daemon must stay down until an explicit start, and then start again.
+adb -s "$serial" shell "am start -n $pkg/.MainActivity --ez stop true" >/dev/null
+i=0
+while [ "$i" -lt 30 ]; do
+    adb -s "$serial" shell 'dumpsys notification --noredact' |
+        grep -q 'ADB Anywhere is running' || break
+    sleep 1
+    i=$((i + 1))
+done
+! adb -s "$serial" shell 'dumpsys notification --noredact' | grep -q 'ADB Anywhere is running'
+pid_stopped=$(adb -s "$serial" shell pidof "$pkg" | tr -d '\r' | cut -d' ' -f1)
+[ -n "$pid_stopped" ]
+adb -s "$serial" shell "kill -9 $pid_stopped"
+sleep 5
+adb -s "$serial" shell "am start -n $pkg/.MainActivity" >/dev/null
+sleep 6
+! adb -s "$serial" shell 'dumpsys notification --noredact' | grep -q 'ADB Anywhere is running'
+adb -s "$serial" shell "am start -n $pkg/.MainActivity --ez start true" >/dev/null
+i=0
+while [ "$i" -lt 60 ]; do
+    adb -s "$serial" shell 'dumpsys notification --noredact' |
+        grep -q 'android.title=String (ADB Anywhere is running)' && break
+    sleep 1
+    i=$((i + 1))
+done
+adb -s "$serial" shell 'dumpsys notification --noredact' |
+    grep -q 'android.title=String (ADB Anywhere is running)'
+echo "stop and start ok"
 
 echo "e2e ok"

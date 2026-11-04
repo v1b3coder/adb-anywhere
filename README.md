@@ -35,14 +35,15 @@ android.permission.WRITE_SECURE_SETTINGS` command instead of failing silently.
 ## First run
 
 1. Open the app and allow notifications.
-2. Open Settings → Developer options → Wireless debugging → *Pair device with
+2. Tap ▶️ *Start* in the status card. Nothing starts the daemon before that.
+3. Open Settings → Developer options → Wireless debugging → *Pair device with
    pairing code*.
-3. Tap *Show pairing notification* in the app, pull down the shade and reply with
+4. Tap *Show pairing notification* in the app, pull down the shade and reply with
    `code:port`. The same value can be entered in the app's manual field.
-4. The app pairs, grants `WRITE_SECURE_SETTINGS`, deploys the patched `adbd`,
+5. The app pairs, grants `WRITE_SECURE_SETTINGS`, deploys the patched `adbd`,
    verifies loopback and the VPN listener, and turns Android's wireless debugging
    off.
-5. Add each developer machine's public key under *Keys* (paste or QR). The app shows
+6. Add each developer machine's public key under *Keys* (paste or QR). The app shows
    the SHA-256 fingerprint before the key is added.
 
 After setup, developer machines run:
@@ -53,6 +54,14 @@ adb connect <vpn-ip>:15038
 
 The app's own channel is `127.0.0.1:15037` and is not reachable from the
 network.
+
+## Start and stop
+
+The status card has one toggle: ▶️ starts the daemon, 🛑 stops it. The app stores
+the last choice in device-protected storage, so a stopped app stays stopped when it
+is reopened, after a reboot and after the system restarts the service. Only ▶️ starts
+it again. Stop waits for a deployment in progress to finish before it stops the daemon,
+and it reports the loopback port if the daemon is still listening.
 
 ## Security
 

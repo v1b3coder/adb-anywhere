@@ -28,6 +28,18 @@ class Prefs(context: Context) {
         get() = prefs.getBoolean("setup_complete", false)
         set(value) = prefs.edit().putBoolean("setup_complete", value).apply()
 
+    /**
+     * The last explicit start or stop. Nothing brings the daemon up without it:
+     * not opening the app, not a reboot and not a sticky restart. The write is
+     * synchronous: a stop that is followed by a hard process kill must not be lost
+     * in a pending apply().
+     */
+    var userWantsRunning: Boolean
+        get() = prefs.getBoolean("user_wants_running", false)
+        set(value) {
+            prefs.edit().putBoolean("user_wants_running", value).commit()
+        }
+
     var paired: Boolean
         get() = prefs.getBoolean("paired", false)
         set(value) = prefs.edit().putBoolean("paired", value).apply()

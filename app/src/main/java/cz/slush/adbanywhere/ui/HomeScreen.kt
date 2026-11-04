@@ -7,6 +7,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -24,6 +26,7 @@ import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -49,6 +52,8 @@ fun HomeScreen(
     state: ControlState,
     keyCount: Int,
     onSetup: () -> Unit,
+    onStart: () -> Unit,
+    onStop: () -> Unit,
     onCopy: (String) -> Unit,
     onRestart: () -> Unit,
     onPair: () -> Unit,
@@ -58,7 +63,7 @@ fun HomeScreen(
         contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 96.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        item { StatusHero(state, onCopy, onSetup, onRestart, onPair) }
+        item { StatusHero(state, onCopy, onSetup, onStart, onStop, onRestart, onPair) }
         if (state.steps.isNotEmpty()) {
             item {
                 SectionCard("Setup progress") {
@@ -128,11 +133,14 @@ fun HomeScreen(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun StatusHero(
     state: ControlState,
     onCopy: (String) -> Unit,
     onSetup: () -> Unit,
+    onStart: () -> Unit,
+    onStop: () -> Unit,
     onRestart: () -> Unit,
     onPair: () -> Unit,
 ) {
@@ -226,7 +234,10 @@ private fun StatusHero(
                     }
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
                     when (state.phase) {
                         Phase.Running -> {
                             FilledTonalButton(onClick = onRestart) {
@@ -255,10 +266,24 @@ private fun StatusHero(
                                 Text("Working…")
                             }
                         }
-                        else -> {
+                        Phase.Stopped -> {
+                            Button(onClick = onStart) {
+                                Icon(Icons.Rounded.PlayArrow, contentDescription = null)
+                                Text("Start", modifier = Modifier.padding(start = 8.dp))
+                            }
+                        }
+                        Phase.Idle -> {
                             Button(onClick = onSetup) {
                                 Text("Set up")
                             }
+                        }
+                    }
+                    // The daemon is only up while the user wants it: a stop is
+                    // reachable in every phase that owns the service.
+                    if (state.phase != Phase.Idle && state.phase != Phase.Stopped) {
+                        FilledTonalButton(onClick = onStop) {
+                            Icon(Icons.Rounded.Stop, contentDescription = null)
+                            Text("Stop", modifier = Modifier.padding(start = 8.dp))
                         }
                     }
                 }

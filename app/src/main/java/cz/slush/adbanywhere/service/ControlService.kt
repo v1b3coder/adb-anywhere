@@ -91,7 +91,7 @@ class ControlService : Service() {
         }
 
         startForeground(ControlBus.state.value)
-        scope.launch {
+        notificationJob = scope.launch {
             ControlBus.state.collect { state ->
                 updateNotification(state)
             }
@@ -113,17 +113,33 @@ class ControlService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             null -> resumeAfterRestart()
-            ACTION_START, ACTION_APPLY_KEYS, ACTION_APPLY_SETTINGS -> {
+            ACTION_START -> {
+                prefs.userWantsRunning = true
                 scope.launch { setup() }
             }
+            // Keys and settings are persisted either way; a stopped app applies them
+            // on the next start instead of deploying a daemon the user turned off.
+            ACTION_APPLY_KEYS, ACTION_APPLY_SETTINGS -> {
+                if (prefs.userWantsRunning) scope.launch { setup() }
+            }
+            ACTION_RESTART -> {
+                prefs.userWantsRunning = true
+                scope.launch { setup(forceRestart = true) }
+            }
             // A revocation must terminate sessions that were authenticated with the
-            // removed key, so it restarts the daemon like an explicit restart.
-            ACTION_RESTART, ACTION_REVOKE_KEYS -> {
+            // removed key, so it restarts the daemon like an explicit restart. The UI
+            // only sends it while the daemon runs.
+            ACTION_REVOKE_KEYS -> {
                 scope.launch { setup(forceRestart = true) }
             }
             ACTION_PAIR -> {
                 val code = intent.getStringExtra(EXTRA_CODE)
-                if (code != null) scope.launch { pair(code) }
+                // Pairing is the first setup step, so it ends in a running daemon:
+                // the user asked for it explicitly.
+                if (code != null) {
+                    prefs.userWantsRunning = true
+                    scope.launch { pair(code) }
+                }
             }
             ACTION_WATCHDOG -> if (!resumeAfterRestart()) scope.launch { watchdog() }
             ACTION_LOGS -> scope.launch { refreshLogs() }
@@ -136,6 +152,7 @@ class ControlService : Service() {
                 }
             }
             ACTION_STOP -> {
+                prefs.userWantsRunning = false
                 stopEverything()
                 return START_NOT_STICKY
             }
@@ -162,9 +179,11 @@ class ControlService : Service() {
      * The system restarted the service after a process kill (sticky restart with a
      * null intent, or a watchdog alarm): this process has no deployment yet, so run
      * the full setup instead of idling until the next alarm. Returns true when the
-     * setup was started.
+     * setup was started. A stopped app is never resumed: the user's last explicit
+     * stop wins over both the sticky flag and the alarm.
      */
     private fun resumeAfterRestart(): Boolean {
+        if (!prefs.userWantsRunning) return false
         if (!prefs.setupComplete || ControlBus.state.value.phase != Phase.Idle) return false
         scope.launch { setup() }
         return true
@@ -632,26 +651,68 @@ class ControlService : Service() {
         ControlBus.logs.value = text
     }
 
+    /**
+     * Stops the daemon and the service. It takes the setup mutex so a stop that
+     * arrives during a deployment cannot race the deployment and leave an orphaned
+     * daemon behind. The loopback port is the authority on whether the stop worked.
+     */
     private fun stopEverything() {
         scope.launch {
-            withContext(Dispatchers.IO) {
-                runCatching {
-                    val shell = daemonShell()
-                    try {
-                        daemon.stop(shell)
-                    } finally {
-                        shell.close()
+            setupMutex.withLock {
+                withContext(Dispatchers.IO) {
+                    runCatching {
+                        val shell = daemonShell()
+                        try {
+                            daemon.stop(shell)
+                        } finally {
+                            shell.close()
+                        }
+                    }.onFailure {
+                        Log.i("AdbAnywhere", "stop cannot reach the daemon: ${it.message}")
                     }
                 }
+                // The daemon kills itself through its own shell, so the socket can
+                // take a moment to close. Give it the same grace as stop().
+                val stillListening = daemonListening()
+                cancelWatchdog()
+                watchdogJob?.cancel()
+                // The notification collector must not re-post the stopped state
+                // after the foreground notification is removed below.
+                notificationJob?.cancel()
+                ControlBus.update {
+                    it.copy(
+                        phase = Phase.Stopped,
+                        endpoint = "",
+                        error = "",
+                        message = if (stillListening) {
+                            "Stopped, but the daemon still listens on " +
+                                "127.0.0.1:${prefs.loopbackPort}. Turn wireless debugging off " +
+                                "in Settings, or reboot."
+                        } else {
+                            "Stopped"
+                        },
+                    )
+                }
+                ServiceCompat.stopForeground(this@ControlService, ServiceCompat.STOP_FOREGROUND_REMOVE)
+                stopSelf()
             }
-            cancelWatchdog()
-            watchdogJob?.cancel()
-            ControlBus.update {
-                it.copy(phase = Phase.Stopped, endpoint = "", message = "Stopped", error = "")
-            }
-            ServiceCompat.stopForeground(this@ControlService, ServiceCompat.STOP_FOREGROUND_REMOVE)
-            stopSelf()
         }
+    }
+
+    /** The loopback port is the authority on whether the daemon still runs. */
+    private suspend fun daemonListening(): Boolean = withContext(Dispatchers.IO) {
+        val deadline = System.currentTimeMillis() + 2_000
+        var open = true
+        while (open && System.currentTimeMillis() < deadline) {
+            open = runCatching {
+                Socket().use {
+                    it.connect(InetSocketAddress("127.0.0.1", prefs.loopbackPort), 300)
+                }
+                true
+            }.getOrDefault(false)
+            if (open) Thread.sleep(50)
+        }
+        open
     }
 
     private fun fail(message: String) {
@@ -695,6 +756,8 @@ class ControlService : Service() {
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
             )
             foregroundStarted = true
+        }.onFailure {
+            Log.i("AdbAnywhere", "startForeground failed: $it")
         }
     }
 

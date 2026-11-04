@@ -156,6 +156,8 @@ fun AppRoot(viewModel: AppViewModel) {
                     state = state,
                     keyCount = keys.size + 1,
                     onSetup = { screen = Screen.Setup; viewModel.start() },
+                    onStart = viewModel::start,
+                    onStop = viewModel::stop,
                     onCopy = ::copy,
                     onRestart = viewModel::restart,
                     onPair = { screen = Screen.Setup },

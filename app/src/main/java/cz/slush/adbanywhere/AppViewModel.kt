@@ -29,6 +29,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val state = ControlBus.state
     val logs = ControlBus.logs
 
+    /** The user's last explicit start or stop. Opening the app never overrides it. */
+    val userWantsRunning: Boolean get() = prefs.userWantsRunning
+
     private val _keys = MutableStateFlow(DeveloperKey.list(prefs.developerKeysJson))
     val keys: StateFlow<List<DeveloperKey>> = _keys
 
@@ -57,6 +60,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun stop() = ControlService.start(getApplication(), ControlService.ACTION_STOP)
 
+    /**
+     * Applies a change to the daemon only while the user wants it running. The
+     * preference is already stored, so a stopped app applies it on the next start.
+     */
+    private fun applyIfRunning(action: String) {
+        if (prefs.userWantsRunning) ControlService.start(getApplication(), action)
+    }
+
     fun addDeveloperKey(text: String, label: String): String? {
         val parsed = AndroidPubKey.parse(text) ?: return "That does not look like an ADB public key."
         if (parsed.bits != 2048) return "Only RSA-2048 keys are supported."
@@ -66,7 +77,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val updated = current + key
         prefs.developerKeysJson = DeveloperKey.store(updated)
         _keys.value = updated
-        ControlService.start(getApplication(), ControlService.ACTION_APPLY_KEYS)
+        applyIfRunning(ControlService.ACTION_APPLY_KEYS)
         return null
     }
 
@@ -76,13 +87,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _keys.value = updated
         // Revocation must close live sessions, so the service restarts the daemon
         // instead of only rewriting the key file (DESIGN.md §8).
-        ControlService.start(getApplication(), ControlService.ACTION_REVOKE_KEYS)
+        applyIfRunning(ControlService.ACTION_REVOKE_KEYS)
     }
 
     fun setKeepSystemAdbOff(enabled: Boolean) {
         prefs.keepSystemAdbOff = enabled
         _keepSystemAdbOff.value = enabled
-        ControlService.start(getApplication(), ControlService.ACTION_APPLY_SETTINGS)
+        applyIfRunning(ControlService.ACTION_APPLY_SETTINGS)
     }
 
     fun setPorts(loopback: Int, vpn: Int): String? {
@@ -91,7 +102,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (loopback == vpn) return "The two ports must be different."
         prefs.loopbackPort = loopback
         prefs.vpnPort = vpn
-        ControlService.start(getApplication(), ControlService.ACTION_APPLY_SETTINGS)
+        applyIfRunning(ControlService.ACTION_APPLY_SETTINGS)
         return null
     }
 
@@ -102,6 +113,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun setTlsPort(port: Int): String? {
         if (port !in 1024..65535) return "The port must be between 1024 and 65535."
         prefs.lastTlsPort = port
+        if (!prefs.userWantsRunning) return null
         val intent = android.content.Intent(getApplication(), ControlService::class.java)
             .setAction(ControlService.ACTION_SET_TLS_PORT)
             .putExtra(ControlService.EXTRA_PORT, port)

@@ -26,7 +26,9 @@ class MainActivity : ComponentActivity() {
                 AppRoot(viewModel)
             }
         }
-        ControlService.start(this, ControlService.ACTION_START)
+        // The daemon only runs while the user wants it: opening the app re-checks
+        // a running daemon but never overrides an explicit stop.
+        if (viewModel.userWantsRunning) ControlService.start(this, ControlService.ACTION_START)
         handleIntent(intent)
     }
 
@@ -39,6 +41,10 @@ class MainActivity : ComponentActivity() {
         if (!BuildConfig.DEBUG) return
         intent?.getIntExtra("tlsPort", 0)?.takeIf { it > 0 }?.let(viewModel::rememberTlsPort)
         intent?.getStringExtra("pair")?.let(viewModel::pair)
+        // The app only starts the daemon on an explicit start, so the harness
+        // presses the same two buttons the user does.
+        if (intent?.getBooleanExtra("start", false) == true) viewModel.start()
+        if (intent?.getBooleanExtra("stop", false) == true) viewModel.stop()
         intent?.getStringExtra("addkey")?.let { key ->
             val error = viewModel.addDeveloperKey(key, intent.getStringExtra("addlabel") ?: "test")
             Log.i("AdbAnywhere", "debug addkey result=${error ?: "ok"}")
