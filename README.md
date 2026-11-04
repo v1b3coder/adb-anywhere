@@ -86,6 +86,19 @@ The Gradle `syncAdbd` task cross-compiles it from `../adb-anywhere-adbd` and
 copies the per-ABI binaries into `app/src/main/assets/adbd/`. It is not a
 submodule. If the clone is absent, the committed binaries are used.
 
+## Release
+
+Pushing a `vMAJOR.MINOR[.PATCH]` tag runs the release workflow: it runs the JVM
+tests, builds the release APK, signs it with the project key, and publishes it on
+the GitHub release page. `versionName` and `versionCode` come from the tag
+(`versionCode = major*10000 + minor*100 + patch`), so no version bump commit is
+needed. A manual run builds and uploads the APK as a workflow artifact without
+publishing.
+
+Local signed release builds read `signing/keystore.properties`; the keystore and the
+password are not in the repository. Without that file, `assembleRelease` produces an
+unsigned APK as before. Debug builds are signed by the standard Android debug key.
+
 ## Limitations
 
 - The daemon runs as the `shell` user, so it gives a shell, not root.

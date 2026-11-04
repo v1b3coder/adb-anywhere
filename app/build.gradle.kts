@@ -1,10 +1,30 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.util.Properties
 
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+
+/*
+ * Release inputs. The version comes from the release tag through -P; a plain checkout
+ * keeps the defaults. Signing reads signing/keystore.properties locally and the same
+ * values from RELEASE_* environment variables in CI. Without either, the release build
+ * stays unsigned and a plain checkout still assembles.
+ */
+val signingProperties = Properties().apply {
+    val file = rootProject.file("signing/keystore.properties")
+    if (file.exists()) file.inputStream().use(::load)
+}
+
+fun signingValue(key: String, env: String): String? =
+    signingProperties.getProperty(key) ?: System.getenv(env)
+
+val releaseKeystore = signingValue("storeFile", "RELEASE_KEYSTORE_FILE")
+val releaseStorePassword = signingValue("storePassword", "RELEASE_KEYSTORE_PASSWORD")
+val releaseKeyAlias = signingValue("keyAlias", "RELEASE_KEY_ALIAS")
+val releaseKeyPassword = signingValue("keyPassword", "RELEASE_KEY_PASSWORD")
 
 android {
     namespace = "cz.slush.adbanywhere"
@@ -14,11 +34,22 @@ android {
         applicationId = "cz.slush.adbanywhere"
         minSdk = 31
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = providers.gradleProperty("versionCode").getOrElse("1").toInt()
+        versionName = providers.gradleProperty("versionName").getOrElse("0.1.0")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         manifestPlaceholders["debugReceiverEnabled"] = "false"
+    }
+
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = rootProject.file(releaseKeystore)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword ?: releaseStorePassword
+            }
+        }
     }
 
     buildTypes {
@@ -27,6 +58,9 @@ android {
         }
         release {
             manifestPlaceholders["debugReceiverEnabled"] = "false"
+            if (releaseKeystore != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

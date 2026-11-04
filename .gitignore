@@ -16,3 +16,4 @@ captures/
 *.jks
 *.keystore
 keystore.properties
+/signing/

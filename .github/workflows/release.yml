@@ -1,0 +1,153 @@
+# Tag-triggered release: tests, signed APK, GitHub release. Manual runs build only.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+*'
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # git describe, tag listing and ancestry checks
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Resolve version
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          to_version_code() {
+            local name="$1"
+            if [[ "$name" =~ ^([0-9]+)[.]([0-9]+)([.]([0-9]+))?$ ]]; then
+              local major="${BASH_REMATCH[1]}" minor="${BASH_REMATCH[2]}" patch="${BASH_REMATCH[4]:-0}"
+              echo $(( 10#$major * 10000 + 10#$minor * 100 + 10#$patch ))
+            else
+              echo 1
+            fi
+          }
+          if [[ "$REF_TYPE" == "tag" ]]; then
+            if [[ ! "$REF_NAME" =~ ^v([0-9]+)[.]([0-9]+)([.]([0-9]+))?$ ]]; then
+              echo "::error::Tag '$REF_NAME' must look like vMAJOR.MINOR[.PATCH] (no suffixes)"
+              exit 1
+            fi
+            MINOR="${BASH_REMATCH[2]}"
+            PATCH="${BASH_REMATCH[4]:-0}"
+            if (( 10#$MINOR > 99 || 10#$PATCH > 99 )); then
+              echo "::error::minor and patch must be <= 99 (versionCode = major*10000 + minor*100 + patch)"
+              exit 1
+            fi
+            NAME="${REF_NAME#v}"
+            HIGHEST="$(git tag --list 'v[0-9]*' | sed 's/^v//' | sort -V | tail -1)"
+            TOP="$(printf '%s\n%s\n' "$HIGHEST" "$NAME" | sort -V | tail -1)"
+            if [[ "$TOP" != "$NAME" ]]; then
+              echo "::error::A higher tag ($HIGHEST) already exists; refusing to build $NAME"
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+              echo "::error::Tagged commit is not an ancestor of origin/main"
+              exit 1
+            fi
+            echo "PUBLISH=true" >> "$GITHUB_OUTPUT"
+          else
+            NAME="$(git describe --tags --match 'v[0-9]*' 2>/dev/null || echo 0.0.0-dev)"
+            NAME="${NAME#v}"
+            echo "PUBLISH=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "VERSION_NAME=$NAME" >> "$GITHUB_OUTPUT"
+          echo "VERSION_CODE=$(to_version_code "$NAME")" >> "$GITHUB_OUTPUT"
+
+      - name: Install Android SDK platform
+        run: |
+          set -euo pipefail
+          if [ ! -d "$ANDROID_HOME/platforms/android-36" ]; then
+            yes | sdkmanager --install "platforms;android-36"
+          fi
+
+      - name: Run unit tests
+        run: ./gradlew :app:testDebugUnitTest
+
+      - name: Decode release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.p12"
+
+      - name: Build signed release APK
+        env:
+          RELEASE_KEYSTORE_FILE: ${{ runner.temp }}/release.p12
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          VERSION_NAME: ${{ steps.version.outputs.VERSION_NAME }}
+          VERSION_CODE: ${{ steps.version.outputs.VERSION_CODE }}
+        run: ./gradlew :app:assembleRelease -PversionName="$VERSION_NAME" -PversionCode="$VERSION_CODE"
+
+      - name: Verify signature and version
+        env:
+          EXPECTED_CERT_SHA256: ${{ vars.RELEASE_CERT_SHA256 }}
+          VERSION_NAME: ${{ steps.version.outputs.VERSION_NAME }}
+          VERSION_CODE: ${{ steps.version.outputs.VERSION_CODE }}
+        run: |
+          set -euo pipefail
+          BT="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
+          APK=app/build/outputs/apk/release/app-release.apk
+          FP="$("$BT/apksigner" verify --print-certs "$APK" | awk '/certificate SHA-256 digest/{print $NF; exit}')"
+          echo "Signing certificate SHA-256: $FP"
+          if [[ -n "${EXPECTED_CERT_SHA256:-}" && "$FP" != "$EXPECTED_CERT_SHA256" ]]; then
+            echo "::error::Signing certificate does not match RELEASE_CERT_SHA256"
+            exit 1
+          fi
+          BADGING="$("$BT/aapt2" dump badging "$APK" | grep '^package:')"
+          echo "$BADGING"
+          if [[ "$BADGING" != *"versionCode='$VERSION_CODE'"* || "$BADGING" != *"versionName='$VERSION_NAME'"* ]]; then
+            echo "::error::APK version does not match the tag"
+            exit 1
+          fi
+
+      - name: Rename APK
+        env:
+          VERSION_NAME: ${{ steps.version.outputs.VERSION_NAME }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          mv app/build/outputs/apk/release/app-release.apk "dist/adb-anywhere-${VERSION_NAME}.apk"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: adb-anywhere-${{ steps.version.outputs.VERSION_NAME }}
+          path: dist/adb-anywhere-*.apk
+          if-no-files-found: error
+
+      - name: Publish release
+        if: steps.version.outputs.PUBLISH == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/adb-anywhere-*.apk
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
