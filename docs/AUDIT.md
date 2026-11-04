@@ -21,8 +21,8 @@ production-ready until the P0 items below are fixed and the design is reconciled
 | Functional core | 7/10 | The real phone path works; process-death recovery is broken. |
 | Security | 5/10 | Key auth and loopback are good; failure paths can leave the system listener on; revocation is not live; the boot receiver is exported. |
 | Reliability | 4/10 | No backoff, no log rotation, daemon DoS, no USB state, no exact alarm. |
-| Test coverage | 5/10 | Good daemon tests; the wireless-debugging guard now has app unit tests; still missing watchdog/backoff, two-listener/two-key integration, CI, and device matrix. |
-| Release engineering | 5/10 | Signed tag releases with versioning and CI; lint still fails, no device matrix or update channel. |
+| Test coverage | 5/10 | Good daemon tests; the wireless-debugging guard now has app unit tests; still missing watchdog/backoff, two-listener/two-key integration, and a device matrix. |
+| Release engineering | 6/10 | Signed tag releases with versioning and CI; tests and lint run on push and PR; no device matrix or update channel. |
 | Design conformance | 4/10 | The daemon is a rewrite, not the design's patched AOSP adbd; several flows are missing. |
 | Documentation | 5/10 | Phone evidence is good; DESIGN.md and E2E.md are stale; the license is inconsistent. |
 
@@ -44,8 +44,11 @@ Executed:
   ScaffoldTest:      1 test,  0 failures
 
 ./gradlew :app:lintDebug :app:assembleRelease
-  lintDebug FAILED: 2 errors, 45 warnings
+  lintDebug: 0 errors, 44 warnings
   assembleRelease succeeded
+
+./gradlew build
+  BUILD SUCCESSFUL (check runs lintDebug)
 
 ./gradlew :app:assembleRelease
   BUILD SUCCESSFUL
@@ -294,19 +297,28 @@ Android debug key.
 
 ### P0-9 — The lint quality gate fails
 
-`./gradlew :app:lintDebug` fails with 2 errors and 45 warnings:
+**Status: fixed in `5efcaec` and `ed5d22b`.** `./gradlew build` and `./gradlew check`
+are green, and `.github/workflows/ci.yml` runs
+`:app:testDebugUnitTest :app:lintDebug :app:assembleDebug` on every push to
+`main` and every pull request.
 
-- `ControlService.kt:571` `MissingPermission`: `NotificationManagerCompat.notify`
-  without a `POST_NOTIFICATIONS` check. The call is inside `runCatching`, but the lint
-  gate does not accept it. The service also posts the foreground notification without
-  a permission check.
-- `AndroidPubKey.kt:40` `NewApi`: `BigInteger.TWO` requires API 33.
+`./gradlew :app:lintDebug` failed with 2 errors and 45 warnings:
 
-Impact: `./gradlew build`/`check` is red; any CI gate using lint fails. The
-`lintVitalRelease` task happens to pass because `NewApi` is not fatal there.
+- `ControlService.kt` `MissingPermission`: `NotificationManagerCompat.notify`
+  without a `POST_NOTIFICATIONS` check. The call was inside `runCatching`, but lint
+  does not accept that as a permission check, and the service notification update had
+  no check at all.
+- `AndroidPubKey.kt:40` `NewApi`: `BigInteger.TWO` requires API 33 (P0-1).
 
-Fix: fix P0-1; add an explicit permission check/annotation for the notification
-call; then make lint part of CI.
+Impact: `./gradlew build`/`check` was red, so any CI gate using lint failed. The
+`lintVitalRelease` task happened to pass because `NewApi` is not fatal there.
+
+Fix: P0-1 landed in `a21654d`. `postNotification()` now keeps the
+`POST_NOTIFICATIONS` check in the same method as the `notify()` call, so lint sees
+the guard, and still wraps the call in `runCatching` for a revocation between the
+check and the call. The foreground notification stays unguarded: it is exempt from
+`POST_NOTIFICATIONS`, and skipping `startForeground()` would break the service. Lint
+now reports 0 errors and 44 warnings; the warnings do not fail the build.
 
 ---
 
@@ -519,14 +531,14 @@ main thread.
 
 ### P1-17 — No CI and no device matrix
 
-**Status: partially fixed in `ec83728`.** `.github/workflows/release.yml` runs the JVM
-tests on every release tag and on manual runs; it does not run on pushes or pull
-requests, and it does not run `lint` or `assembleDebug`. The device matrix is still
-absent.
+**Status: partially fixed in `ec83728` and `ed5d22b`.** `.github/workflows/release.yml`
+runs the JVM tests on every release tag and manual run; `.github/workflows/ci.yml`
+runs the JVM tests, `lintDebug` and `assembleDebug` on every push to `main` and
+every pull request. The device matrix is still absent.
 
 DESIGN.md §10 says CI runs `./gradlew test assembleDebug` and no device tests; the device
 matrix is Pixel/Samsung/OnePlus, Tailscale/WireGuard, reboot, Wi-Fi↔cellular, USB
-attach/detach, and Doze. The repository has no CI workflow, and the only documented device
+attach/detach, and Doze. The CI gate runs no device tests, and the only documented device
 is one Samsung S23 with Tailscale. The emulator script no longer exercises the host `adb`
 client (see P2-1).
 
@@ -766,7 +778,7 @@ Fix: use a Compose-compatible splash/theme and clean up unused resources.
 | §7 USB: `ACTION_USB_STATE`, warning, `ADB_ENABLED=0` | **Not met** | No USB receiver; warning lost (P1-4, P0-6). |
 | §8 Security: VPN ACL outer, key file/policy inner, loopback app channel, system adbd off, residual warning, pairing, keys, revocation, no root | **Partial** | Key auth and loopback are good; residual warning lost; revocation now restarts the daemon and closes live sessions (P0-3, fixed in `822fc50`); system adbd is re-asserted and verified by the watchdog (P0-5, fixed in `17277a2`); the UI still infers "off" (P0-6) and `abortSetup()` does not verify the port (P1-9). |
 | §9 Failure modes | **Partial** | Many are explicit; the 5555 warning is missing; a sticky restart or watchdog alarm resumes setup (P0-4, fixed in `284b75b`). |
-| §10 Testing: unit (QR/key/policy/address/watchdog), integration (two listeners/two keys/policy/key reload), device matrix, CI | **Partial** | App tests 24, including `WirelessDebuggingGuardTest`; daemon tests 131 checks + integration; no watchdog/backoff tests, no two-listener/two-key integration, no device matrix, no CI. |
+| §10 Testing: unit (QR/key/policy/address/watchdog), integration (two listeners/two keys/policy/key reload), device matrix, CI | **Partial** | App tests 24, including `WirelessDebuggingGuardTest`; daemon tests 131 checks + integration; CI runs tests and lint on push/PR; no watchdog/backoff tests, no two-listener/two-key integration, no device matrix. |
 | §11 Phasing: Phase 0 report, Phase 1 control plane, Phase 2 patched adbd, Phase 3 depth | **Partial** | Phase 0 report absent; Phase 1/2 functional; Phase 3 not implemented. |
 | §12 Open risks | **Mostly acknowledged** | The design acknowledges the main risks; some are unhandled (process death, failure cleanup). |
 | §13 Provenance | **Partial** | NOTICE exists; license inconsistency (P2-15); "stock AOSP adbd" wording is inaccurate (P1-1). |
@@ -867,7 +879,8 @@ Current automated coverage:
 Gaps:
 
 - `ScaffoldTest` is a placeholder.
-- No CI workflow; DESIGN.md §10's CI command is not wired.
+- The push/PR gate runs the JVM tests, `lintDebug` and `assembleDebug`
+  (`.github/workflows/ci.yml`); it is not a device matrix.
 - No device matrix; only one phone is documented.
 - The emulator script no longer exercises the host `adb` client (P2-1).
 - The daemon integration test is good but narrow.
@@ -884,7 +897,9 @@ Gaps:
   acceptable, but it means the debug code paths remain in the APK (they are
   guarded by `BuildConfig.DEBUG` and the manifest placeholder).
 - Tag workflows run the tests, build, sign and publish a release (P1-17 partially
-  fixed in `ec83728`); no update channel and no rollback plan.
+  fixed in `ec83728`); push/PR runs the JVM tests, `lintDebug` and
+  `assembleDebug` (P0-9, fixed in `ed5d22b`). No update channel and no rollback
+  plan.
 - `syncAdbd` depends on an external checkout; the committed binaries are used if
   it is absent. This is a reproducibility risk unless the committed binaries are
   treated as the source of truth and verified.
@@ -927,7 +942,8 @@ Gaps:
    "off" from the phase; keep the 5555 warning (P0-6, P2-6).
 7. Set `BootReceiver` `exported=false` and check the action (P0-7).
 8. Add release signing or document external signing (P0-8, fixed in `ec83728`).
-9. Fix the lint errors and add lint to CI (P0-9).
+9. Fix the lint errors and add lint to CI (P0-9, fixed in `5efcaec` and
+   `ed5d22b`).
 
 ### Phase B — P1 before release
 
