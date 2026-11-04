@@ -25,7 +25,7 @@ production-ready until the P0 items below are fixed and the design is reconciled
 | Test coverage | 5/10 | Good daemon tests; the wireless-debugging guard now has app unit tests; still missing watchdog/backoff, two-listener/two-key integration, and a device matrix. |
 | Release engineering | 6/10 | Signed tag releases with versioning and CI; tests and lint run on push and PR; no device matrix or update channel. |
 | Design conformance | 4/10 | The daemon is a rewrite, not the design's patched AOSP adbd; several flows are missing. |
-| Documentation | 5/10 | Phone evidence is good; DESIGN.md and E2E.md are stale; the license is inconsistent. |
+| Documentation | 5/10 | Phone evidence is good; DESIGN.md and E2E.md are stale; the license is now aligned (P2-15, fixed). |
 
 ---
 
@@ -761,9 +761,14 @@ settings intent instead.
 
 ### P2-15 — Licensing is inconsistent
 
-DESIGN.md §13 says "The app's own code is MIT." `NOTICE` says the app is licensed under
-the Apache License 2.0 and there is no `LICENSE` file in the app repository. The daemon
-fork has Apache 2.0. The app's README does not state a license.
+**Status: fixed in `d7cfaed`.** The app's own code is MIT and `LICENSE` holds the text.
+The vendored daemon stays Apache 2.0 with its own `adbd/LICENSE`; `NOTICE` is now a
+third-party attribution file without the app-wide Apache trailer, and DESIGN.md §13,
+README.md and adbd/README.md describe the same split.
+
+DESIGN.md §13 said "The app's own code is MIT." `NOTICE` said the app was licensed under
+the Apache License 2.0 and there was no `LICENSE` file in the app repository. The daemon
+fork has Apache 2.0. The app's README did not state a license.
 
 Fix: choose one license for the app, add `LICENSE`, and align DESIGN.md §13 and `NOTICE`.
 
@@ -856,7 +861,7 @@ Material 3 in `Theme.kt`.
 | §10 Testing: unit (QR/key/policy/address/watchdog), integration (two listeners/two keys/policy/key reload), device matrix, CI | **Partial** | App tests 29, including `AdbStatusTest` and `WirelessDebuggingGuardTest`; daemon tests 131 checks + integration; CI runs tests and lint on push/PR; no watchdog/backoff tests, no two-listener/two-key integration, no device matrix. |
 | §11 Phasing: Phase 0 report, Phase 1 control plane, Phase 2 patched adbd, Phase 3 depth | **Partial** | Phase 0 report absent; Phase 1/2 functional; Phase 3 not implemented. |
 | §12 Open risks | **Mostly acknowledged** | The design acknowledges the main risks; some are unhandled (process death, failure cleanup). |
-| §13 Provenance | **Partial** | NOTICE exists; license inconsistency (P2-15); "stock AOSP adbd" wording is inaccurate (P1-1). |
+| §13 Provenance | **Partial** | `LICENSE` (MIT) and `adbd/LICENSE` (Apache-2.0) are aligned with `NOTICE` and DESIGN.md (P2-15, fixed in `d7cfaed`); "stock AOSP adbd" wording is inaccurate (P1-1). |
 
 ---
 
@@ -991,8 +996,9 @@ Gaps:
 - DESIGN.md is stale: it describes an AOSP patch set that does not exist, a
   `daemon/` directory that does not exist, and flows (`tcpip` port, TLS switch)
   that are not implemented.
-- DESIGN.md §13 says the app is MIT; `NOTICE` says Apache 2.0; there is no app
-  `LICENSE` file.
+- Licensing is aligned: the app is MIT (`LICENSE`), the vendored daemon is
+  Apache 2.0 (`adbd/LICENSE`), and `NOTICE` lists third-party attributions only
+  (P2-15, fixed in `d7cfaed`).
 - `docs/E2E.md` claims a host forward and a real `adb` shell that the script no
   longer performs.
 - `README.md` is accurate on the core model but does not state the security
@@ -1043,7 +1049,7 @@ Gaps:
 
 1. Update `docs/E2E.md` and `README.md`.
 2. Remove unused permissions and private API reflection.
-3. Add `LICENSE` and align DESIGN.md §13 with `NOTICE`.
+3. Add `LICENSE` and align DESIGN.md §13 with `NOTICE` (fixed in `d7cfaed`).
 4. Clean up `ScaffoldTest`, unused strings, and the legacy theme (strings and theme
    fixed in `9c10d0c`).
 5. Document the debug-only surface and the uninstall cleanup.
