@@ -762,6 +762,9 @@ Material 3 in `Theme.kt`.
 - `Prefs` uses `SharedPreferences.apply()` per field; acceptable, but a single transaction
   would be cleaner.
 - `Theme.kt` has `SDK_INT >= 31` checks that are always true for `minSdk 31`.
+  **Status: fixed in `4a5b8f5`.** `minSdk` is still 31, so the checks were dead and the
+  hardcoded fallback palettes were unreachable; the theme now uses the dynamic light/dark
+  schemes directly and lint's `ObsoleteSdkInt` is clean.
 - `mipmap-anydpi-v26` is unnecessary for `minSdk 31`. **Status: fixed in `8310f3a`.**
   `ic_launcher.xml` now lives in `mipmap-anydpi`; lint no longer reports
   `ObsoleteSdkInt` for the folder.
