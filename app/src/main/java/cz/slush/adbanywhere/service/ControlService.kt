@@ -505,11 +505,18 @@ class ControlService : Service() {
                     },
                 )
 
-                step(3, StepStatus.Active, "Turning system wireless debugging off")
-                harden()
-                step(3, StepStatus.Done, "System wireless debugging off")
-
-                step(4, StepStatus.Active, "Starting the firewall relay")
+                // Start the relay while the system adbd is still up. If the bind
+                // fails, the system listener is still a recovery path. Turning the
+                // system wireless debugging off first would leave the phone with no
+                // reachable ADB endpoint when the relay cannot bind.
+                step(3, StepStatus.Active, "Starting the firewall relay")
+                if (firewallConfig.enabled && vpnIp != null && !isVpnActive()) {
+                    fail(
+                        "ADB Anywhere is excluded from the VPN. Include it in the VPN app, " +
+                            "then press Start again. The firewall relay runs in the app process.",
+                    )
+                    return@withLock
+                }
                 if (firewallConfig.enabled && vpnIp != null) {
                     waitForPortFree(vpnIp, prefs.vpnPort)
                 }
@@ -520,7 +527,7 @@ class ControlService : Service() {
                         startFirewall(vpnIp)
                     }
                     verifyFirewall()
-                    step(4, StepStatus.Done, "Firewall relay on $vpnIp:${prefs.vpnPort}")
+                    step(3, StepStatus.Done, "Firewall relay on $vpnIp:${prefs.vpnPort}")
                 } else if (firewallConfig.enabled) {
                     stopFirewall()
                     ControlBus.update {
@@ -532,11 +539,15 @@ class ControlService : Service() {
                             ),
                         )
                     }
-                    step(4, StepStatus.Done, "VPN is down; no external listener")
+                    step(3, StepStatus.Done, "VPN is down; no external listener")
                 } else {
                     stopFirewall()
-                    step(4, StepStatus.Done, "Firewall is off")
+                    step(3, StepStatus.Done, "Firewall is off")
                 }
+
+                step(4, StepStatus.Active, "Turning system wireless debugging off")
+                harden()
+                step(4, StepStatus.Done, "System wireless debugging off")
 
                 prefs.setupComplete = true
                 AppLog.info("setup", "running; endpoint=${Endpoint.display(vpnIp, prefs.vpnPort)}")
@@ -795,6 +806,13 @@ class ControlService : Service() {
                 "Settings, or close Android\'s legacy listener with `adb usb`.",
             last,
         )
+    }
+
+    private fun isVpnActive(): Boolean {
+        val manager = getSystemService(ConnectivityManager::class.java) ?: return false
+        val network = manager.activeNetwork ?: return false
+        val capabilities = manager.getNetworkCapabilities(network) ?: return false
+        return capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
     }
 
     private fun waitForPortFree(host: String, port: Int, timeoutMs: Long = 10_000L) {
