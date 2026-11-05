@@ -73,6 +73,7 @@ fun AppRoot(viewModel: AppViewModel) {
     val logs by viewModel.logs.collectAsStateWithLifecycle()
     val appLogs by viewModel.appLog.collectAsStateWithLifecycle()
     val diagnosticLog by viewModel.diagnosticLog.collectAsStateWithLifecycle()
+    val enableWirelessAdbOnStop by viewModel.enableWirelessAdbOnStop.collectAsStateWithLifecycle()
     val appFingerprint by viewModel.appFingerprint.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
@@ -220,9 +221,11 @@ fun AppRoot(viewModel: AppViewModel) {
                 Screen.Settings -> SettingsScreen(
                     state = state,
                     firewallEnabled = firewall.enabled,
+                    enableWirelessAdbOnStop = enableWirelessAdbOnStop,
                     diagnosticLog = diagnosticLog,
                     appKey = appFingerprint,
                     onToggleFirewall = viewModel::setFirewallEnabled,
+                    onToggleWirelessAdbOnStop = viewModel::setEnableWirelessAdbOnStop,
                     onToggleDiagnosticLog = viewModel::setDiagnosticLog,
                     onSavePorts = viewModel::setPorts,
                     onBatteryExemption = { viewModel.requestBatteryExemption(it) },

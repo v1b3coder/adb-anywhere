@@ -1009,9 +1009,22 @@ class ControlService : Service() {
             scope.launch { setup() }
             return
         }
-        // The watchdog does not re-assert adb_wifi_enabled=0. The user may
-        // restore Android's wireless debugging as a recovery path; turning it off
-        // every tick made that impossible and hid the real relay failure.
+        // The watchdog re-asserts D5 only while the forked adbd is running and
+        // the relay is actually listening. If the relay is down, Android's wireless
+        // debugging stays available as the recovery path.
+        if (prefs.firewallEnabled && firewallProxy?.isListening != true) {
+            AppLog.warn("watchdog", "firewall relay is down; keeping system adb")
+            scheduleWatchdog()
+            return
+        }
+        try {
+            ensureWifiDebuggingOff()
+        } catch (e: IOException) {
+            AppLog.error("watchdog", "wireless debugging guard failed: ${e.message}")
+            fail(e.message ?: "System wireless debugging is still on.")
+            scheduleWatchdog()
+            return
+        }
         if (!SystemSettings.ensureNoAdbConnectionTimeout(this)) {
             AppLog.warn("watchdog", "adb_allowed_connection_time=0 was not accepted")
         }
@@ -1153,6 +1166,15 @@ class ControlService : Service() {
                     return@withLock
                 }
                 AppLog.info("service", "system adb off")
+                if (prefs.enableWirelessAdbOnStop) {
+                    AppLog.info("service", "re-enabling system wireless debugging after stop")
+                    val adb = SystemSettings.setAdbEnabled(this@ControlService, true)
+                    val wifi = SystemSettings.setAdbWifiEnabled(this@ControlService, true)
+                    SystemSettings.ensureNoAdbConnectionTimeout(this@ControlService)
+                    if (!adb || !wifi) {
+                        AppLog.warn("service", "could not re-enable system wireless debugging")
+                    }
+                }
                 // The system adb state outlives the daemon: keep showing it.
                 refreshAdbStatus()
                 // The notification collector must not re-post the stopped state
