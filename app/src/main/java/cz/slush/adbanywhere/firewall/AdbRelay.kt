@@ -73,13 +73,15 @@ class AdbRelay(
                 }
             }
         } catch (e: Exception) {
-            audit.record(
-                AuditEvent(
-                    event = "proxy_error",
-                    peer = peer,
-                    detail = e.message ?: "relay failed",
-                ),
-            )
+            if (!closed) {
+                audit.record(
+                    AuditEvent(
+                        event = "proxy_error",
+                        peer = peer,
+                        detail = e.message ?: "relay failed",
+                    ),
+                )
+            }
         } finally {
             close()
         }
@@ -104,13 +106,15 @@ class AdbRelay(
                 }
             }
         } catch (e: Exception) {
-            audit.record(
-                AuditEvent(
-                    event = "proxy_error",
-                    peer = peer,
-                    detail = e.message ?: "relay failed",
-                ),
-            )
+            if (!closed) {
+                audit.record(
+                    AuditEvent(
+                        event = "proxy_error",
+                        peer = peer,
+                        detail = e.message ?: "relay failed",
+                    ),
+                )
+            }
         } finally {
             close()
         }

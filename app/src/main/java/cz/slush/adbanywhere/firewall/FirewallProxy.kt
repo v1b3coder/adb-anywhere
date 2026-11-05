@@ -34,6 +34,7 @@ class FirewallProxy(
     private var port = 0
     private var loopbackPort = 0
     private var listening = false
+    private var localListener = false
     private var lastError = ""
 
     val activeSessions: Int get() = synchronized(lock) { connections.size }
@@ -44,6 +45,9 @@ class FirewallProxy(
         this.vpnIp = vpnIp
         this.port = port
         this.loopbackPort = loopbackPort
+        this.localListener = runCatching {
+            InetAddress.getByName(vpnIp).isLoopbackAddress
+        }.getOrDefault(false)
         val socket = ServerSocket()
         socket.reuseAddress = false
         try {
@@ -108,8 +112,22 @@ class FirewallProxy(
             }
             runCatching { client.tcpNoDelay = true }
             val peer = client.inetAddress
+            val own = ownVpn()
+            if ((!localListener && (peer.isLoopbackAddress || peer.isLinkLocalAddress)) ||
+                (!localListener && own != null && peer.address.contentEquals(own.address))
+            ) {
+                audit.record(
+                    AuditEvent(
+                        event = "ip_denied",
+                        peer = peer.hostAddress ?: "",
+                        detail = "local address",
+                    ),
+                )
+                runCatching { client.close() }
+                continue
+            }
             val config = config()
-            if (config.ipAllowlistEnabled && !IpAllowlist(config.ipAllowlist).allows(peer, ownVpn())) {
+            if (config.ipAllowlistEnabled && !IpAllowlist(config.ipAllowlist).allows(peer, own)) {
                 audit.record(AuditEvent(event = "ip_denied", peer = peer.hostAddress ?: ""))
                 runCatching { client.close() }
                 continue

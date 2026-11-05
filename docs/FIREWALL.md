@@ -429,7 +429,10 @@ Lifecycle changes:
   and starts or stops the relay. Active external connections drop.
 
 The relay binds only the exact VPN address, never `0.0.0.0`. If the VPN is down it
-does not listen; the UI says "VPN is down" and external ADB is unavailable.
+does not listen; the UI says "VPN is down" and external ADB is unavailable. If the
+VPN port is Android's legacy plain listener (`adb tcpip`), the app sends `usb:` to
+the system adbd, reconnects, waits for the port and retries the bind. It never
+calls `adb tcpip` and never moves to another port silently.
 
 ## 10. UI
 
@@ -456,7 +459,7 @@ does not listen; the UI says "VPN is down" and external ADB is unavailable.
 
 | Failure | Response |
 |---|---|
-| Relay bind fails | Setup error; daemon keeps loopback; UI shows the address and error |
+| Relay bind fails | Setup waits for the port, closes Android's legacy plain listener with `usb:` if it owns the port, and retries. If the port stays busy, the setup fails with the port and the recovery step. |
 | Relay dies | Watchdog restarts it; active sessions drop and must reconnect |
 | VPN excludes the app | Relay cannot receive inbound packets; UI reports the bind/accept failure and asks to include ADB Anywhere in the VPN |
 | VPN address changes | Relay rebinds; active sessions drop |
@@ -595,8 +598,11 @@ Implemented in the app:
   screen and keyguard state.
 - `firewall/AuditLog.kt`: the bounded JSONL log and ring.
 - `firewall/FirewallConfigStore.kt`: the persisted configuration.
+- `adb/SystemAdb.closePlainListener()`: sends `usb:` to the system adbd so the
+  firewall can take over its port.
 - `service/ControlService.kt`: loopback-only daemon when the firewall is on,
-  relay lifecycle, prompt notification and response.
+  relay lifecycle, port takeover from the system plain listener, prompt
+  notification and response.
 - `ui/FirewallScreen.kt`, `ui/CallPromptScreen.kt`, `ui/CallPromptActivity.kt`,
   `ui/RuleEditor.kt`: the tab, the prompt and the custom filter.
 - `ui/SettingsScreen.kt` and `ui/App.kt`: the switch and the conditional tab.

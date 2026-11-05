@@ -85,8 +85,10 @@ object SystemSettings {
     )
 
     /** A connect is enough: adbd listens on 5555 and never answers a probe. */
-    fun isLocalPortOpen(port: Int): Boolean = runCatching {
-        Socket().use { it.connect(InetSocketAddress("127.0.0.1", port), PROBE_TIMEOUT_MS) }
+    fun isLocalPortOpen(port: Int): Boolean = isPortOpen("127.0.0.1", port)
+
+    fun isPortOpen(host: String, port: Int): Boolean = runCatching {
+        Socket().use { it.connect(InetSocketAddress(host, port), PROBE_TIMEOUT_MS) }
         true
     }.getOrDefault(false)
 

@@ -70,6 +70,20 @@ class SystemAdb(
         false
     }
 
+    /**
+     * Closes the legacy plain `adb tcpip` listener on the system adbd. `usb:`
+     * restarts the system adbd in USB mode and clears service.adb.tcp.port; the
+     * app reconnects to the system adbd afterwards. The custom adbd is untouched
+     * except that the restart may kill it, so the caller re-probes it.
+     */
+    suspend fun closePlainListener(): Boolean = withContext(Dispatchers.IO) {
+        runCatching {
+            val stream = manager.openStream("usb:")
+            stream.close()
+            true
+        }.getOrDefault(false)
+    }
+
     fun settingsGet(key: String): String? {
         val result = shell.exec("settings get global $key")
         val value = result.stdout.trim()

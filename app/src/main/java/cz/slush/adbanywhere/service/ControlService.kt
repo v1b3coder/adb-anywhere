@@ -72,6 +72,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.io.IOException
+import java.net.BindException
 import java.net.InetSocketAddress
 import java.net.Socket
 import org.json.JSONObject
@@ -329,7 +330,7 @@ class ControlService : Service() {
                 }
 
                 step(0, StepStatus.Active, "Connecting to Android's wireless debugging")
-                val daemonAlive = withContext(Dispatchers.IO) { probeDaemon() }
+                var daemonAlive = withContext(Dispatchers.IO) { probeDaemon() }
                 AppLog.info("setup", "custom adb alive=$daemonAlive dir=${prefs.remoteDir}")
                 if (!daemonAlive && prefs.setupComplete &&
                     ContextCompat.checkSelfPermission(
@@ -373,8 +374,27 @@ class ControlService : Service() {
                         ControlBus.update { it.copy(message = "Preparing…") }
                     }
                 }
-                val systemAlive = if (daemonAlive) false
+                var systemAlive = if (daemonAlive) false
                 else withContext(Dispatchers.IO) { system.ensureConnected() }
+                if (firewallConfig.enabled && vpnIp != null &&
+                    SystemSettings.isPortOpen(vpnIp, prefs.vpnPort) &&
+                    firewallProxy?.isListening != true
+                ) {
+                    // The firewall needs the VPN port, but Android's legacy plain
+                    // listener still owns it. `usb:` clears service.adb.tcp.port
+                    // and restarts the system adbd; the app reconnects to it.
+                    AppLog.info(
+                        "firewall",
+                        "port ${prefs.vpnPort} is busy; closing the system plain listener",
+                    )
+                    if (system.ensureConnected() && system.closePlainListener()) {
+                        Thread.sleep(500)
+                        daemonAlive = withContext(Dispatchers.IO) { probeDaemon() }
+                        systemAlive = if (daemonAlive) false else system.ensureConnected()
+                    } else {
+                        AppLog.warn("firewall", "could not close the system plain listener")
+                    }
+                }
                 AppLog.info("setup", "system adb alive=$systemAlive")
                 cleanupRequired = cleanupRequired || daemonAlive || systemAlive
                 if (!daemonAlive && !systemAlive) {
@@ -471,6 +491,9 @@ class ControlService : Service() {
                 step(3, StepStatus.Done, "System wireless debugging off")
 
                 step(4, StepStatus.Active, "Starting the firewall relay")
+                if (firewallConfig.enabled && vpnIp != null) {
+                    waitForPortFree(vpnIp, prefs.vpnPort)
+                }
                 if (firewallConfig.enabled && vpnIp != null) {
                     if (firewallChanged || vpnChanged || portsChanged ||
                         firewallProxy?.isListening != true
@@ -703,17 +726,44 @@ class ControlService : Service() {
             },
             audit = { auditLog.record(it) },
         )
-        val proxy = FirewallProxy(
-            scope = scope,
-            config = { firewallStore.load() },
-            monitor = foregroundMonitor,
-            policy = policy,
-            audit = auditLog,
-            onState = { state -> ControlBus.update { it.copy(firewall = state) } },
+        var last: BindException? = null
+        repeat(BIND_ATTEMPTS) { attempt ->
+            val proxy = FirewallProxy(
+                scope = scope,
+                config = { firewallStore.load() },
+                monitor = foregroundMonitor,
+                policy = policy,
+                audit = auditLog,
+                onState = { state -> ControlBus.update { it.copy(firewall = state) } },
+            )
+            try {
+                proxy.start(vpnIp, prefs.vpnPort, prefs.loopbackPort)
+                firewallProxy = proxy
+                AppLog.info("firewall", "listening on $vpnIp:${prefs.vpnPort}")
+                return
+            } catch (e: BindException) {
+                last = e
+                AppLog.warn(
+                    "firewall",
+                    "port ${prefs.vpnPort} is busy; retrying (${attempt + 1}/$BIND_ATTEMPTS)",
+                )
+                Thread.sleep(BIND_RETRY_MS)
+            }
+        }
+        throw IOException(
+            "Port ${prefs.vpnPort} is still in use. Change the firewall port in " +
+                "Settings, or close Android\'s legacy listener with `adb usb`.",
+            last,
         )
-        proxy.start(vpnIp, prefs.vpnPort, prefs.loopbackPort)
-        firewallProxy = proxy
-        AppLog.info("firewall", "listening on $vpnIp:${prefs.vpnPort}")
+    }
+
+    private fun waitForPortFree(host: String, port: Int, timeoutMs: Long = 10_000L) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (!SystemSettings.isPortOpen(host, port)) return
+            Thread.sleep(200)
+        }
+        AppLog.warn("firewall", "port $port is still in use after $timeoutMs ms")
     }
 
     private fun stopFirewall() {
@@ -1375,6 +1425,8 @@ class ControlService : Service() {
         private const val NETWORK_SETTLE_MS = 1_500L
         private const val SYSTEM_ADB_WAIT_MS = 15_000L
         private const val MAX_PROMPTS = 8
+        private const val BIND_ATTEMPTS = 10
+        private const val BIND_RETRY_MS = 500L
         const val EXTRA_CODE = "code"
         const val EXTRA_PAIR_PORT = "pair_port"
         const val EXTRA_PORT = "port"
