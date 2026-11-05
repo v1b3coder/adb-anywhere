@@ -78,6 +78,8 @@ listening.
   never stops the system adbd: on devices where init kills its cgroup, that would
   also stop the patched adbd. The system adbd stays on USB and is not reachable
   over TCP after `ADB_WIFI_ENABLED=0`.
+- If the system adbd is reachable over the network anyway, the app shows the
+  warning in the UI and in its persistent foreground notification.
 - No root, no custom ROM, no proxy fallback and no random-port redirect.
 
 ## Build and tests

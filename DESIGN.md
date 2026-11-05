@@ -96,7 +96,7 @@ These are facts from AOSP `main`, not assumptions.
 | D8 | UI stack | Kotlin, Jetpack Compose, Material 3; package `cz.slush.adbanywhere` |
 | D9 | Bootstrap pairing | Notification `RemoteInput` with `code:port` |
 | D10 | Patched adbd transports | TCP only; USB and vsock disabled |
-| D11 | Settings UI | Shows the current ADB state and any warning; no system-adb switch |
+| D11 | Settings UI | Shows the current ADB state and any warning in the UI and in the persistent foreground notification; no system-adb switch |
 | D12 | Failure policy | Explicit error and recovery steps; no silent fallback and no random-port redirect |
 
 ## 6. Architecture

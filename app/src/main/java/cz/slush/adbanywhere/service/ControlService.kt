@@ -824,21 +824,33 @@ class ControlService : Service() {
     }
 
     private fun buildServiceNotification(state: ControlState): Notification {
-        val title = when (state.phase) {
-            Phase.Running -> "ADB Anywhere is running"
-            Phase.NeedsPairing -> "Pair with Android's wireless debugging"
-            Phase.Pairing -> "Pairing with Android's wireless debugging"
-            Phase.Deploying -> "Setting up ADB Anywhere"
-            Phase.Error -> "ADB Anywhere needs attention"
-            Phase.Stopped -> "ADB Anywhere is stopped"
-            Phase.Idle -> "ADB Anywhere"
+        // A system listener that is reachable over the network bypasses the
+        // custom adb's key policy. It is a security warning, not a transient
+        // status, so it stays in the ongoing notification as well as in the UI.
+        val warnings = state.adbStatus?.warnings().orEmpty()
+        val title = if (warnings.isNotEmpty()) {
+            "ADB Anywhere needs attention"
+        } else {
+            when (state.phase) {
+                Phase.Running -> "ADB Anywhere is running"
+                Phase.NeedsPairing -> "Pair with Android's wireless debugging"
+                Phase.Pairing -> "Pairing with Android's wireless debugging"
+                Phase.Deploying -> "Setting up ADB Anywhere"
+                Phase.Error -> "ADB Anywhere needs attention"
+                Phase.Stopped -> "ADB Anywhere is stopped"
+                Phase.Idle -> "ADB Anywhere"
+            }
         }
-        val text = when {
-            state.error.isNotEmpty() -> state.error
-            state.phase == Phase.Running && state.endpoint.isNotEmpty() -> state.endpoint
-            state.message.isNotEmpty() -> state.message
-            else -> "Tap to open"
-        }
+        val text = buildList {
+            addAll(warnings)
+            when {
+                state.error.isNotEmpty() -> add(state.error)
+                state.phase == Phase.Running && state.endpoint.isNotEmpty() &&
+                    state.endpoint != "not available yet" -> add(state.endpoint)
+                state.message.isNotEmpty() -> add(state.message)
+                else -> add("Tap to open")
+            }
+        }.joinToString("\n")
         val builder = NotificationCompat.Builder(this, Notifications.CHANNEL_SERVICE)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
