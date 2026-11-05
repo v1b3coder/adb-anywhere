@@ -269,7 +269,7 @@ class ControlService : Service() {
                     cleanupRequired = true
                     AppLog.info("setup", "bootstrap: opening system wireless debugging")
                     val current = SystemSettings.adbState(this)
-                    if (enableSystemAdb) {
+                    val wifiDebuggingEnabled = if (enableSystemAdb) {
                         adbStateBefore = current
                         val desired = AdbLifecycle.start(
                             current = current,
@@ -282,16 +282,23 @@ class ControlService : Service() {
                             "start: adb_enabled ${current.adbEnabled} -> ${desired.adbEnabled}, " +
                                 "adb_wifi_enabled ${current.adbWifiEnabled} -> ${desired.adbWifiEnabled}",
                         )
+                        desired.adbWifiEnabled != 0
                     } else if (SystemSettings.isWifiConnected(this)) {
                         SystemSettings.setAdbWifiEnabled(this, true)
                         AppLog.info("setup", "bootstrap: adb_wifi_enabled=1")
+                        true
+                    } else {
+                        false
                     }
                     // The framework disables wireless debugging on its timeout;
                     // 0 keeps the bootstrap path open after the app backgrounds.
                     if (!SystemSettings.ensureNoAdbConnectionTimeout(this)) {
                         AppLog.warn("setup", "adb_allowed_connection_time=0 was not accepted")
                     }
-                    delay(900)
+                    if (wifiDebuggingEnabled) {
+                        awaitSystemWirelessDebugging()
+                        ControlBus.update { it.copy(message = "Preparing…") }
+                    }
                 }
                 val systemAlive = if (daemonAlive) false
                 else withContext(Dispatchers.IO) { system.ensureConnected() }
@@ -458,6 +465,32 @@ class ControlService : Service() {
                 null
             }
         }
+
+    /**
+     * Android starts the TLS listener only after the user confirms its "allow
+     * wireless debugging on this network?" prompt, which it shows on every new
+     * network and then writes adb_wifi_enabled=0 again. Wait for the published
+     * port instead of racing the prompt and failing the whole setup.
+     */
+    private suspend fun awaitSystemWirelessDebugging(timeoutMs: Long = SYSTEM_ADB_WAIT_MS) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        var asked = false
+        while (System.currentTimeMillis() < deadline) {
+            val port = system.tlsPort()
+            if (port != null && SystemSettings.isLocalPortOpen(port)) {
+                AppLog.info("setup", "system wireless debugging is up on 127.0.0.1:$port")
+                return
+            }
+            if (!asked) {
+                asked = true
+                ControlBus.update {
+                    it.copy(message = "Confirm Android's wireless debugging prompt…")
+                }
+            }
+            delay(250)
+        }
+        AppLog.warn("setup", "system wireless debugging is not up after $timeoutMs ms")
+    }
 
     private suspend fun pair(codeText: String) {
         val code = PairingCode.parse(codeText)
@@ -1023,6 +1056,7 @@ class ControlService : Service() {
         const val ACTION_SET_TLS_PORT = "cz.slush.adbanywhere.SET_TLS_PORT"
         const val ACTION_STOP = "cz.slush.adbanywhere.STOP"
         private const val NETWORK_SETTLE_MS = 1_500L
+        private const val SYSTEM_ADB_WAIT_MS = 15_000L
         const val EXTRA_CODE = "code"
         const val EXTRA_PORT = "port"
         const val EXTRA_PAIR_INPUT = "pair_input"
