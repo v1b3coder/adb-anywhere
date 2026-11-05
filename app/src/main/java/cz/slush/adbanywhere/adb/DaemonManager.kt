@@ -115,7 +115,7 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
             "adb",
             "restarting detached on ${Endpoint.listenSpec(loopbackPort, vpnIp, vpnPort, exposeVpn)}",
         )
-        val scriptPath = "$remoteDir/adbd.restart.sh"
+        val scriptPath = "$remoteDir/adbd.restart.${System.nanoTime()}.sh"
         shell.writeTextFile(scriptPath, StaleDaemon.restartScript(start))
         shell.chmod(scriptPath, "700")
         val result = shell.exec(
