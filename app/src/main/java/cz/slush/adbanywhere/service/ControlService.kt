@@ -296,7 +296,7 @@ class ControlService : Service() {
             return false
         }
         AppLog.info("service", "resuming after a process restart")
-        scope.launch { setup(forceRestart = true) }
+        scope.launch { setup() }
         return true
     }
 

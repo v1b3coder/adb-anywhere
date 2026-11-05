@@ -107,6 +107,7 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
         vpnPort: Int,
         exposeVpn: Boolean = true,
     ) {
+        awaitRestartScripts(shell)
         writeBinary(shell)
         writeKeys(shell, appKey, developers)
         Thread.sleep(200)
@@ -165,6 +166,7 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
     }
 
     fun stop(shell: Shell) {
+        awaitRestartScripts(shell)
         // Kill every vendored adbd, not only the pid file PID: a process that
         // lost the bind race can have written the pid file last, and a daemon
         // started from another remote directory has a different pid file. The
@@ -176,6 +178,26 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
 
     fun isRunning(shell: Shell, loopbackPort: Int): Boolean =
         shell.probe("127.0.0.1", loopbackPort)
+
+    /**
+     * Waits for a detached restart from an earlier process to finish. Its script
+     * file exists while it runs, so the next start does not race its kill/start
+     * pair. This is coordination, not a lock: it covers an app crash during a
+     * restart, not two simultaneous starts.
+     */
+    private fun awaitRestartScripts(shell: Shell, timeoutMs: Long = 10_000) {
+        val pattern = "${shell.quote(remoteDir)}/adbd.restart.*.sh"
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline && restartScriptRunning(shell, pattern)) {
+            Thread.sleep(100)
+        }
+        if (restartScriptRunning(shell, pattern)) {
+            throw IOException("a previous adbd restart is still running")
+        }
+    }
+
+    private fun restartScriptRunning(shell: Shell, pattern: String): Boolean =
+        shell.exec("ls $pattern 2>/dev/null").stdout.isNotBlank()
 
     fun logTail(shell: Shell, lines: Int = 120): String =
         runCatching { shell.exec("tail -n $lines ${shell.quote(logPath)}").stdout }.getOrDefault("")
