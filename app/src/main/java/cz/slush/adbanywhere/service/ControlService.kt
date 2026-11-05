@@ -1009,15 +1009,9 @@ class ControlService : Service() {
             scope.launch { setup() }
             return
         }
-        // D6: every tick keeps D5, not only the first setup.
-        try {
-            ensureWifiDebuggingOff()
-        } catch (e: IOException) {
-            AppLog.error("watchdog", "wireless debugging guard failed: ${e.message}")
-            fail(e.message ?: "System wireless debugging is still on.")
-            scheduleWatchdog()
-            return
-        }
+        // The watchdog does not re-assert adb_wifi_enabled=0. The user may
+        // restore Android's wireless debugging as a recovery path; turning it off
+        // every tick made that impossible and hid the real relay failure.
         if (!SystemSettings.ensureNoAdbConnectionTimeout(this)) {
             AppLog.warn("watchdog", "adb_allowed_connection_time=0 was not accepted")
         }
