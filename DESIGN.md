@@ -427,7 +427,8 @@ a different mode.
 - **Phase 2 — vendored adbd**: build from `adbd/`, bundle, deploy, two listeners,
   key provisioning, QR and paste pairing, logs, watchdog.
 - **Phase 3 — depth**: per-service and per-command policy, connection log
-  export, recovery hardening.
+  export, recovery hardening. The optional firewall, its IP/app allowlists, the
+  call-policy model and the audit log are designed in `docs/FIREWALL.md`.
 
 ## 12. Open risks
 
