@@ -21,7 +21,6 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
     val keysPath: String get() = "$remoteDir/adb_keys"
     val logPath: String get() = "$remoteDir/adbd.log"
     val pidPath: String get() = "$remoteDir/adbd.pid"
-    private var loopbackPortForStop = 15037
 
     fun abi(): String? {
         val supported = setOf("arm64-v8a", "armeabi-v7a", "x86_64")
@@ -77,7 +76,6 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
     ) {
         writeBinary(shell)
         writeKeys(shell, appKey, developers)
-        loopbackPortForStop = loopbackPort
         stop(shell)
         val command = startCommand(shell, vpnIp, loopbackPort, vpnPort, exposeVpn)
         AppLog.info("adb", "starting ${Endpoint.listenSpec(loopbackPort, vpnIp, vpnPort, exposeVpn)}")
@@ -109,27 +107,29 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
         vpnPort: Int,
         exposeVpn: Boolean = true,
     ) {
+        awaitRestartScripts(shell)
         writeBinary(shell)
         writeKeys(shell, appKey, developers)
-        loopbackPortForStop = loopbackPort
         Thread.sleep(200)
-        val pid = shell.exec("cat ${shell.quote(pidPath)} 2>/dev/null").stdout.trim()
         val start = startCommand(shell, vpnIp, loopbackPort, vpnPort, exposeVpn)
         AppLog.info(
             "adb",
             "restarting detached on ${Endpoint.listenSpec(loopbackPort, vpnIp, vpnPort, exposeVpn)}",
         )
-        val kill = if (pid.isNotEmpty() && pid.all(Char::isDigit)) {
-            "kill -9 $pid 2>/dev/null || true"
+        val pids = daemonPids(shell)
+        val scriptPath = "$remoteDir/adbd.restart.${System.nanoTime()}.sh"
+        val markerPath = scriptPath.removeSuffix(".sh") + ".pid"
+        if (pids == null || pids.isEmpty()) {
+            AppLog.warn("adb", "ps could not identify the daemon; using the /proc restart")
+            shell.writeTextFile(scriptPath, StaleDaemon.restartScript(start))
         } else {
-            ""
+            AppLog.info("adb", "restarting pids=$pids")
+            shell.writeTextFile(scriptPath, restartScript(pids, start))
         }
-        val psKill = "ps -A -o PID,NAME,ARGS | " +
-            "awk '\$2==\"adbd\" && index(\$0, \"${remoteDir}\") {print \$1}' | " +
-            "xargs -r kill -9 2>/dev/null || true"
-        val script = "$kill; $psKill; sleep 0.4; $start"
+        shell.chmod(scriptPath, "700")
+        val launch = "echo \$\$ > ${shell.quote(markerPath)}; exec sh ${shell.quote(scriptPath)}"
         val result = shell.exec(
-            "setsid sh -c ${shell.quote(script)} </dev/null >/dev/null 2>&1 & echo \$!",
+            "setsid sh -c ${shell.quote(launch)} </dev/null >/dev/null 2>&1 & echo \$!",
             10_000,
         )
         if (!result.ok) {
@@ -175,29 +175,103 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
     }
 
     fun stop(shell: Shell) {
-        val pid = shell.exec("cat ${shell.quote(pidPath)} 2>/dev/null").stdout.trim()
-        if (pid.isNotEmpty() && pid.all(Char::isDigit)) {
-            AppLog.info("adb", "stopping pid=$pid")
-            shell.exec("kill -9 $pid 2>/dev/null || true")
-        } else {
-            AppLog.info("adb", "no pid file; scanning for vendored adbd")
-        }
-        // Kill every vendored adbd by binary path, not only the pid file PID.
-        // The /proc scan in StaleDaemon is only the fallback when ps/awk is
-        // unavailable; it is much slower on a phone with many processes.
-        val psKill = "ps -A -o PID,NAME,ARGS | " +
-            "awk '\$2==\"adbd\" && index(\$0, \"${remoteDir}\") {print \$1}' | " +
-            "xargs -r kill -9 2>/dev/null || true"
-        val result = shell.exec(psKill, 10_000)
-        if (!result.ok) {
-            AppLog.warn("adb", "ps cleanup failed; falling back to /proc scan")
+        awaitRestartScripts(shell)
+        val pids = daemonPids(shell)
+        if (pids == null) {
+            AppLog.warn("adb", "ps unavailable; using the /proc scan")
             shell.exec(StaleDaemon.stopScript(), 10_000).requireOk("stop vendored adbd")
+        } else if (pids.isEmpty()) {
+            AppLog.info("adb", "no vendored adbd found")
+        } else {
+            AppLog.info("adb", "stopping pids=$pids")
+            for (pid in pids) shell.exec("kill -9 $pid 2>/dev/null || true")
+            waitForPids(shell, pids)
         }
         shell.exec("rm -f ${shell.quote(pidPath)}")
     }
 
+    /**
+     * Finds the vendored daemon through ps instead of scanning every /proc entry.
+     * The app always starts it with --listen, and the system adbd does not accept
+     * that option. Returns null when ps is unavailable, so the caller can fall
+     * back to the /proc scan.
+     */
+    private fun daemonPids(shell: Shell): List<Int>? {
+        val result = shell.exec("ps -A -o PID,NAME,ARGS", 10_000)
+        if (!result.ok) return null
+        return result.stdout.lineSequence().mapNotNull { line ->
+            val parts = line.trim().split(Regex("\\s+"), limit = 3)
+            if (parts.size == 3 && parts[1] == "adbd" && parts[2].contains("--listen")) {
+                parts[0].toIntOrNull()
+            } else {
+                null
+            }
+        }.distinct().toList()
+    }
+
+    private fun waitForPids(shell: Shell, pids: List<Int>, timeoutMs: Long = 2_000) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        var alive = pids
+        while (System.currentTimeMillis() < deadline && alive.isNotEmpty()) {
+            alive = alive.filter { pid ->
+                shell.exec("test -s /proc/$pid/cmdline && echo yes || echo no").stdout.trim() == "yes"
+            }
+            if (alive.isNotEmpty()) Thread.sleep(50)
+        }
+        if (alive.isNotEmpty()) {
+            AppLog.warn("adb", "pids $alive survived kill -9; using the /proc scan")
+            shell.exec(StaleDaemon.stopScript(), 10_000).requireOk("stop vendored adbd")
+        }
+    }
+
+    private fun restartScript(pids: List<Int>, start: String): String = """
+        pids="${pids.joinToString(" ")}"
+        kill -9 ${'$'}pids 2>/dev/null || true
+        i=0
+        while [ ${'$'}i -lt 30 ]; do
+          alive=0
+          for p in ${'$'}pids; do [ -s /proc/${'$'}p/cmdline ] && alive=1; done
+          [ ${'$'}alive = 0 ] && break
+          sleep 0.1
+          i=${'$'}((i+1))
+        done
+        [ ${'$'}alive = 1 ] && exit 1
+        sleep 0.2
+        $start
+        rm -f "${'$'}0" "${'$'}{0%.sh}.pid"
+    """.trimIndent()
+
     fun isRunning(shell: Shell, loopbackPort: Int): Boolean =
         shell.probe("127.0.0.1", loopbackPort)
+
+    /**
+     * Waits for a detached restart from an earlier process to finish. The script
+     * writes its PID next to itself before it kills, so a crash during a restart
+     * is recovered instead of racing the next start. This is coordination, not a
+     * lock: two simultaneous starts are still last-writer-wins.
+     */
+    private fun awaitRestartScripts(shell: Shell, timeoutMs: Long = 10_000) {
+        val dir = shell.quote(remoteDir)
+        val marker = "$dir/adbd.restart.*.pid"
+        val script = "$dir/adbd.restart.*.sh"
+        val alive = """
+            for m in $marker; do
+              [ -f "${'$'}m" ] || continue
+              p=${'$'}(cat "${'$'}m" 2>/dev/null)
+              [ -n "${'$'}p" ] && [ -d "/proc/${'$'}p" ] && exit 0
+            done
+            exit 1
+        """.trimIndent()
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (!shell.exec(alive).ok) {
+                shell.exec("rm -f $marker $script")
+                return
+            }
+            Thread.sleep(100)
+        }
+        throw IOException("a previous adbd restart is still running")
+    }
 
     fun logTail(shell: Shell, lines: Int = 120): String =
         runCatching { shell.exec("tail -n $lines ${shell.quote(logPath)}").stdout }.getOrDefault("")

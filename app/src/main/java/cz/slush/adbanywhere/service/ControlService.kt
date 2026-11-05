@@ -640,10 +640,33 @@ class ControlService : Service() {
     private suspend fun awaitSystemWirelessDebugging(timeoutMs: Long = SYSTEM_ADB_WAIT_MS) {
         val deadline = System.currentTimeMillis() + timeoutMs
         var asked = false
-        while (System.currentTimeMillis() < deadline) {
-            val port = system.tlsPort()
-            if (port != null && SystemSettings.isLocalPortOpen(port)) {
+        // Android 13+ does not publish service.adb.tls.port. The TLS port is
+        // only in the mDNS advertisement, so resolve it before waiting on the
+        // property.
+        var port = system.tlsPort()
+        if (port == null) {
+            AppLog.info("system", "service.adb.tls.port is empty; resolving mDNS")
+            port = system.discoverTlsPort()
+        }
+        if (port != null) {
+            AppLog.info("system", "waiting for system wireless debugging on 127.0.0.1:$port")
+            prefs.lastTlsPort = port
+            ControlBus.update {
+                it.copy(message = "Confirm Android's wireless debugging prompt…")
+            }
+            while (System.currentTimeMillis() < deadline && !SystemSettings.isLocalPortOpen(port)) {
+                delay(100)
+            }
+            if (SystemSettings.isLocalPortOpen(port)) {
                 AppLog.info("setup", "system wireless debugging is up on 127.0.0.1:$port")
+                return
+            }
+        }
+        while (System.currentTimeMillis() < deadline) {
+            val current = system.tlsPort()
+            if (current != null && SystemSettings.isLocalPortOpen(current)) {
+                prefs.lastTlsPort = current
+                AppLog.info("setup", "system wireless debugging is up on 127.0.0.1:$current")
                 return
             }
             if (!asked) {

@@ -239,6 +239,9 @@ private fun StatusHero(
                             Button(onClick = onStart) {
                                 Text("Try again")
                             }
+                            FilledTonalButton(onClick = onPair) {
+                                Text("Pair now")
+                            }
                         }
                         Phase.Deploying, Phase.Pairing -> {
                             FilledTonalButton(onClick = onSetup, enabled = false) {
