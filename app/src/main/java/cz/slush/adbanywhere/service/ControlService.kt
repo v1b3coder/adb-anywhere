@@ -230,8 +230,8 @@ class ControlService : Service() {
             }
             ACTION_APPLY_FIREWALL -> {
                 prefs.userWantsRunning = true
-                AppLog.info("firewall", "clean restart requested")
-                scope.launch { restartStack() }
+                AppLog.info("firewall", "listener mode changed; restarting the daemon in place")
+                scope.launch { setup(forceRestart = true, enableSystemAdb = true) }
             }
             ACTION_CLEAR_AUDIT -> {
                 auditLog.clear()
@@ -437,6 +437,12 @@ class ControlService : Service() {
 
                 if (!daemonAlive) AppLog.info("setup", "WRITE_SECURE_SETTINGS granted")
 
+                val firewallChanged = firewallConfig.enabled != prefs.daemonFirewallMode
+                if (firewallChanged) {
+                    AppLog.info("firewall", "listener mode changed; stopping the relay first")
+                    stopFirewall()
+                }
+
                 step(1, StepStatus.Active, "Deploying the custom adb")
                 val shell = if (daemonAlive) {
                     withContext(Dispatchers.IO) { daemonShell() }
@@ -446,7 +452,6 @@ class ControlService : Service() {
                 val vpnChanged = vpnIp != previous.vpnIp
                 val portsChanged = prefs.loopbackPort != previous.loopbackPort ||
                     prefs.vpnPort != previous.vpnPort
-                val firewallChanged = firewallConfig.enabled != prefs.daemonFirewallMode
                 val restart = forceRestart || !daemonAlive || portsChanged ||
                     (exposeVpn && vpnChanged) || firewallChanged
                 AppLog.info(
