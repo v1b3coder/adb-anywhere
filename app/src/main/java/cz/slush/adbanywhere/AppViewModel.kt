@@ -41,8 +41,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val firewall = ControlBus.firewallConfig
     val appLog = AppLog.entries
     val diagnosticLog = AppLog.enabled
-    private val _enableWirelessAdbOnStop = MutableStateFlow(prefs.enableWirelessAdbOnStop)
-    val enableWirelessAdbOnStop: StateFlow<Boolean> = _enableWirelessAdbOnStop
 
 
     /** The user's last explicit start or stop. Opening the app never overrides it. */
@@ -94,12 +92,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun setDiagnosticLog(enabled: Boolean) {
         prefs.diagnosticLog = enabled
         AppLog.setEnabled(enabled)
-    }
-
-    fun setEnableWirelessAdbOnStop(enabled: Boolean) {
-        AppLog.info("settings", "wireless adb on stop=$enabled")
-        prefs.enableWirelessAdbOnStop = enabled
-        _enableWirelessAdbOnStop.value = enabled
     }
 
     /**

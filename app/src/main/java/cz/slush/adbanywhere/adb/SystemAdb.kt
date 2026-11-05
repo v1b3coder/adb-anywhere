@@ -29,16 +29,6 @@ class SystemAdb(
     suspend fun ensureConnected(): Boolean = withContext(Dispatchers.IO) {
         if (manager.isConnected) return@withContext true
 
-        // Android 13+ no longer publishes service.adb.tls.port: adbd sends the
-        // port only through the auth service and advertises it over mDNS. Try the
-        // advertisement first so a stale lastTlsPort cannot burn the timeout.
-        val mdnsPort = discoverTlsPort()
-        if (mdnsPort != null && manager.connectTo("127.0.0.1", mdnsPort)) {
-            prefs.lastTlsPort = mdnsPort
-            AppLog.info("system", "connected via mDNS on 127.0.0.1:$mdnsPort")
-            return@withContext true
-        }
-
         // A previously authorized ADB channel can bootstrap the app when the
         // system wireless debugging UI is not reachable. This is the same path
         // as USB `adb tcpip` followed by `adb connect`, but the address is
@@ -70,12 +60,23 @@ class SystemAdb(
             }
         }
 
+        // Android 13+ no longer publishes service.adb.tls.port; the port is only
+        // in the mDNS advertisement. Keep this as a fallback: the settings write
+        // above is the primary bootstrap and refreshes the advertisement.
+        for (port in discoverTlsPorts()) {
+            if (port == prefs.loopbackPort || port == prefs.vpnPort) continue
+            if (manager.connectTo("127.0.0.1", port)) {
+                prefs.lastTlsPort = port
+                AppLog.info("system", "connected via mDNS on 127.0.0.1:$port")
+                return@withContext true
+            }
+        }
         AppLog.info("system", "no listener found on ports $candidates")
         false
     }
 
-    suspend fun discoverTlsPort(): Int? = withContext(Dispatchers.IO) {
-        MdnsDiscovery(context).discover("_adb-tls-connect._tcp")
+    suspend fun discoverTlsPorts(): List<Int> = withContext(Dispatchers.IO) {
+        MdnsDiscovery(context).discoverAll("_adb-tls-connect._tcp")
     }
 
     /**

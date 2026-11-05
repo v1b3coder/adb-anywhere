@@ -33,8 +33,6 @@ import cz.slush.adbanywhere.adb.AdbManager
 import cz.slush.adbanywhere.adb.DaemonManager
 import cz.slush.adbanywhere.adb.Shell
 import cz.slush.adbanywhere.adb.SystemAdb
-import cz.slush.adbanywhere.data.AdbLifecycle
-import cz.slush.adbanywhere.data.AdbState
 import cz.slush.adbanywhere.data.AndroidPubKey
 import cz.slush.adbanywhere.data.AppKeyStore
 import cz.slush.adbanywhere.data.DeveloperKey
@@ -158,7 +156,7 @@ class ControlService : Service() {
                 // running daemon is already ours and is only re-checked.
                 val forceRestart = ControlBus.state.value.phase in
                     setOf(Phase.Idle, Phase.Stopped, Phase.Error)
-                scope.launch { setup(forceRestart = forceRestart, enableSystemAdb = true) }
+                scope.launch { setup(forceRestart = forceRestart) }
             }
             // Keys and settings are persisted either way; a stopped app applies them
             // on the next start instead of deploying a daemon the user turned off.
@@ -173,42 +171,36 @@ class ControlService : Service() {
             ACTION_RESTART -> {
                 prefs.userWantsRunning = true
                 AppLog.info("service", "restart requested")
-                scope.launch { setup(forceRestart = true, enableSystemAdb = true) }
+                scope.launch { setup(forceRestart = true) }
             }
             // A revocation must terminate sessions that were authenticated with the
             // removed key, so it restarts the daemon like an explicit restart. The UI
             // only sends it while the daemon runs.
             ACTION_REVOKE_KEYS -> {
                 AppLog.info("service", "key revocation; restarting to close sessions")
-                scope.launch { setup(forceRestart = true, enableSystemAdb = true) }
+                scope.launch { setup(forceRestart = true) }
             }
-            // The pairing notification asks for the code first and the port
-            // second, so each reply arrives as its own intent. A reply with only
-            // the code starts the port step instead of pairing.
+            // One reply carries code:port from the pairing dialog. The in-app
+            // form sends the code and port as separate extras; both paths reach
+            // the same pair() call.
             ACTION_PAIR -> {
                 val codeText = intent.getStringExtra(EXTRA_CODE)
                 val portText = intent.getStringExtra(EXTRA_PAIR_PORT)
                 val code = codeText?.let { PairingCode.parseCode(it) }
                 val port = portText?.let { PairingCode.parsePort(it) }
+                val combined = codeText?.let { PairingCode.parse(it) }
                 when {
-                    code == null -> {
-                        AppLog.warn("pair", "pairing code is not six digits")
-                        postPairingNotification(
-                            "The code is the six-digit number in Android's dialog.",
-                        )
-                    }
-                    port == null -> {
-                        if (portText != null) AppLog.warn("pair", "pairing port is not a port")
-                        postPairingPortNotification(
-                            code,
-                            if (portText != null) "The port is the number under the IP address." else "",
-                        )
-                    }
-                    else -> {
-                        // Pairing is the first setup step, so it ends in a running
-                        // daemon: the user asked for it explicitly.
+                    code != null && port != null -> {
                         prefs.userWantsRunning = true
                         scope.launch { pair(PairingCode(code, port)) }
+                    }
+                    combined != null -> {
+                        prefs.userWantsRunning = true
+                        scope.launch { pair(combined) }
+                    }
+                    else -> {
+                        AppLog.warn("pair", "pairing value is not code:port")
+                        postPairingNotification("Enter code:port, for example 123456:37123.")
                     }
                 }
             }
@@ -231,7 +223,7 @@ class ControlService : Service() {
             ACTION_APPLY_FIREWALL -> {
                 prefs.userWantsRunning = true
                 AppLog.info("firewall", "listener mode changed; restarting the daemon in place")
-                scope.launch { setup(forceRestart = true, enableSystemAdb = true) }
+                scope.launch { setup(forceRestart = true) }
             }
             ACTION_CLEAR_AUDIT -> {
                 auditLog.clear()
@@ -303,10 +295,7 @@ class ControlService : Service() {
         return true
     }
 
-    private suspend fun setup(
-        forceRestart: Boolean = false,
-        enableSystemAdb: Boolean = false,
-    ) {
+    private suspend fun setup(forceRestart: Boolean = false) {
         setupMutex.withLock {
             val previous = ControlBus.state.value
             AppLog.info("setup", "started; restart=$forceRestart")
@@ -323,7 +312,6 @@ class ControlService : Service() {
             // A failed attempt must undo what it changed: it may have written the
             // bootstrap settings or reached a shell on the device.
             var cleanupRequired = false
-            var adbStateBefore: AdbState? = null
             val firewallConfig = firewallStore.load()
             try {
                 val vpnIp = VpnDetector.currentVpnAddress(this)
@@ -355,37 +343,23 @@ class ControlService : Service() {
                     // bootstrap path after a reboot without a pre-existing app shell.
                     cleanupRequired = true
                     AppLog.info("setup", "bootstrap: opening system wireless debugging")
-                    val current = SystemSettings.adbState(this)
-                    val wifiDebuggingEnabled = if (enableSystemAdb) {
-                        adbStateBefore = current
-                        val desired = AdbLifecycle.start(
-                            current = current,
-                            patchedAdbdAlive = daemonAlive,
-                            wifiConnected = SystemSettings.isWifiConnected(this),
-                        )
-                        SystemSettings.applyAdbState(this, desired)
-                        AppLog.info(
-                            "setup",
-                            "start: adb_enabled ${current.adbEnabled} -> ${desired.adbEnabled}, " +
-                                "adb_wifi_enabled ${current.adbWifiEnabled} -> ${desired.adbWifiEnabled}",
-                        )
-                        desired.adbWifiEnabled != 0
-                    } else if (SystemSettings.isWifiConnected(this)) {
+                    // Always write the setting, even when it already reads 1: the
+                    // framework can have the setting on while its TLS server is down,
+                    // and a skipped write leaves that state in place. Never write
+                    // ADB_ENABLED here: it restarts the system adbd and drops the
+                    // paired keys.
+                    if (SystemSettings.isWifiConnected(this)) {
                         SystemSettings.setAdbWifiEnabled(this, true)
                         AppLog.info("setup", "bootstrap: adb_wifi_enabled=1")
-                        true
-                    } else {
-                        false
                     }
                     // The framework disables wireless debugging on its timeout;
                     // 0 keeps the bootstrap path open after the app backgrounds.
                     if (!SystemSettings.ensureNoAdbConnectionTimeout(this)) {
                         AppLog.warn("setup", "adb_allowed_connection_time=0 was not accepted")
                     }
-                    if (wifiDebuggingEnabled) {
-                        awaitSystemWirelessDebugging()
-                        ControlBus.update { it.copy(message = "Preparing…") }
-                    }
+                    delay(900)
+                    awaitSystemWirelessDebugging()
+                    ControlBus.update { it.copy(message = "Preparing…") }
                 }
                 var systemAlive = if (daemonAlive) false
                 else withContext(Dispatchers.IO) { system.ensureConnected() }
@@ -576,7 +550,7 @@ class ControlService : Service() {
                 fail(e.message ?: "Setup failed")
             } finally {
                 if (cleanupRequired && ControlBus.state.value.phase != Phase.Running) {
-                    abortSetup(adbStateBefore)?.let { warning ->
+                    abortSetup()?.let { warning ->
                         val error = ControlBus.state.value.error
                         fail(if (error.isEmpty()) warning else "$error $warning")
                     }
@@ -594,9 +568,8 @@ class ControlService : Service() {
      * where the patched daemon is verified, and turning it off here would cut the
      * very connection the retry needs.
      */
-    private suspend fun abortSetup(adbStateBefore: AdbState?): String? =
+    private suspend fun abortSetup(): String? =
         withContext(Dispatchers.IO + NonCancellable) {
-            val context = this@ControlService
             runCatching { stopFirewall() }
             val stopped = runCatching {
                 val shell = runCatching { daemonShell() }.getOrNull() ?: system.shell
@@ -614,10 +587,6 @@ class ControlService : Service() {
                 Socket().use { it.connect(InetSocketAddress("127.0.0.1", prefs.loopbackPort), 300) }
                 true
             }.getOrDefault(false)
-            adbStateBefore?.let { previous ->
-                runCatching { SystemSettings.applyAdbState(context, previous) }
-                    .onFailure { AppLog.warn("setup", "cleanup cannot restore adb: ${it.message}") }
-            }
             AppLog.warn(
                 "setup",
                 "cleanup stopped=$stopped listening=$daemonListening",
@@ -643,23 +612,25 @@ class ControlService : Service() {
         // Android 13+ does not publish service.adb.tls.port. The TLS port is
         // only in the mDNS advertisement, so resolve it before waiting on the
         // property.
-        var port = system.tlsPort()
-        if (port == null) {
+        val ports = LinkedHashSet<Int>()
+        system.tlsPort()?.let(ports::add)
+        if (ports.isEmpty()) {
             AppLog.info("system", "service.adb.tls.port is empty; resolving mDNS")
-            port = system.discoverTlsPort()
+            ports += system.discoverTlsPorts()
         }
-        if (port != null) {
-            AppLog.info("system", "waiting for system wireless debugging on 127.0.0.1:$port")
-            prefs.lastTlsPort = port
+        if (ports.isNotEmpty()) {
+            AppLog.info("system", "waiting for system wireless debugging on $ports")
             ControlBus.update {
                 it.copy(message = "Confirm Android's wireless debugging prompt…")
             }
-            while (System.currentTimeMillis() < deadline && !SystemSettings.isLocalPortOpen(port)) {
+            while (System.currentTimeMillis() < deadline) {
+                val open = ports.firstOrNull(SystemSettings::isLocalPortOpen)
+                if (open != null) {
+                    prefs.lastTlsPort = open
+                    AppLog.info("setup", "system wireless debugging is up on 127.0.0.1:$open")
+                    return
+                }
                 delay(100)
-            }
-            if (SystemSettings.isLocalPortOpen(port)) {
-                AppLog.info("setup", "system wireless debugging is up on 127.0.0.1:$port")
-                return
             }
         }
         while (System.currentTimeMillis() < deadline) {
@@ -765,7 +736,7 @@ class ControlService : Service() {
 
     private suspend fun restartStack() {
         setupMutex.withLock { stopStack() }
-        setup(forceRestart = true, enableSystemAdb = true)
+        setup(forceRestart = true)
     }
 
     private suspend fun stopStack() = withContext(Dispatchers.IO + NonCancellable) {
@@ -1032,14 +1003,7 @@ class ControlService : Service() {
             scope.launch { setup() }
             return
         }
-        // The watchdog re-asserts D5 only while the forked adbd is running and
-        // the relay is actually listening. If the relay is down, Android's wireless
-        // debugging stays available as the recovery path.
-        if (prefs.firewallEnabled && firewallProxy?.isListening != true) {
-            AppLog.warn("watchdog", "firewall relay is down; keeping system adb")
-            scheduleWatchdog()
-            return
-        }
+        // D6: every tick keeps D5, not only the first setup.
         try {
             ensureWifiDebuggingOff()
         } catch (e: IOException) {
@@ -1177,28 +1141,8 @@ class ControlService : Service() {
                 val stillListening = daemonListening()
                 cancelWatchdog()
                 watchdogJob?.cancel()
-                // Stop is the explicit point where the app releases the system adbd.
-                val adbStopped = withContext(Dispatchers.IO) {
-                    runCatching { SystemSettings.applyAdbState(this@ControlService, AdbLifecycle.stop()) }
-                }
-                if (adbStopped.isFailure) {
-                    fail(
-                        "Could not turn the system adb off: " +
-                            (adbStopped.exceptionOrNull()?.message ?: "unknown error"),
-                    )
-                    return@withLock
-                }
-                AppLog.info("service", "system adb off")
-                if (prefs.enableWirelessAdbOnStop) {
-                    AppLog.info("service", "re-enabling system wireless debugging after stop")
-                    val adb = SystemSettings.setAdbEnabled(this@ControlService, true)
-                    val wifi = SystemSettings.setAdbWifiEnabled(this@ControlService, true)
-                    SystemSettings.ensureNoAdbConnectionTimeout(this@ControlService)
-                    if (!adb || !wifi) {
-                        AppLog.warn("service", "could not re-enable system wireless debugging")
-                    }
-                }
-                // The system adb state outlives the daemon: keep showing it.
+                // The system wireless debugging outlives the daemon and is the
+                // recovery path: stop only the patched daemon here.
                 refreshAdbStatus()
                 // The notification collector must not re-post the stopped state
                 // after the foreground notification is removed below.
@@ -1368,39 +1312,22 @@ class ControlService : Service() {
         return builder.build()
     }
 
-    /** Step 1: the six-digit code from Android's pairing dialog. */
+    /** One reply carries the code:port shown in Android's pairing dialog. */
     private fun postPairingNotification(error: String = "") {
         val text = buildString {
             if (error.isNotEmpty()) append(error).append("\n\n")
             append("Open Settings → Developer options → Wireless debugging → Pair device ")
-            append("with pairing code. Keep that dialog open, then reply with the six-digit code.")
+            append("with pairing code. Keep that dialog open, then reply with code:port.")
         }
-        val input = RemoteInput.Builder(INPUT_PAIR_CODE)
-            .setLabel("Pairing code")
+        val input = RemoteInput.Builder(EXTRA_PAIR_INPUT)
+            .setLabel("Pairing code:port")
             .build()
         val action = NotificationCompat.Action.Builder(
             android.R.drawable.ic_dialog_info,
-            "Enter code",
-            pairReplyPendingIntent(ACTION_PAIR_CODE_REPLY, 10, null),
+            "Enter code:port",
+            pairReplyPendingIntent(),
         ).addRemoteInput(input).build()
-        postPairing("Pair ADB Anywhere (1/2)", text, action)
-    }
-
-    /** Step 2: the port under the IP address in the same dialog. */
-    private fun postPairingPortNotification(code: String, error: String = "") {
-        val text = buildString {
-            if (error.isNotEmpty()) append(error).append("\n\n")
-            append("Now reply with the port under the IP address in the same dialog.")
-        }
-        val input = RemoteInput.Builder(INPUT_PAIR_PORT)
-            .setLabel("Pairing port")
-            .build()
-        val action = NotificationCompat.Action.Builder(
-            android.R.drawable.ic_dialog_info,
-            "Enter port",
-            pairReplyPendingIntent(ACTION_PAIR_PORT_REPLY, 12, code),
-        ).addRemoteInput(input).build()
-        postPairing("Pair ADB Anywhere (2/2)", text, action)
+        postPairing("Pair ADB Anywhere", text, action)
     }
 
     private fun postPairing(
@@ -1435,16 +1362,12 @@ class ControlService : Service() {
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )
 
-    private fun pairReplyPendingIntent(action: String, requestCode: Int, code: String?): PendingIntent {
-        val intent = Intent(this, PairReplyReceiver::class.java).setAction(action)
-        if (code != null) intent.putExtra(EXTRA_CODE, code)
-        return PendingIntent.getBroadcast(
-            this,
-            requestCode,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
-        )
-    }
+    private fun pairReplyPendingIntent(): PendingIntent = PendingIntent.getBroadcast(
+        this,
+        10,
+        Intent(this, PairReplyReceiver::class.java).setAction(ACTION_PAIR_REPLY),
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
+    )
 
     private fun registerNetwork() {
         val manager = getSystemService(ConnectivityManager::class.java) ?: return
@@ -1506,8 +1429,7 @@ class ControlService : Service() {
     companion object {
         const val ACTION_START = "cz.slush.adbanywhere.START"
         const val ACTION_PAIR = "cz.slush.adbanywhere.PAIR"
-        private const val ACTION_PAIR_CODE_REPLY = "cz.slush.adbanywhere.PAIR_CODE_REPLY"
-        private const val ACTION_PAIR_PORT_REPLY = "cz.slush.adbanywhere.PAIR_PORT_REPLY"
+        private const val ACTION_PAIR_REPLY = "cz.slush.adbanywhere.PAIR_REPLY"
         const val ACTION_RESTART = "cz.slush.adbanywhere.RESTART"
         const val ACTION_REVOKE_KEYS = "cz.slush.adbanywhere.REVOKE_KEYS"
         const val ACTION_WATCHDOG = "cz.slush.adbanywhere.WATCHDOG"
@@ -1531,8 +1453,7 @@ class ControlService : Service() {
         const val EXTRA_PROMPT_ID = "prompt_id"
         const val EXTRA_PROMPT_DECISION = "prompt_decision"
         const val EXTRA_PROMPT_RULE = "prompt_rule"
-        const val INPUT_PAIR_CODE = "pair_code"
-        const val INPUT_PAIR_PORT = "pair_port"
+        const val EXTRA_PAIR_INPUT = "pair_input"
 
         fun start(context: Context, action: String) {
             send(context, Intent(context, ControlService::class.java).setAction(action))

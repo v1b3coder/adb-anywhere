@@ -1,7 +1,7 @@
 /*
- * MdnsDiscovery - resolves the random wireless-debugging port from the local
- * mDNS advertisement. This is the primary discovery path on devices that do not
- * publish service.adb.tls.port.
+ * MdnsDiscovery - resolves the random wireless-debugging ports from the local
+ * mDNS advertisement. This is the fallback on devices that do not publish
+ * service.adb.tls.port.
  */
 package cz.slush.adbanywhere.adb
 
@@ -20,22 +20,23 @@ class MdnsDiscovery(private val context: Context) {
      * NsdManager requires the DNS-SD service type to end with a dot. Without it
      * onStartDiscoveryFailed fires and the old code silently returned null.
      */
-    suspend fun discover(serviceType: String, timeoutMs: Long = 4000): Int? =
+    suspend fun discoverAll(serviceType: String, timeoutMs: Long = 4000): List<Int> =
         suspendCancellableCoroutine { continuation ->
             val nsd = context.getSystemService(NsdManager::class.java)
             if (nsd == null) {
                 AppLog.warn("system", "mDNS unavailable: no NsdManager")
-                continuation.resume(null)
+                continuation.resume(emptyList())
                 return@suspendCancellableCoroutine
             }
             val type = if (serviceType.endsWith(".")) serviceType else "$serviceType."
             val finished = AtomicBoolean(false)
+            val ports = LinkedHashSet<Int>()
             var listener: NsdManager.DiscoveryListener? = null
 
-            fun finish(port: Int?) {
+            fun finish() {
                 if (finished.compareAndSet(false, true)) {
                     listener?.let { runCatching { nsd.stopServiceDiscovery(it) } }
-                    continuation.resume(port)
+                    continuation.resume(ports.toList())
                 }
             }
 
@@ -46,7 +47,7 @@ class MdnsDiscovery(private val context: Context) {
 
                 override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
                     AppLog.warn("system", "mDNS discovery failed for $serviceType: $errorCode")
-                    finish(null)
+                    finish()
                 }
 
                 override fun onDiscoveryStopped(serviceType: String) = Unit
@@ -71,7 +72,7 @@ class MdnsDiscovery(private val context: Context) {
                                     "mDNS resolved ${resolved.serviceName} on " +
                                         "${resolved.host}:${resolved.port}",
                                 )
-                                finish(resolved.port)
+                                ports += resolved.port
                             }
                         })
                     }.onFailure {
@@ -85,12 +86,15 @@ class MdnsDiscovery(private val context: Context) {
                 nsd.discoverServices(type, NsdManager.PROTOCOL_DNS_SD, activeListener)
             }.onFailure {
                 AppLog.warn("system", "mDNS discover threw: ${it.message}")
-                finish(null)
+                finish()
             }
 
-            Handler(Looper.getMainLooper()).postDelayed({ finish(null) }, timeoutMs)
+            Handler(Looper.getMainLooper()).postDelayed({ finish() }, timeoutMs)
             continuation.invokeOnCancellation {
                 activeListener?.let { runCatching { nsd.stopServiceDiscovery(it) } }
             }
         }
+
+    suspend fun discover(serviceType: String, timeoutMs: Long = 4000): Int? =
+        discoverAll(serviceType, timeoutMs).firstOrNull()
 }

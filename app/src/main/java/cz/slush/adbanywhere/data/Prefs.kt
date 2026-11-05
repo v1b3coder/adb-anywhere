@@ -75,10 +75,6 @@ class Prefs(context: Context) {
         get() = prefs.getString("remote_dir", "/data/local/tmp/adb-anywhere") ?: "/data/local/tmp/adb-anywhere"
         set(value) = prefs.edit().putString("remote_dir", value.trim()).apply()
 
-    var enableWirelessAdbOnStop: Boolean
-        get() = prefs.getBoolean("enable_wireless_adb_on_stop", false)
-        set(value) = prefs.edit().putBoolean("enable_wireless_adb_on_stop", value).apply()
-
     var daemonFirewallMode: Boolean
         get() = prefs.getBoolean("daemon_firewall_mode", false)
         set(value) = prefs.edit().putBoolean("daemon_firewall_mode", value).apply()

@@ -46,11 +46,9 @@ import kotlinx.coroutines.withContext
 fun SettingsScreen(
     state: ControlState,
     firewallEnabled: Boolean,
-    enableWirelessAdbOnStop: Boolean,
     diagnosticLog: Boolean,
     appKey: String,
     onToggleFirewall: (Boolean) -> Unit,
-    onToggleWirelessAdbOnStop: (Boolean) -> Unit,
     onToggleDiagnosticLog: (Boolean) -> Unit,
     onSavePorts: (Int, Int) -> String?,
     onBatteryExemption: (Activity) -> Unit,
@@ -213,28 +211,6 @@ fun SettingsScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-            }
-        }
-
-        item {
-            SectionCard("Internal developer") {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        "Enable wireless adb on service stop\n" +
-                            "Internal developers only. After Stop, Android wireless " +
-                            "debugging is re-enabled so the phone stays reachable.",
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Switch(
-                        checked = enableWirelessAdbOnStop,
-                        onCheckedChange = onToggleWirelessAdbOnStop,
-                    )
-                }
             }
         }
 

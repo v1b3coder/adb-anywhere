@@ -7,6 +7,7 @@ package cz.slush.adbanywhere.adb
 import android.content.Context
 import android.os.Build
 import cz.slush.adbanywhere.data.AppKeyStore
+import cz.slush.adbanywhere.service.AppLog
 import io.github.muntashirakon.adb.AbsAdbConnectionManager
 import java.security.PrivateKey
 import java.security.cert.Certificate
@@ -32,7 +33,8 @@ class AdbManager(
         return try {
             if (isConnected) disconnect()
             connect(host, port)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            AppLog.warn("system", "connect $host:$port failed: ${e.message}")
             false
         }
     }
@@ -41,7 +43,8 @@ class AdbManager(
     fun pairTo(host: String, port: Int, code: String): Boolean {
         return try {
             pair(host, port, code)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            AppLog.error("pair", "pair $host:$port failed: ${e.message}", e)
             false
         }
     }
