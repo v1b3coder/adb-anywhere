@@ -296,7 +296,10 @@ class ControlService : Service() {
             return false
         }
         AppLog.info("service", "resuming after a process restart")
-        scope.launch { setup() }
+        // The daemon that survived the process kill is not this process's own.
+        // awaitRestartScripts() makes the forced restart safe by waiting for a
+        // detached restart from the previous process to finish first.
+        scope.launch { setup(forceRestart = true) }
         return true
     }
 
