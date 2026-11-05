@@ -90,8 +90,8 @@ These are facts from AOSP `main`, not assumptions.
 | D2 | Data plane | One patched `adbd` instance with two listeners: `127.0.0.1:<portA>` for the app, `<vpn-ip>:<portB>` for developer machines |
 | D3 | App key | Ephemeral RSA keypair generated on first run; private key in app-private storage; public key in the patched adbd key file |
 | D4 | Developer machine pairing | QR or pasted public key from the developer machine; app confirms the fingerprint; user labels the machine; no pairing listener on the phone |
-| D5 | System adbd hardening | `ADB_WIFI_ENABLED=0` always after the patched adbd is running; the system adbd stays on USB and the app never stops it |
-| D6 | Watchdog | Keeps the D5 state; probes 5555 on every tick and reports the open listener as the §8 residual warning; restarts the patched adbd through the system adbd when reachable |
+| D5 | System adbd lifecycle | `ADB_WIFI_ENABLED=0` after the patched adbd runs; Start writes `ADB_ENABLED=1` when needed, Stop writes `0`; the app never stops it while the patched adbd must run |
+| D6 | Watchdog | Keeps `ADB_WIFI_ENABLED=0`; probes 5555 on every tick and reports the open listener as the §8 residual warning; restarts the patched adbd through the system adbd when reachable |
 | D7 | Policy | Patched adbd enforces per-key and per-service rules; VPN ACL is the outer boundary |
 | D8 | UI stack | Kotlin, Jetpack Compose, Material 3; package `cz.slush.adbanywhere` |
 | D9 | Bootstrap pairing | Notification `RemoteInput` with `code:port` |
@@ -188,13 +188,33 @@ because the key is idempotent; removing the key revokes it.
 - Mandatory: `ADB_WIFI_ENABLED=0` after the patched adbd is running. The
   framework stops the system TLS server (`persist.adb.tls_server.enable=0`); no ADB
   call is needed. The system adbd stays on USB, which is not a network listener.
-- The app never stops the system adbd: on devices where init kills the adbd
-  cgroup, stopping it would also kill the patched adbd. `ADB_ENABLED` is read for
-  the status UI but never written.
-- Bootstrap: the system adbd must already be on (the app does not enable
-  `ADB_ENABLED`); `ADB_WIFI_ENABLED=1` on Wi-Fi opens the TLS path, and the app
-  reads `service.adb.tls.port` and connects.
+- The app never stops the system adbd while the patched adbd must run: on devices
+  where init kills the adbd cgroup, stopping it would also kill the patched adbd.
+  Stop is the only exception, after it has stopped the patched adbd.
+- Bootstrap: Start enables `ADB_ENABLED=1` when needed; `ADB_WIFI_ENABLED=1` on
+  Wi-Fi opens the TLS path, and the app reads `service.adb.tls.port` and connects.
 - The patched adbd ignores both toggles.
+
+### Start/Stop ownership
+
+Start and Stop own the system adbd lifecycle. Start writes `ADB_ENABLED=1` only
+when it is off, then leaves it on while the patched adbd runs. Stop stops the
+patched adbd and writes `ADB_ENABLED=0`; boot after a stop re-asserts `0`, boot
+after a start writes `1` and deploys the patched adbd. Each write happens only
+when the value differs, so a Start or Stop does not re-enumerate USB when the
+setting already has the target value. The app never stops the system adbd while it
+needs the patched adbd: on devices where init kills the adbd cgroup, stopping it
+would also kill the patched adbd. The security benefit is therefore at Stop, not
+during a run.
+
+| Action | `ADB_ENABLED` | `ADB_WIFI_ENABLED` | Patched adbd |
+|---|---|---|---|
+| Start, patched adbd down | `1` | `1` on Wi-Fi | deploy |
+| Start, patched adbd up | unchanged | `0` | keep running |
+| Running | `1` | `0` | keep running |
+| Stop | `0` | `0` | stop |
+| Boot after Start | `1` | `1` | deploy |
+| Boot after Stop | `0` | `0` | not running |
 
 ### Port behavior
 
