@@ -223,7 +223,7 @@ private fun StatusHero(
                             FilledTonalIconButton(onClick = onRestart) {
                                 Icon(Icons.Rounded.Refresh, contentDescription = "Restart")
                             }
-                            Button(onClick = onSetup) {
+                            Button(onClick = onStart) {
                                 Text("Re-check")
                             }
                         }
@@ -236,7 +236,7 @@ private fun StatusHero(
                             }
                         }
                         Phase.Error -> {
-                            Button(onClick = onSetup) {
+                            Button(onClick = onStart) {
                                 Text("Try again")
                             }
                         }
