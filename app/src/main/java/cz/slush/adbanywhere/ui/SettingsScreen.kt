@@ -111,27 +111,6 @@ fun SettingsScreen(
         }
 
         item {
-            SectionCard("Diagnostic log") {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        "Records the app's events, actions and applied changes in a bounded " +
-                            "on-device file, shown in Logs → App. Off by default.",
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Switch(
-                        checked = diagnosticLog,
-                        onCheckedChange = onToggleDiagnosticLog,
-                    )
-                }
-            }
-        }
-
-        item {
             SectionCard("Ports") {
                 Text(
                     "The loopback port is for the app. The VPN port is for developer machines. " +
@@ -230,6 +209,27 @@ fun SettingsScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+        }
+
+        item {
+            SectionCard("Diagnostic log") {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "Records the app's events, actions and applied changes in a bounded " +
+                            "on-device file, shown in Logs → App. Off by default.",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Switch(
+                        checked = diagnosticLog,
+                        onCheckedChange = onToggleDiagnosticLog,
+                    )
+                }
             }
         }
 
