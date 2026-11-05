@@ -70,7 +70,9 @@ listening.
 
 Settings → Firewall adds a separate tab. When it is on, the patched `adbd`
 listens only on `127.0.0.1` and the app accepts the VPN port itself. It relays
-the ADB bytes to `adbd`, so ADB key authentication stays end-to-end.
+the ADB bytes to `adbd`, so ADB key authentication stays end-to-end. Toggling
+the switch stops the daemon, the relay and the watchdog and runs a clean setup
+with the new mode; the app process and the UI stay up.
 
 The tab has four modules:
 

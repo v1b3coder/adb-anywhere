@@ -239,8 +239,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setFirewallEnabled(enabled: Boolean) {
-        AppLog.info("firewall", "enabled=$enabled")
-        updateFirewall { it.copy(enabled = enabled) }
+        AppLog.info("firewall", "enabled=$enabled; clean stack restart")
+        updateFirewall(apply = false) { it.copy(enabled = enabled) }
+        if (prefs.userWantsRunning) {
+            ControlService.start(getApplication(), ControlService.ACTION_APPLY_FIREWALL)
+        }
     }
 
     fun setIpAllowlistEnabled(enabled: Boolean) {
@@ -326,11 +329,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun updateFirewall(block: (FirewallConfig) -> FirewallConfig) {
+    private fun updateFirewall(
+        apply: Boolean = true,
+        block: (FirewallConfig) -> FirewallConfig,
+    ) {
         val updated = block(firewallStore.load())
         firewallStore.save(updated)
         ControlBus.firewallConfig.value = updated
-        applyIfRunning(ControlService.ACTION_APPLY_SETTINGS)
+        if (apply) applyIfRunning(ControlService.ACTION_APPLY_SETTINGS)
     }
 
 }

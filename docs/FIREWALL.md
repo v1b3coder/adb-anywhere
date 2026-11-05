@@ -425,8 +425,12 @@ Lifecycle changes:
   when the VPN is gone.
 - `stopEverything()` stops the relay before the daemon.
 - `onDestroy()` stops the relay.
-- Toggling the firewall in Settings restarts the daemon with the new listener set
-  and starts or stops the relay. Active external connections drop.
+- Toggling the firewall in Settings stops the daemon, the relay and the watchdog,
+  then runs a clean setup with the new listener set. Active external connections
+  drop. The app process and the UI stay up.
+- `Prefs.daemonFirewallMode` records the mode the daemon was started with, so a
+  process restart or a stale `ControlBus` state cannot leave the daemon on the old
+  listener set.
 
 The relay binds only the exact VPN address, never `0.0.0.0`. If the VPN is down it
 does not listen; the UI says "VPN is down" and external ADB is unavailable. If the
@@ -601,8 +605,8 @@ Implemented in the app:
 - `adb/SystemAdb.closePlainListener()`: sends `usb:` to the system adbd so the
   firewall can take over its port.
 - `service/ControlService.kt`: loopback-only daemon when the firewall is on,
-  relay lifecycle, port takeover from the system plain listener, prompt
-  notification and response.
+  full-stack restart on a firewall toggle, relay lifecycle, port takeover from the
+  system plain listener, prompt notification and response.
 - `ui/FirewallScreen.kt`, `ui/CallPromptScreen.kt`, `ui/CallPromptActivity.kt`,
   `ui/RuleEditor.kt`: the tab, the prompt and the custom filter.
 - `ui/SettingsScreen.kt` and `ui/App.kt`: the switch and the conditional tab.

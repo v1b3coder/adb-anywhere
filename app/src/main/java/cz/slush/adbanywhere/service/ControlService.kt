@@ -223,6 +223,11 @@ class ControlService : Service() {
                     AppLog.warn("settings", "rejected system adb TLS port=$port")
                 }
             }
+            ACTION_APPLY_FIREWALL -> {
+                prefs.userWantsRunning = true
+                AppLog.info("firewall", "clean restart requested")
+                scope.launch { restartStack() }
+            }
             ACTION_CLEAR_AUDIT -> {
                 auditLog.clear()
                 AppLog.info("firewall", "audit log cleared")
@@ -286,7 +291,7 @@ class ControlService : Service() {
             return false
         }
         AppLog.info("service", "resuming after a process restart")
-        scope.launch { setup() }
+        scope.launch { setup(forceRestart = true) }
         return true
     }
 
@@ -433,7 +438,7 @@ class ControlService : Service() {
                 val vpnChanged = vpnIp != previous.vpnIp
                 val portsChanged = prefs.loopbackPort != previous.loopbackPort ||
                     prefs.vpnPort != previous.vpnPort
-                val firewallChanged = firewallConfig.enabled != previous.firewall.enabled
+                val firewallChanged = firewallConfig.enabled != prefs.daemonFirewallMode
                 val restart = forceRestart || !daemonAlive || portsChanged ||
                     (exposeVpn && vpnChanged) || firewallChanged
                 AppLog.info(
@@ -471,6 +476,7 @@ class ControlService : Service() {
                         exposeVpn,
                     )
                 }
+                prefs.daemonFirewallMode = firewallConfig.enabled
                 step(1, StepStatus.Done, "Custom adb running")
 
                 step(2, StepStatus.Active, "Verifying the listeners")
@@ -708,6 +714,28 @@ class ControlService : Service() {
                 vpn.disconnectQuietly()
             }
         }
+    }
+
+    private suspend fun restartStack() {
+        setupMutex.withLock { stopStack() }
+        setup(forceRestart = true, enableSystemAdb = true)
+    }
+
+    private suspend fun stopStack() = withContext(Dispatchers.IO + NonCancellable) {
+        stopFirewall()
+        cancelWatchdog()
+        watchdogJob?.cancel()
+        val shell = runCatching { daemonShell() }.getOrNull()
+        if (shell != null) {
+            try {
+                daemon.stop(shell)
+            } finally {
+                shell.close()
+            }
+        } else {
+            runCatching { daemon.stop(system.shell) }
+        }
+        AppLog.info("service", "stack stopped for a clean restart")
     }
 
     private fun startFirewall(vpnIp: String) {
@@ -1421,6 +1449,7 @@ class ControlService : Service() {
         const val ACTION_SET_TLS_PORT = "cz.slush.adbanywhere.SET_TLS_PORT"
         const val ACTION_PROMPT_RESPONSE = "cz.slush.adbanywhere.PROMPT_RESPONSE"
         const val ACTION_CLEAR_AUDIT = "cz.slush.adbanywhere.CLEAR_AUDIT"
+        const val ACTION_APPLY_FIREWALL = "cz.slush.adbanywhere.APPLY_FIREWALL"
         const val ACTION_STOP = "cz.slush.adbanywhere.STOP"
         private const val NETWORK_SETTLE_MS = 1_500L
         private const val SYSTEM_ADB_WAIT_MS = 15_000L
