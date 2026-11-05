@@ -117,10 +117,12 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
             "restarting detached on ${Endpoint.listenSpec(loopbackPort, vpnIp, vpnPort, exposeVpn)}",
         )
         val scriptPath = "$remoteDir/adbd.restart.${System.nanoTime()}.sh"
+        val markerPath = scriptPath.removeSuffix(".sh") + ".pid"
         shell.writeTextFile(scriptPath, StaleDaemon.restartScript(start))
         shell.chmod(scriptPath, "700")
+        val launch = "echo \$\$ > ${shell.quote(markerPath)}; exec sh ${shell.quote(scriptPath)}"
         val result = shell.exec(
-            "setsid sh ${shell.quote(scriptPath)} </dev/null >/dev/null 2>&1 & echo \$!",
+            "setsid sh -c ${shell.quote(launch)} </dev/null >/dev/null 2>&1 & echo \$!",
             10_000,
         )
         if (!result.ok) {
@@ -180,24 +182,33 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
         shell.probe("127.0.0.1", loopbackPort)
 
     /**
-     * Waits for a detached restart from an earlier process to finish. Its script
-     * file exists while it runs, so the next start does not race its kill/start
-     * pair. This is coordination, not a lock: it covers an app crash during a
-     * restart, not two simultaneous starts.
+     * Waits for a detached restart from an earlier process to finish. The script
+     * writes its PID next to itself before it kills, so a crash during a restart
+     * is recovered instead of racing the next start. This is coordination, not a
+     * lock: two simultaneous starts are still last-writer-wins.
      */
     private fun awaitRestartScripts(shell: Shell, timeoutMs: Long = 10_000) {
-        val pattern = "${shell.quote(remoteDir)}/adbd.restart.*.sh"
+        val dir = shell.quote(remoteDir)
+        val marker = "$dir/adbd.restart.*.pid"
+        val script = "$dir/adbd.restart.*.sh"
+        val alive = """
+            for m in $marker; do
+              [ -f "${'$'}m" ] || continue
+              p=${'$'}(cat "${'$'}m" 2>/dev/null)
+              [ -n "${'$'}p" ] && [ -d "/proc/${'$'}p" ] && exit 0
+            done
+            exit 1
+        """.trimIndent()
         val deadline = System.currentTimeMillis() + timeoutMs
-        while (System.currentTimeMillis() < deadline && restartScriptRunning(shell, pattern)) {
+        while (System.currentTimeMillis() < deadline) {
+            if (!shell.exec(alive).ok) {
+                shell.exec("rm -f $marker $script")
+                return
+            }
             Thread.sleep(100)
         }
-        if (restartScriptRunning(shell, pattern)) {
-            throw IOException("a previous adbd restart is still running")
-        }
+        throw IOException("a previous adbd restart is still running")
     }
-
-    private fun restartScriptRunning(shell: Shell, pattern: String): Boolean =
-        shell.exec("ls $pattern 2>/dev/null").stdout.isNotBlank()
 
     fun logTail(shell: Shell, lines: Int = 120): String =
         runCatching { shell.exec("tail -n $lines ${shell.quote(logPath)}").stdout }.getOrDefault("")

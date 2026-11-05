@@ -24,6 +24,13 @@ class StaleDaemonTest {
     }
 
     @Test
+    fun restartScriptWritesAndRemovesItsMarker() {
+        val script = StaleDaemon.restartScript("setsid '/data/local/tmp/adb-anywhere/adbd' --listen 'tcp:127.0.0.1:15037' &")
+        assertTrue(script.contains("echo ${'$'}m > \"${'$'}{0%.sh}.pid\""))
+        assertTrue(script.contains("rm -f \"${'$'}0\" \"${'$'}{0%.sh}.pid\""))
+    }
+
+    @Test
     fun stopScriptDoesNotContainTheStartCommand() {
         assertFalse(StaleDaemon.stopScript().contains("--listen"))
     }

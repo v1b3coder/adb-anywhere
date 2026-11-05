@@ -54,6 +54,7 @@ object StaleDaemon {
      * --listen that identifies the daemon.
      */
     fun restartScript(start: String): String =
-        "m=${'$'}${'$'}\n" + killFunction() +
-            "\nkill_stale_adbd || exit 1\nsleep 0.4\n$start\nrm -f \"${'$'}0\""
+        "m=${'$'}${'$'}; echo ${'$'}m > \"${'$'}{0%.sh}.pid\"\n" + killFunction() +
+            "\nkill_stale_adbd || exit 1\nsleep 0.4\n$start\n" +
+            "rm -f \"${'$'}0\" \"${'$'}{0%.sh}.pid\""
 }
