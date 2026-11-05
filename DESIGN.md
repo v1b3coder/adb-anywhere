@@ -293,8 +293,9 @@ has no TCP listener, so there is nothing to monitor or turn off.
    reboot, a sticky restart and the watchdog all respect it.
 4. Start kills every vendored adbd it finds through `/proc` by its
    `--listen` argument, waits for it to disappear and only then starts its own.
-   This needs no lock and no adbd change; a survivor aborts the start instead of
-   leaving two daemons.
+   A detached restart from an earlier process is waited for first. This needs no
+   lock and no adbd change; a survivor aborts the start instead of leaving two
+   daemons.
 5. Opening the app while it runs re-checks the daemon; it never overrides a stop.
 6. Stop takes the setup mutex, so a stop during a deployment waits for the
    deployment and then stops the daemon; the loopback port confirms the stop.

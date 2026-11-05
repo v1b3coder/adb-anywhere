@@ -691,8 +691,10 @@ Fix: rely on `getprop`/mDNS, or document the limitation.
 **Status: fixed.** `restartDetached()` writes a detached script that kills
 every vendored adbd found through `/proc/<pid>/cmdline` by its `--listen`
 argument, waits for all of them to disappear, and only then starts the new one.
-`waitForRestart()` waits for the old loopback listener to close and fails
-instead of verifying a process that never died.
+The script writes a PID marker next to itself, so the next start waits for an
+in-flight restart instead of racing its kill/start pair. `waitForRestart()` waits
+for the old loopback listener to close and fails instead of verifying a process
+that never died.
 
 It killed the old daemon and started the new one in a detached script, then `waitForPort`
 returned as soon as the old daemon's port was still open. The subsequent `probe(vpnIp, vpnPort)`
