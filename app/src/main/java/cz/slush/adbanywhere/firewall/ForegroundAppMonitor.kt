@@ -1,0 +1,72 @@
+/*
+ * ForegroundAppMonitor - samples the resumed package with UsageStatsManager. It
+ * polls faster while the relay has an external session or a prompt, and slower
+ * otherwise. The module is advisory; screen off and keyguard clear the foreground.
+ */
+package cz.slush.adbanywhere.firewall
+
+import android.app.KeyguardManager
+import android.app.usage.UsageEvents
+import android.app.usage.UsageStatsManager
+import android.content.Context
+import android.os.PowerManager
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+
+class ForegroundAppMonitor(
+    private val context: Context,
+    private val active: () -> Boolean,
+) {
+    private val tracker = ForegroundTracker()
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val _state = MutableStateFlow(ForegroundState())
+    val state: StateFlow<ForegroundState> = _state.asStateFlow()
+    private var job: Job? = null
+    private var lastQuery = 0L
+
+    fun start() {
+        if (job != null) return
+        lastQuery = 0L
+        job = scope.launch {
+            while (true) {
+                refresh()
+                delay(if (active()) 1_000L else 5_000L)
+            }
+        }
+    }
+
+    fun stop() {
+        job?.cancel()
+        job = null
+    }
+
+    fun refresh() {
+        val power = context.getSystemService(PowerManager::class.java)
+        val keyguard = context.getSystemService(KeyguardManager::class.java)
+        tracker.onInteractive(power?.isInteractive ?: true)
+        tracker.onLocked(keyguard?.isKeyguardLocked ?: false)
+        val now = System.currentTimeMillis()
+        if (tracker.state().foreground != null) {
+            val usage = context.getSystemService(UsageStatsManager::class.java)
+            val events = runCatching { usage?.queryEvents(lastQuery, now) }.getOrNull()
+            if (events != null) {
+                val event = UsageEvents.Event()
+                while (events.hasNextEvent()) {
+                    events.getNextEvent(event)
+                    if (event.eventType == UsageEvents.Event.ACTIVITY_RESUMED) {
+                        tracker.onResumed(event.packageName)
+                    }
+                }
+            }
+        }
+        lastQuery = now - 1_000L
+        _state.value = tracker.state()
+    }
+}

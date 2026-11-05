@@ -45,8 +45,10 @@ import kotlinx.coroutines.withContext
 @Composable
 fun SettingsScreen(
     state: ControlState,
+    firewallEnabled: Boolean,
     diagnosticLog: Boolean,
     appKey: String,
+    onToggleFirewall: (Boolean) -> Unit,
     onToggleDiagnosticLog: (Boolean) -> Unit,
     onSavePorts: (Int, Int) -> String?,
     onBatteryExemption: (Activity) -> Unit,
@@ -70,6 +72,27 @@ fun SettingsScreen(
         contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 96.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        item {
+            SectionCard("Firewall") {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "Adds a proxy on the VPN port, IP and app allowlists, call " +
+                            "policy and an audit log. The Firewall tab appears when this is on.",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Switch(
+                        checked = firewallEnabled,
+                        onCheckedChange = onToggleFirewall,
+                    )
+                }
+            }
+        }
+
         item {
             SectionCard("Battery") {
                 Text(

@@ -428,7 +428,8 @@ a different mode.
   key provisioning, QR and paste pairing, logs, watchdog.
 - **Phase 3 — depth**: per-service and per-command policy, connection log
   export, recovery hardening. The optional firewall, its IP/app allowlists, the
-  call-policy model and the audit log are designed in `docs/FIREWALL.md`.
+  call-policy model and the audit log are designed and implemented in
+  `docs/FIREWALL.md`.
 
 ## 12. Open risks
 

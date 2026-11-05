@@ -16,6 +16,11 @@ import cz.slush.adbanywhere.data.AppKeyStore
 import cz.slush.adbanywhere.data.DeveloperKey
 import cz.slush.adbanywhere.data.PairingCode
 import cz.slush.adbanywhere.data.Prefs
+import cz.slush.adbanywhere.firewall.AppCatalog
+import cz.slush.adbanywhere.firewall.AppEntry
+import cz.slush.adbanywhere.firewall.FirewallConfig
+import cz.slush.adbanywhere.firewall.FirewallConfigStore
+import cz.slush.adbanywhere.firewall.IpNetwork
 import cz.slush.adbanywhere.service.AppLog
 import cz.slush.adbanywhere.service.ControlBus
 import cz.slush.adbanywhere.service.ControlService
@@ -27,11 +32,16 @@ import kotlinx.coroutines.launch
 class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val prefs = Prefs(application)
     private val keyStore = AppKeyStore(application)
+    private val firewallStore = FirewallConfigStore(prefs)
 
     val state = ControlBus.state
     val logs = ControlBus.logs
+    val audit = ControlBus.audit
+    val pendingPrompt = ControlBus.pendingPrompt
+    val firewall = ControlBus.firewallConfig
     val appLog = AppLog.entries
     val diagnosticLog = AppLog.enabled
+
 
     /** The user's last explicit start or stop. Opening the app never overrides it. */
     val userWantsRunning: Boolean get() = prefs.userWantsRunning
@@ -226,6 +236,101 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             Uri.parse("package:${activity.packageName}"),
         )
         runCatching { activity.startActivity(intent) }
+    }
+
+    fun setFirewallEnabled(enabled: Boolean) {
+        AppLog.info("firewall", "enabled=$enabled")
+        updateFirewall { it.copy(enabled = enabled) }
+    }
+
+    fun setIpAllowlistEnabled(enabled: Boolean) {
+        AppLog.info("firewall", "ip allowlist=$enabled")
+        updateFirewall { it.copy(ipAllowlistEnabled = enabled) }
+    }
+
+    fun addIp(text: String): String? {
+        val network = IpNetwork.parse(text) ?: return "Enter an IPv4 address or CIDR range."
+        if (firewallStore.load().ipAllowlist.any { it.format() == network.format() }) {
+            return "That address is already listed."
+        }
+        AppLog.info("firewall", "allow ip ${network.format()}")
+        updateFirewall { it.copy(ipAllowlist = it.ipAllowlist + network) }
+        return null
+    }
+
+    fun removeIp(cidr: String) {
+        AppLog.info("firewall", "remove ip $cidr")
+        updateFirewall { it.copy(ipAllowlist = it.ipAllowlist.filterNot { n -> n.format() == cidr }) }
+    }
+
+    fun setAppAllowlistEnabled(enabled: Boolean) {
+        AppLog.info("firewall", "app allowlist=$enabled")
+        updateFirewall { it.copy(appAllowlistEnabled = enabled) }
+    }
+
+    fun addApp(packageName: String) {
+        AppLog.info("firewall", "allow app $packageName")
+        updateFirewall { it.copy(appAllowlist = it.appAllowlist + packageName) }
+    }
+
+    fun removeApp(packageName: String) {
+        AppLog.info("firewall", "remove app $packageName")
+        updateFirewall { it.copy(appAllowlist = it.appAllowlist - packageName) }
+    }
+
+    fun setAppGraceMs(ms: Long) {
+        updateFirewall { it.copy(appGraceMs = ms.coerceIn(0, 120_000)) }
+    }
+
+    fun setCallPolicyEnabled(enabled: Boolean) {
+        AppLog.info("firewall", "call policy=$enabled")
+        updateFirewall { it.copy(callPolicyEnabled = enabled) }
+    }
+
+    fun removeRule(id: String) {
+        AppLog.info("firewall", "remove rule $id")
+        updateFirewall { it.copy(callRules = it.callRules.filterNot { rule -> rule.id == id }) }
+    }
+
+    fun setPromptTimeoutMs(ms: Long) {
+        updateFirewall { it.copy(promptTimeoutMs = ms.coerceIn(5_000, 120_000)) }
+    }
+
+    fun setRedactAudit(redact: Boolean) {
+        AppLog.info("firewall", "redact audit=$redact")
+        updateFirewall { it.copy(redactAudit = redact) }
+    }
+
+    fun clearAudit() {
+        AppLog.info("firewall", "clear audit log")
+        ControlService.start(getApplication(), ControlService.ACTION_CLEAR_AUDIT)
+    }
+
+    fun launcherApps(): List<AppEntry> = AppCatalog(getApplication()).launcherApps()
+
+    fun grantUsageAccess() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val manager = cz.slush.adbanywhere.adb.AdbManager(getApplication(), keyStore)
+            if (!manager.connectTo("127.0.0.1", prefs.loopbackPort)) {
+                AppLog.error("firewall", "usage access: loopback unavailable")
+                return@launch
+            }
+            try {
+                val result = cz.slush.adbanywhere.adb.Shell(manager).exec(
+                    "appops set ${getApplication<Application>().packageName} GET_USAGE_STATS allow",
+                )
+                AppLog.info("firewall", "usage access rc=${result.exitCode}")
+            } finally {
+                manager.disconnectQuietly()
+            }
+        }
+    }
+
+    private fun updateFirewall(block: (FirewallConfig) -> FirewallConfig) {
+        val updated = block(firewallStore.load())
+        firewallStore.save(updated)
+        ControlBus.firewallConfig.value = updated
+        applyIfRunning(ControlService.ACTION_APPLY_SETTINGS)
     }
 
 }

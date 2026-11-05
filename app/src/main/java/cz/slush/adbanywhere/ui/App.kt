@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Article
 import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.VpnKey
 import androidx.compose.material3.Icon
@@ -59,6 +60,7 @@ private enum class Screen(val label: String, val icon: ImageVector) {
     Keys("Keys", Icons.Outlined.VpnKey),
     Logs("Logs", Icons.Outlined.Article),
     Settings("Settings", Icons.Outlined.Settings),
+    Firewall("Firewall", Icons.Outlined.Security),
 }
 
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
@@ -66,6 +68,8 @@ private enum class Screen(val label: String, val icon: ImageVector) {
 fun AppRoot(viewModel: AppViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val keys by viewModel.keys.collectAsStateWithLifecycle()
+    val firewall by viewModel.firewall.collectAsStateWithLifecycle()
+    val audit by viewModel.audit.collectAsStateWithLifecycle()
     val logs by viewModel.logs.collectAsStateWithLifecycle()
     val appLogs by viewModel.appLog.collectAsStateWithLifecycle()
     val diagnosticLog by viewModel.diagnosticLog.collectAsStateWithLifecycle()
@@ -87,6 +91,9 @@ fun AppRoot(viewModel: AppViewModel) {
 
     LaunchedEffect(screen) {
         if (screen == Screen.Logs) viewModel.refreshLogs()
+    }
+    LaunchedEffect(firewall.enabled) {
+        if (screen == Screen.Firewall && !firewall.enabled) screen = Screen.Home
     }
 
     fun copy(text: String) {
@@ -140,7 +147,9 @@ fun AppRoot(viewModel: AppViewModel) {
         },
         bottomBar = {
             NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
-                Screen.entries.filter { it != Screen.Setup }.forEach { item ->
+                Screen.entries.filter {
+                    it != Screen.Setup && (it != Screen.Firewall || firewall.enabled)
+                }.forEach { item ->
                     NavigationBarItem(
                         selected = screen == item,
                         onClick = { screen = item },
@@ -189,10 +198,31 @@ fun AppRoot(viewModel: AppViewModel) {
                     onRefresh = viewModel::refreshLogs,
                     onCopy = ::copy,
                 )
+                Screen.Firewall -> FirewallScreen(
+                    state = state,
+                    config = firewall,
+                    audit = audit,
+                    onToggleIpAllowlist = viewModel::setIpAllowlistEnabled,
+                    onAddIp = viewModel::addIp,
+                    onRemoveIp = viewModel::removeIp,
+                    onToggleAppAllowlist = viewModel::setAppAllowlistEnabled,
+                    onAddApp = viewModel::addApp,
+                    onRemoveApp = viewModel::removeApp,
+                    onToggleCallPolicy = viewModel::setCallPolicyEnabled,
+                    onRemoveRule = viewModel::removeRule,
+                    onSetAppGrace = viewModel::setAppGraceMs,
+                    onSetPromptTimeout = viewModel::setPromptTimeoutMs,
+                    onToggleRedactAudit = viewModel::setRedactAudit,
+                    onClearAudit = viewModel::clearAudit,
+                    onGrantUsageAccess = viewModel::grantUsageAccess,
+                    launcherApps = viewModel::launcherApps,
+                )
                 Screen.Settings -> SettingsScreen(
                     state = state,
+                    firewallEnabled = firewall.enabled,
                     diagnosticLog = diagnosticLog,
                     appKey = appFingerprint,
+                    onToggleFirewall = viewModel::setFirewallEnabled,
                     onToggleDiagnosticLog = viewModel::setDiagnosticLog,
                     onSavePorts = viewModel::setPorts,
                     onBatteryExemption = { viewModel.requestBatteryExemption(it) },

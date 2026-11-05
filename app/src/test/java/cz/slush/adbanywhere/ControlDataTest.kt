@@ -60,6 +60,10 @@ class ControlDataTest {
             Endpoint.listenSpec(15037, "100.64.0.10", 15038),
         )
         assertEquals("tcp:127.0.0.1:15037", Endpoint.listenSpec(15037, null, 15038))
+        assertEquals(
+            "tcp:127.0.0.1:15037",
+            Endpoint.listenSpec(15037, "100.64.0.10", 15038, exposeVpn = false),
+        )
         assertEquals("tcp:127.0.0.1:15037", Endpoint.listenSpec(15037, "", 15038))
     }
 

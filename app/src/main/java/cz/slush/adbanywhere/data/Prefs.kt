@@ -75,6 +75,46 @@ class Prefs(context: Context) {
         get() = prefs.getString("remote_dir", "/data/local/tmp/adb-anywhere") ?: "/data/local/tmp/adb-anywhere"
         set(value) = prefs.edit().putString("remote_dir", value.trim()).apply()
 
+    var firewallEnabled: Boolean
+        get() = prefs.getBoolean("firewall_enabled", false)
+        set(value) = prefs.edit().putBoolean("firewall_enabled", value).apply()
+
+    var firewallIpAllowlistEnabled: Boolean
+        get() = prefs.getBoolean("firewall_ip_allowlist_enabled", false)
+        set(value) = prefs.edit().putBoolean("firewall_ip_allowlist_enabled", value).apply()
+
+    var firewallIpAllowlistJson: String
+        get() = prefs.getString("firewall_ip_allowlist", "[]") ?: "[]"
+        set(value) = prefs.edit().putString("firewall_ip_allowlist", value).apply()
+
+    var firewallAppAllowlistEnabled: Boolean
+        get() = prefs.getBoolean("firewall_app_allowlist_enabled", false)
+        set(value) = prefs.edit().putBoolean("firewall_app_allowlist_enabled", value).apply()
+
+    var firewallAppAllowlistJson: String
+        get() = prefs.getString("firewall_app_allowlist", "[]") ?: "[]"
+        set(value) = prefs.edit().putString("firewall_app_allowlist", value).apply()
+
+    var firewallAppGraceMs: Long
+        get() = prefs.getLong("firewall_app_grace_ms", 15_000L)
+        set(value) = prefs.edit().putLong("firewall_app_grace_ms", value).apply()
+
+    var firewallCallPolicyEnabled: Boolean
+        get() = prefs.getBoolean("firewall_call_policy_enabled", false)
+        set(value) = prefs.edit().putBoolean("firewall_call_policy_enabled", value).apply()
+
+    var firewallCallRulesJson: String
+        get() = prefs.getString("firewall_call_rules", "[]") ?: "[]"
+        set(value) = prefs.edit().putString("firewall_call_rules", value).apply()
+
+    var firewallPromptTimeoutMs: Long
+        get() = prefs.getLong("firewall_prompt_timeout_ms", 30_000L)
+        set(value) = prefs.edit().putLong("firewall_prompt_timeout_ms", value).apply()
+
+    var firewallRedactAudit: Boolean
+        get() = prefs.getBoolean("firewall_redact_audit", false)
+        set(value) = prefs.edit().putBoolean("firewall_redact_audit", value).apply()
+
     companion object {
         const val DEFAULT_LOOPBACK_PORT = 15037
         const val DEFAULT_VPN_PORT = 15038

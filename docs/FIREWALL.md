@@ -1,6 +1,6 @@
 # adb-anywhere — Firewall design
 
-Status: decisions recorded; implementation pending
+Status: v1 implemented
 Date: 2026-11-05
 Scope: optional firewall mode, IP allowlist, foreground-app allowlist, call
 policy with custom filters, audit log
@@ -266,10 +266,10 @@ Built-in rules, before user rules:
 1. Deny every service the patched `adbd` rejects (`jdwp:`, `root:`, `remount:`,
    `reboot:`, `usb:`, `tcpip:`, `abb:`, `restore:`, `disable-verity:`,
    `enable-verity:` and the test services).
-2. Deny `shell:` / `shell,v2:` with no command (interactive) unless the user has
-   created an explicit interactive-shell capability rule. That rule allows the
-   session as a whole, not individual commands; it is labelled "full shell, not
-   filtered" in the UI.
+2. An interactive `shell:` / `shell,v2:` with no command is a capability. It
+   prompts unless the user has created an explicit interactive-shell rule; when
+   prompts are disabled it is denied. That rule allows the session as a whole, not
+   individual commands; it is labelled "full shell, not filtered" in the UI.
 3. Deny any `A_STLS`.
 
 When no rule matches and call policy is on, the default is a prompt. When prompts
@@ -348,10 +348,10 @@ sandbox:
   does.
 - `;`, `|`, `&&`, `$(...)`, backticks and redirection change the command. They are
   a `metacharacters` field; a normal argv rule never matches them.
-- Interactive `shell:` is arbitrary after the first approval. It is denied by default
-  and needs an explicit capability rule. When that rule exists, the relay logs the
-  open and close and does not inspect the typed commands; the UI labels the rule
-  "full shell, not filtered".
+- Interactive `shell:` is arbitrary after the first approval. It prompts by default
+  and an `Always allow` answer creates an explicit capability rule. When that rule
+  exists, the relay logs the open and close and does not inspect the typed
+  commands; the UI labels the rule "full shell, not filtered".
 - `sync:` paths can be bypassed with symlinks, `..`, bind mounts and aliases. Path
   matching is lexical and advisory.
 - `tcp:` and `reverse:` expose ports and specs; the rule matches the spec, not what
@@ -496,11 +496,11 @@ It does not add:
 - Protection from a malicious local app that binds the relay address before the
   relay starts. The relay sets `SO_REUSEADDR=false` and reports a bind failure;
   it does not fall back to another port.
-- Protection from a VPN that excludes ADB Anywhere from the tunnel. The relay's
-  listener is in the app's UID, so a per-app VPN that excludes the app does not
-  deliver inbound packets to it. The UI reports a bind or accept failure and tells
-  the user to include ADB Anywhere in the VPN; the design cannot override the
-  VPN's routing.
+- A VPN that excludes ADB Anywhere from the tunnel: this is an accepted corner
+  case, not a supported configuration. The relay's listener is in the app's UID, so
+  a per-app VPN that excludes the app does not deliver inbound packets to it. The
+  bind or accept fails, the setup shows the error, and the app does not fall back
+  to another port or to the direct VPN listener.
 
 The relay caps connections at 8 total and 2 per peer, caps a pre-`A_CNXN` payload
 at 4 KiB and any payload at 1 MiB, and closes a connection on a malformed frame.
@@ -561,8 +561,9 @@ Decisions:
 2. Foreground change: close live sessions after a configurable grace period
    (default 15 s, `0` means immediate); a return before it expires cancels it.
 3. Prompt scope: apply rules first; prompt only an unmatched `A_OPEN`.
-4. Interactive `shell:`: allow as an explicit capability rule; log open and
-   close, do not inspect input; label it "full shell, not filtered".
+4. Interactive `shell:`: allow as an explicit capability rule created by
+   `Always allow`; log open and close, do not inspect input; label it
+   "full shell, not filtered".
 
 Residual questions for implementation:
 
@@ -572,3 +573,49 @@ Residual questions for implementation:
 3. Per-key defaults: should a developer key carry its own default action and
    rule set, or share one global rule set.
 4. Audit export: share a file, copy JSONL, or both.
+
+## 16. Implementation status
+
+Implemented in the app:
+
+- `firewall/FirewallModels.kt`: `IpNetwork`, `IpAllowlist`, `AdbCall`, `CallRule`,
+  `CallPredicate`, `FirewallConfig` and their JSON form.
+- `firewall/AdbFrameCodec.kt`: the 24-byte ADB header, bounded payloads and
+  injected `A_CLSE`.
+- `firewall/AdbCallParser.kt`: `shell`, `exec`, `abb_exec`, `sync`, `tcp`,
+  `reverse`, `framebuffer`; unknown and unsupported services are denied.
+- `firewall/SyncParser.kt`: the first client sync frame, path and direction.
+- `firewall/CallRules.kt`: built-in denies, first-match user rules, prompt and
+  deny defaults.
+- `firewall/AdbRelay.kt`: the byte relay, `A_OPEN` policy, sync path policy,
+  stream tracking and denied-stream drops.
+- `firewall/FirewallProxy.kt`: VPN listener, IP allowlist, app allowlist, grace
+  timer, connection caps and the relay.
+- `firewall/ForegroundAppMonitor.kt` and `ForegroundTracker.kt`: `UsageStatsManager`,
+  screen and keyguard state.
+- `firewall/AuditLog.kt`: the bounded JSONL log and ring.
+- `firewall/FirewallConfigStore.kt`: the persisted configuration.
+- `service/ControlService.kt`: loopback-only daemon when the firewall is on,
+  relay lifecycle, prompt notification and response.
+- `ui/FirewallScreen.kt`, `ui/CallPromptScreen.kt`, `ui/CallPromptActivity.kt`,
+  `ui/RuleEditor.kt`: the tab, the prompt and the custom filter.
+- `ui/SettingsScreen.kt` and `ui/App.kt`: the switch and the conditional tab.
+
+Tests:
+
+- `FirewallDataTest`: IPv4/CIDR, lexer, service parser, rules, sync parser,
+  frame codec, foreground tracker, config JSON.
+- `AdbRelayTest`: allow, deny, prompt, sync path deny, malformed frame.
+- `FirewallProxyTest`: accept and relay, IP deny, app deny.
+- `AuditLogTest`: ring, file, redaction, clear.
+- `ControlDataTest`: `Endpoint.listenSpec` with the VPN listener hidden.
+
+Deferred:
+
+- IPv6 allowlist entries.
+- Audit export and redaction presets.
+- Per-key default actions and rule sets.
+- Sync `DATA` contents and shell output inspection.
+- Work-profile apps in the picker.
+- Key fingerprint in the prompt and `auth_ok`/`auth_unknown` audit events.
+- A dedicated "block once" action; Block denies this call only.

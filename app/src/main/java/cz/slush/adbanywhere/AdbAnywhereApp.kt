@@ -9,6 +9,7 @@ import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import cz.slush.adbanywhere.data.Prefs
+import cz.slush.adbanywhere.firewall.FirewallConfigStore
 import cz.slush.adbanywhere.service.AppLog
 import cz.slush.adbanywhere.service.ControlBus
 import cz.slush.adbanywhere.service.Notifications
@@ -23,6 +24,7 @@ class AdbAnywhereApp : Application() {
         val prefs = Prefs(this)
         AppLog.init(this, prefs.diagnosticLog)
         AppLog.info("app", "process started; diagnostics=${prefs.diagnosticLog}")
+        ControlBus.firewallConfig.value = FirewallConfigStore(prefs).load()
         if (prefs.setupComplete && !prefs.userWantsRunning) {
             ControlBus.update { it.copy(phase = Phase.Stopped) }
         }
@@ -41,6 +43,13 @@ class AdbAnywhereApp : Application() {
                 "Pairing",
                 NotificationManager.IMPORTANCE_HIGH,
             ).apply { description = "Pairing with Android's wireless debugging" },
+        )
+        manager.createNotificationChannel(
+            NotificationChannel(
+                Notifications.CHANNEL_FIREWALL,
+                "Firewall",
+                NotificationManager.IMPORTANCE_HIGH,
+            ).apply { description = "Approval of ADB calls" },
         )
     }
 }

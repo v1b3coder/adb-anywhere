@@ -72,14 +72,15 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
         vpnIp: String?,
         loopbackPort: Int,
         vpnPort: Int,
+        exposeVpn: Boolean = true,
     ) {
         writeBinary(shell)
         writeKeys(shell, appKey, developers)
         stop(shell)
         Thread.sleep(300)
         loopbackPortForStop = loopbackPort
-        val command = startCommand(shell, vpnIp, loopbackPort, vpnPort)
-        AppLog.info("adb", "starting ${Endpoint.listenSpec(loopbackPort, vpnIp, vpnPort)}")
+        val command = startCommand(shell, vpnIp, loopbackPort, vpnPort, exposeVpn)
+        AppLog.info("adb", "starting ${Endpoint.listenSpec(loopbackPort, vpnIp, vpnPort, exposeVpn)}")
         val result = shell.exec(command, 10_000)
         if (!result.ok) {
             throw IOException("cannot start daemon: ${result.stderr.ifBlank { result.stdout }.trim()}")
@@ -90,7 +91,7 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
             throw IOException("daemon did not write a pid file")
         }
         AppLog.info("adb", "started (pid=$pid)")
-        if (!vpnIp.isNullOrBlank() && !shell.probe(vpnIp, vpnPort)) {
+        if (exposeVpn && !vpnIp.isNullOrBlank() && !shell.probe(vpnIp, vpnPort)) {
             throw IOException("daemon did not bind $vpnIp:$vpnPort")
         }
     }
@@ -106,13 +107,17 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
         vpnIp: String?,
         loopbackPort: Int,
         vpnPort: Int,
+        exposeVpn: Boolean = true,
     ) {
         writeBinary(shell)
         writeKeys(shell, appKey, developers)
         Thread.sleep(200)
         loopbackPortForStop = loopbackPort
-        val start = startCommand(shell, vpnIp, loopbackPort, vpnPort)
-        AppLog.info("adb", "restarting detached on ${Endpoint.listenSpec(loopbackPort, vpnIp, vpnPort)}")
+        val start = startCommand(shell, vpnIp, loopbackPort, vpnPort, exposeVpn)
+        AppLog.info(
+            "adb",
+            "restarting detached on ${Endpoint.listenSpec(loopbackPort, vpnIp, vpnPort, exposeVpn)}",
+        )
         val script = "kill \$(cat ${shell.quote(pidPath)}) 2>/dev/null || true; " +
             "sleep 0.4; $start"
         val result = shell.exec(
@@ -123,7 +128,7 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
             throw IOException("cannot restart daemon: ${result.stderr.ifBlank { result.stdout }.trim()}")
         }
         waitForRestart(shell, loopbackPort)
-        if (!vpnIp.isNullOrBlank() && !shell.probe(vpnIp, vpnPort)) {
+        if (exposeVpn && !vpnIp.isNullOrBlank() && !shell.probe(vpnIp, vpnPort)) {
             throw IOException("daemon did not bind $vpnIp:$vpnPort")
         }
     }
@@ -142,8 +147,14 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
         waitForPort(shell, port, timeoutMs)
     }
 
-    private fun startCommand(shell: Shell, vpnIp: String?, loopbackPort: Int, vpnPort: Int): String {
-        val spec = Endpoint.listenSpec(loopbackPort, vpnIp, vpnPort)
+    private fun startCommand(
+        shell: Shell,
+        vpnIp: String?,
+        loopbackPort: Int,
+        vpnPort: Int,
+        exposeVpn: Boolean,
+    ): String {
+        val spec = Endpoint.listenSpec(loopbackPort, vpnIp, vpnPort, exposeVpn)
         return "setsid ${shell.quote(binaryPath)}" +
             " --listen ${shell.quote(spec)}" +
             " --keys ${shell.quote(keysPath)}" +

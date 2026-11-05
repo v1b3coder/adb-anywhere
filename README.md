@@ -66,6 +66,30 @@ keeps running across an update. Stop waits for a deployment in progress to finis
 before it stops the daemon, and it reports the loopback port if the daemon is still
 listening.
 
+## Firewall
+
+Settings → Firewall adds a separate tab. When it is on, the patched `adbd`
+listens only on `127.0.0.1` and the app accepts the VPN port itself. It relays
+the ADB bytes to `adbd`, so ADB key authentication stays end-to-end.
+
+The tab has four modules:
+
+- **IP allowlist**: only listed IPv4 addresses and CIDR ranges may connect; an
+  empty list denies every peer.
+- **App allowlist**: external ADB is available only while a selected app is in the
+  foreground. A configurable grace period covers a short switch.
+- **Call policy**: every `A_OPEN` is parsed into a service call. Rules run first;
+  an unmatched call asks through a notification or a dialog. `Block` denies this
+  call, `Allow once` allows it, `Always allow` creates an exact rule, and
+  `Custom filter` lets the user pin the fields that must stay fixed.
+- **Audit log**: bounded JSONL on the device and the last 500 events in the UI.
+
+The app's own loopback channel is unchanged. The relay is byte-transparent and
+does not authenticate. Shell filtering is policy and audit, not a sandbox:
+interactive `shell:` and shell metacharacters are explicit capabilities, and sync
+path rules are lexical and advisory. The full design and its limits are in
+[docs/FIREWALL.md](docs/FIREWALL.md).
+
 ## Security
 
 - The patched daemon binds only `127.0.0.1:<loopback>` and

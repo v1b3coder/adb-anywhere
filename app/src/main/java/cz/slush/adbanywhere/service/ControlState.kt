@@ -5,7 +5,12 @@ package cz.slush.adbanywhere.service
 
 import cz.slush.adbanywhere.data.AdbStatus
 import cz.slush.adbanywhere.data.Prefs
+import cz.slush.adbanywhere.firewall.AuditEvent
+import cz.slush.adbanywhere.firewall.FirewallConfig
+import cz.slush.adbanywhere.firewall.FirewallState
+import cz.slush.adbanywhere.firewall.PromptRequest
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 
 enum class Phase { Idle, NeedsPairing, Pairing, Deploying, Running, Error, Stopped }
@@ -35,6 +40,7 @@ data class ControlState(
      * is on. Null until the service has read it once.
      */
     val adbStatus: AdbStatus? = null,
+    val firewall: FirewallState = FirewallState(),
 ) {
     val running: Boolean get() = phase == Phase.Running
     val needsSetup: Boolean get() = phase == Phase.NeedsPairing || phase == Phase.Error
@@ -43,6 +49,9 @@ data class ControlState(
 object ControlBus {
     val state = MutableStateFlow(ControlState())
     val logs = MutableStateFlow("")
+    var audit: StateFlow<List<AuditEvent>> = MutableStateFlow(emptyList())
+    val pendingPrompt = MutableStateFlow<PromptRequest?>(null)
+    val firewallConfig = MutableStateFlow(FirewallConfig())
 
     fun update(block: (ControlState) -> ControlState) {
         state.update(block)

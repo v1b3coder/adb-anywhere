@@ -42,6 +42,19 @@ import cz.slush.adbanywhere.data.Endpoint
 import cz.slush.adbanywhere.data.PairingCode
 import cz.slush.adbanywhere.data.Prefs
 import cz.slush.adbanywhere.data.WirelessDebuggingGuard
+import cz.slush.adbanywhere.firewall.AuditEvent
+import cz.slush.adbanywhere.firewall.AuditLog
+import cz.slush.adbanywhere.firewall.CallRule
+import cz.slush.adbanywhere.firewall.FirewallConfigStore
+import cz.slush.adbanywhere.firewall.FirewallPolicy
+import cz.slush.adbanywhere.firewall.FirewallProxy
+import cz.slush.adbanywhere.firewall.FirewallState
+import cz.slush.adbanywhere.firewall.ForegroundAppMonitor
+import cz.slush.adbanywhere.firewall.PromptDecision
+import cz.slush.adbanywhere.firewall.PromptRequest
+import cz.slush.adbanywhere.firewall.PromptResponse
+import cz.slush.adbanywhere.ui.CallPromptActivity
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -56,9 +69,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import java.io.File
 import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.Socket
+import org.json.JSONObject
 
 class ControlService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -67,6 +83,11 @@ class ControlService : Service() {
     private lateinit var keys: AppKeyStore
     private lateinit var system: SystemAdb
     private lateinit var daemon: DaemonManager
+    private lateinit var firewallStore: FirewallConfigStore
+    private lateinit var auditLog: AuditLog
+    private var firewallProxy: FirewallProxy? = null
+    private var foregroundMonitor: ForegroundAppMonitor? = null
+    private val prompts = mutableMapOf<String, CompletableDeferred<PromptResponse?>>()
     private var notificationJob: Job? = null
     private var watchdogJob: Job? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
@@ -81,6 +102,15 @@ class ControlService : Service() {
         keys = AppKeyStore(this)
         system = SystemAdb(this, keys, prefs)
         daemon = DaemonManager(this, prefs)
+        firewallStore = FirewallConfigStore(prefs)
+        auditLog = AuditLog(
+            File(createDeviceProtectedStorageContext().filesDir, "firewall-audit.jsonl"),
+        ) { firewallStore.load().redactAudit }
+        ControlBus.audit = auditLog.entries
+        ControlBus.firewallConfig.value = firewallStore.load()
+        foregroundMonitor = ForegroundAppMonitor(this) {
+            (firewallProxy?.activeSessions ?: 0) > 0 || prompts.isNotEmpty()
+        }
 
         ControlBus.update {
             it.copy(
@@ -89,6 +119,7 @@ class ControlService : Service() {
                 keyCount = DeveloperKey.list(prefs.developerKeysJson).size + 1,
                 endpoint = prefs.lastVpnIp.takeIf { ip -> ip.isNotBlank() }
                     ?.let { ip -> Endpoint.display(ip, prefs.vpnPort) } ?: "",
+                firewall = FirewallState(enabled = firewallStore.load().enabled),
             )
         }
 
@@ -191,6 +222,25 @@ class ControlService : Service() {
                     AppLog.warn("settings", "rejected system adb TLS port=$port")
                 }
             }
+            ACTION_CLEAR_AUDIT -> {
+                auditLog.clear()
+                AppLog.info("firewall", "audit log cleared")
+            }
+            ACTION_PROMPT_RESPONSE -> {
+                val id = intent.getStringExtra(EXTRA_PROMPT_ID)
+                val decision = intent.getStringExtra(EXTRA_PROMPT_DECISION)
+                val rule = intent.getStringExtra(EXTRA_PROMPT_RULE)?.let {
+                    runCatching { CallRule.fromJson(JSONObject(it)) }.getOrNull()
+                }
+                val response = when (decision) {
+                    "block" -> PromptResponse(PromptDecision.BLOCK)
+                    "once" -> PromptResponse(PromptDecision.ALLOW_ONCE)
+                    "always" -> PromptResponse(PromptDecision.ALWAYS_ALLOW)
+                    "custom" -> rule?.let { PromptResponse(PromptDecision.CUSTOM, it) }
+                    else -> null
+                }
+                if (id != null) prompts[id]?.complete(response)
+            }
             ACTION_STOP -> {
                 prefs.userWantsRunning = false
                 AppLog.info("service", "stop requested")
@@ -205,6 +255,7 @@ class ControlService : Service() {
 
     override fun onDestroy() {
         AppLog.info("service", "destroyed")
+        stopFirewall()
         notificationJob?.cancel()
         watchdogJob?.cancel()
         scope.cancel()
@@ -243,6 +294,7 @@ class ControlService : Service() {
         enableSystemAdb: Boolean = false,
     ) {
         setupMutex.withLock {
+            val previous = ControlBus.state.value
             AppLog.info("setup", "started; restart=$forceRestart")
             ControlBus.update {
                 it.copy(
@@ -258,8 +310,10 @@ class ControlService : Service() {
             // bootstrap settings or reached a shell on the device.
             var cleanupRequired = false
             var adbStateBefore: AdbState? = null
+            val firewallConfig = firewallStore.load()
             try {
                 val vpnIp = VpnDetector.currentVpnAddress(this)
+                val exposeVpn = !firewallConfig.enabled
                 prefs.lastVpnIp = vpnIp ?: ""
                 val developers = DeveloperKey.list(prefs.developerKeysJson)
                 val appKey = keys.publicKey
@@ -270,11 +324,11 @@ class ControlService : Service() {
                         loopbackPort = prefs.loopbackPort,
                         appFingerprint = appKey.fingerprint,
                         keyCount = developers.size + 1,
+                        firewall = FirewallState(enabled = firewallConfig.enabled),
                     )
                 }
 
                 step(0, StepStatus.Active, "Connecting to Android's wireless debugging")
-                val previous = ControlBus.state.value
                 val daemonAlive = withContext(Dispatchers.IO) { probeDaemon() }
                 AppLog.info("setup", "custom adb alive=$daemonAlive dir=${prefs.remoteDir}")
                 if (!daemonAlive && prefs.setupComplete &&
@@ -359,11 +413,14 @@ class ControlService : Service() {
                 val vpnChanged = vpnIp != previous.vpnIp
                 val portsChanged = prefs.loopbackPort != previous.loopbackPort ||
                     prefs.vpnPort != previous.vpnPort
-                val restart = forceRestart || !daemonAlive || vpnChanged || portsChanged
+                val firewallChanged = firewallConfig.enabled != previous.firewall.enabled
+                val restart = forceRestart || !daemonAlive || portsChanged ||
+                    (exposeVpn && vpnChanged) || firewallChanged
                 AppLog.info(
                     "setup",
                     "deploy: adbAlive=$daemonAlive vpnChanged=$vpnChanged " +
-                        "portsChanged=$portsChanged restart=$restart",
+                        "portsChanged=$portsChanged firewallChanged=$firewallChanged " +
+                        "restart=$restart",
                 )
                 if (daemonAlive && !restart) {
                     // No key was revoked: the daemon reloads the key file on the
@@ -380,6 +437,7 @@ class ControlService : Service() {
                         vpnIp,
                         prefs.loopbackPort,
                         prefs.vpnPort,
+                        exposeVpn,
                     )
                 } else {
                     AppLog.info("adb", "deploying and starting")
@@ -390,23 +448,53 @@ class ControlService : Service() {
                         vpnIp,
                         prefs.loopbackPort,
                         prefs.vpnPort,
+                        exposeVpn,
                     )
                 }
                 step(1, StepStatus.Done, "Custom adb running")
 
-                step(2, StepStatus.Active, "Verifying loopback and VPN listeners")
-                verifyDaemon(vpnIp)
+                step(2, StepStatus.Active, "Verifying the listeners")
+                verifyDaemon(vpnIp, exposeVpn)
                 AppLog.info("setup", "listeners verified")
                 step(
                     2,
                     StepStatus.Done,
-                    if (vpnIp == null) "Loopback verified; VPN is not up yet"
-                    else "Loopback and $vpnIp:${prefs.vpnPort} verified",
+                    when {
+                        !exposeVpn -> "Loopback verified; the firewall owns the VPN listener"
+                        vpnIp == null -> "Loopback verified; VPN is not up yet"
+                        else -> "Loopback and $vpnIp:${prefs.vpnPort} verified"
+                    },
                 )
 
                 step(3, StepStatus.Active, "Turning system wireless debugging off")
                 harden()
                 step(3, StepStatus.Done, "System wireless debugging off")
+
+                step(4, StepStatus.Active, "Starting the firewall relay")
+                if (firewallConfig.enabled && vpnIp != null) {
+                    if (firewallChanged || vpnChanged || portsChanged ||
+                        firewallProxy?.isListening != true
+                    ) {
+                        startFirewall(vpnIp)
+                    }
+                    verifyFirewall()
+                    step(4, StepStatus.Done, "Firewall relay on $vpnIp:${prefs.vpnPort}")
+                } else if (firewallConfig.enabled) {
+                    stopFirewall()
+                    ControlBus.update {
+                        it.copy(
+                            firewall = FirewallState(
+                                enabled = true,
+                                listening = false,
+                                lastError = "VPN is down",
+                            ),
+                        )
+                    }
+                    step(4, StepStatus.Done, "VPN is down; no external listener")
+                } else {
+                    stopFirewall()
+                    step(4, StepStatus.Done, "Firewall is off")
+                }
 
                 prefs.setupComplete = true
                 AppLog.info("setup", "running; endpoint=${Endpoint.display(vpnIp, prefs.vpnPort)}")
@@ -415,10 +503,14 @@ class ControlService : Service() {
                         phase = Phase.Running,
                         endpoint = Endpoint.display(vpnIp, prefs.vpnPort),
                         vpnIp = vpnIp,
-                        message = if (vpnIp == null) {
-                            "VPN is down. Only the app can reach the custom adb; connect the VPN to expose it."
-                        } else {
-                            "Ready for developer machines."
+                        message = when {
+                            firewallConfig.enabled && vpnIp == null ->
+                                "VPN is down. The firewall cannot expose the custom adb."
+                            firewallConfig.enabled ->
+                                "Firewall is on. Developer machines connect through $vpnIp:${prefs.vpnPort}."
+                            vpnIp == null ->
+                                "VPN is down. Only the app can reach the custom adb; connect the VPN to expose it."
+                            else -> "Ready for developer machines."
                         },
                         error = "",
                     )
@@ -452,6 +544,7 @@ class ControlService : Service() {
     private suspend fun abortSetup(adbStateBefore: AdbState?): String? =
         withContext(Dispatchers.IO + NonCancellable) {
             val context = this@ControlService
+            runCatching { stopFirewall() }
             val stopped = runCatching {
                 val shell = runCatching { daemonShell() }.getOrNull() ?: system.shell
                 try {
@@ -561,7 +654,7 @@ class ControlService : Service() {
         ok
     }
 
-    private suspend fun verifyDaemon(vpnIp: String?) = withContext(Dispatchers.IO) {
+    private suspend fun verifyDaemon(vpnIp: String?, exposeVpn: Boolean) = withContext(Dispatchers.IO) {
         val loopback = AdbManager(this@ControlService, keys)
         if (!loopback.connectTo("127.0.0.1", prefs.loopbackPort)) {
             throw IOException(
@@ -578,7 +671,7 @@ class ControlService : Service() {
             loopback.disconnectQuietly()
         }
 
-        if (vpnIp != null) {
+        if (exposeVpn && vpnIp != null) {
             val vpn = AdbManager(this@ControlService, keys)
             if (!vpn.connectTo(vpnIp, prefs.vpnPort)) {
                 throw IOException("The custom adb did not bind $vpnIp:${prefs.vpnPort}.")
@@ -592,6 +685,125 @@ class ControlService : Service() {
                 vpn.disconnectQuietly()
             }
         }
+    }
+
+    private fun startFirewall(vpnIp: String) {
+        val config = firewallStore.load()
+        if (!config.enabled) return
+        firewallProxy?.stop()
+        firewallProxy = null
+        foregroundMonitor?.start()
+        val policy = FirewallPolicy(
+            config = { firewallStore.load() },
+            prompt = ::promptForCall,
+            pending = { prompts.isNotEmpty() },
+            saveRule = {
+                firewallStore.addRule(it)
+                ControlBus.firewallConfig.value = firewallStore.load()
+            },
+            audit = { auditLog.record(it) },
+        )
+        val proxy = FirewallProxy(
+            scope = scope,
+            config = { firewallStore.load() },
+            monitor = foregroundMonitor,
+            policy = policy,
+            audit = auditLog,
+            onState = { state -> ControlBus.update { it.copy(firewall = state) } },
+        )
+        proxy.start(vpnIp, prefs.vpnPort, prefs.loopbackPort)
+        firewallProxy = proxy
+        AppLog.info("firewall", "listening on $vpnIp:${prefs.vpnPort}")
+    }
+
+    private fun stopFirewall() {
+        firewallProxy?.stop()
+        firewallProxy = null
+        foregroundMonitor?.stop()
+        prompts.values.forEach { it.cancel() }
+        prompts.clear()
+        ControlBus.pendingPrompt.value = null
+        ControlBus.update {
+            it.copy(firewall = FirewallState(enabled = firewallStore.load().enabled))
+        }
+    }
+
+    private fun verifyFirewall() {
+        if (firewallProxy?.isListening != true) {
+            throw IOException("The firewall relay did not bind ${prefs.vpnPort}.")
+        }
+    }
+
+    private suspend fun promptForCall(
+        request: PromptRequest,
+        timeoutMs: Long,
+    ): PromptResponse? {
+        if (prompts.size >= MAX_PROMPTS) return null
+        val foreground = foregroundMonitor?.state?.value
+        if (foreground != null && (!foreground.interactive || foreground.locked)) {
+            auditLog.record(
+                AuditEvent(
+                    event = "call_denied",
+                    peer = request.peer,
+                    service = request.call.service,
+                    fields = request.call.fields,
+                    rule = "screen-off",
+                ),
+            )
+            return null
+        }
+        val deferred = CompletableDeferred<PromptResponse?>()
+        prompts[request.id] = deferred
+        ControlBus.pendingPrompt.value = request
+        ControlBus.update { it.copy(firewall = it.firewall.copy(pendingPrompts = prompts.size)) }
+        postPromptNotification(request)
+        runCatching {
+            startActivity(
+                Intent(this, CallPromptActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    .putExtra(CallPromptActivity.EXTRA_PROMPT_ID, request.id),
+            )
+        }
+        val response = withTimeoutOrNull(timeoutMs) { deferred.await() }
+        prompts.remove(request.id)
+        ControlBus.pendingPrompt.value = null
+        ControlBus.update { it.copy(firewall = it.firewall.copy(pendingPrompts = prompts.size)) }
+        firewallProxy?.onPromptFinished()
+        if (response == null) {
+            auditLog.record(
+                AuditEvent(
+                    event = "call_timeout",
+                    peer = request.peer,
+                    service = request.call.service,
+                    fields = request.call.fields,
+                ),
+            )
+        }
+        return response
+    }
+
+    private fun postPromptNotification(request: PromptRequest) {
+        val intent = Intent(this, CallPromptActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            .putExtra(CallPromptActivity.EXTRA_PROMPT_ID, request.id)
+        val pending = PendingIntent.getActivity(
+            this,
+            request.id.hashCode(),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val text = "${request.call.service} from ${request.peer}\n${request.call.raw.take(300)}"
+        val notification = NotificationCompat.Builder(this, Notifications.CHANNEL_FIREWALL)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("ADB call needs approval")
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setAutoCancel(true)
+            .setContentIntent(pending)
+            .addAction(0, "Review", pending)
+            .build()
+        postNotification(Notifications.PROMPT_ID, notification)
     }
 
     /**
@@ -701,6 +913,25 @@ class ControlService : Service() {
         if (!SystemSettings.ensureNoAdbConnectionTimeout(this)) {
             AppLog.warn("watchdog", "adb_allowed_connection_time=0 was not accepted")
         }
+        val firewall = firewallStore.load()
+        if (firewall.enabled) {
+            val vpnIp = withContext(Dispatchers.IO) {
+                VpnDetector.currentVpnAddress(this@ControlService)
+            }
+            if (vpnIp == null) {
+                if (firewallProxy != null) stopFirewall()
+                ControlBus.update {
+                    it.copy(firewall = FirewallState(enabled = true, lastError = "VPN is down"))
+                }
+            } else if (firewallProxy?.isListening != true) {
+                AppLog.warn("watchdog", "firewall relay is down; restarting")
+                runCatching { startFirewall(vpnIp) }.onFailure {
+                    AppLog.error("watchdog", "firewall restart failed: ${it.message}")
+                }
+            }
+        } else if (firewallProxy != null) {
+            stopFirewall()
+        }
         refreshAdbStatus()
         AppLog.info("watchdog", "ok")
         scheduleWatchdog()
@@ -723,7 +954,31 @@ class ControlService : Service() {
         }
         val changed = vpnAddressChanged()
         AppLog.info("network", "settled; vpn address changed=$changed")
-        if (changed) setup()
+        if (!changed) return
+        if (firewallStore.load().enabled) {
+            val vpnIp = withContext(Dispatchers.IO) {
+                VpnDetector.currentVpnAddress(this@ControlService)
+            }
+            if (vpnIp == null) {
+                stopFirewall()
+                ControlBus.update {
+                    it.copy(
+                        vpnIp = null,
+                        firewall = FirewallState(enabled = true, lastError = "VPN is down"),
+                    )
+                }
+            } else {
+                runCatching {
+                    val proxy = firewallProxy
+                    if (proxy != null) proxy.rebind(vpnIp) else startFirewall(vpnIp)
+                }.onFailure {
+                    fail(it.message ?: "Firewall rebind failed")
+                }
+                ControlBus.update { it.copy(vpnIp = vpnIp) }
+            }
+        } else {
+            setup()
+        }
     }
 
     private suspend fun vpnAddressChanged(): Boolean {
@@ -766,6 +1021,7 @@ class ControlService : Service() {
         AppLog.info("service", "stopping adb and the service")
         scope.launch {
             setupMutex.withLock {
+                stopFirewall()
                 withContext(Dispatchers.IO) {
                     runCatching {
                         val shell = daemonShell()
@@ -865,8 +1121,9 @@ class ControlService : Service() {
     private fun initialSteps() = listOf(
         SetupStep("Connect to Android's wireless debugging"),
         SetupStep("Deploy the custom adb"),
-        SetupStep("Verify loopback and VPN listeners"),
+        SetupStep("Verify the listeners"),
         SetupStep("Turn system wireless debugging off"),
+        SetupStep("Start the firewall relay"),
     )
 
     private fun startForeground(state: ControlState) {
@@ -927,6 +1184,16 @@ class ControlService : Service() {
         }
         val text = buildList {
             addAll(warnings)
+            if (state.firewall.enabled) {
+                add(
+                    if (state.firewall.listening) {
+                        "Firewall: ${state.firewall.activeSessions} sessions, " +
+                            "${state.firewall.pendingPrompts} prompts"
+                    } else {
+                        "Firewall: ${state.firewall.lastError.ifBlank { "not listening" }}"
+                    },
+                )
+            }
             when {
                 state.error.isNotEmpty() -> add(state.error)
                 state.phase == Phase.Running && state.endpoint.isNotEmpty() &&
@@ -1102,12 +1369,18 @@ class ControlService : Service() {
         const val ACTION_APPLY_SETTINGS = "cz.slush.adbanywhere.APPLY_SETTINGS"
         const val ACTION_NOTIFY_PAIR = "cz.slush.adbanywhere.NOTIFY_PAIR"
         const val ACTION_SET_TLS_PORT = "cz.slush.adbanywhere.SET_TLS_PORT"
+        const val ACTION_PROMPT_RESPONSE = "cz.slush.adbanywhere.PROMPT_RESPONSE"
+        const val ACTION_CLEAR_AUDIT = "cz.slush.adbanywhere.CLEAR_AUDIT"
         const val ACTION_STOP = "cz.slush.adbanywhere.STOP"
         private const val NETWORK_SETTLE_MS = 1_500L
         private const val SYSTEM_ADB_WAIT_MS = 15_000L
+        private const val MAX_PROMPTS = 8
         const val EXTRA_CODE = "code"
         const val EXTRA_PAIR_PORT = "pair_port"
         const val EXTRA_PORT = "port"
+        const val EXTRA_PROMPT_ID = "prompt_id"
+        const val EXTRA_PROMPT_DECISION = "prompt_decision"
+        const val EXTRA_PROMPT_RULE = "prompt_rule"
         const val INPUT_PAIR_CODE = "pair_code"
         const val INPUT_PAIR_PORT = "pair_port"
 
@@ -1120,6 +1393,20 @@ class ControlService : Service() {
                 .setAction(ACTION_PAIR)
                 .putExtra(EXTRA_CODE, code)
             if (port != null) intent.putExtra(EXTRA_PAIR_PORT, port)
+            send(context, intent)
+        }
+
+        fun startPromptResponse(
+            context: Context,
+            id: String,
+            decision: String,
+            rule: String? = null,
+        ) {
+            val intent = Intent(context, ControlService::class.java)
+                .setAction(ACTION_PROMPT_RESPONSE)
+                .putExtra(EXTRA_PROMPT_ID, id)
+                .putExtra(EXTRA_PROMPT_DECISION, decision)
+            if (rule != null) intent.putExtra(EXTRA_PROMPT_RULE, rule)
             send(context, intent)
         }
 
