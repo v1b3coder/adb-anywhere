@@ -40,17 +40,23 @@ import cz.slush.adbanywhere.service.Phase
 @Composable
 fun SetupScreen(
     state: ControlState,
-    onPair: (String) -> Unit,
+    onPair: (PairingCode) -> Unit,
     onSetup: () -> Unit,
     onNotify: () -> Unit,
     onOpenDeveloperSettings: () -> Unit,
     onSetTlsPort: (Int) -> String?,
 ) {
     var code by rememberSaveable { mutableStateOf("") }
-    var error by remember { mutableStateOf("") }
+    var port by rememberSaveable { mutableStateOf("") }
     var tlsPort by rememberSaveable { mutableStateOf("") }
     var portError by remember { mutableStateOf("") }
-    val parsed = remember(code) { PairingCode.parse(code) }
+    val parsedCode = remember(code) { PairingCode.parseCode(code) }
+    val parsedPort = remember(port) { PairingCode.parsePort(port) }
+    val pairing = if (parsedCode != null && parsedPort != null) {
+        PairingCode(parsedCode, parsedPort)
+    } else {
+        null
+    }
     val busy = state.phase == Phase.Pairing || state.phase == Phase.Deploying
 
     LazyColumn(
@@ -68,7 +74,7 @@ fun SetupScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("1. Open Settings → Developer options → Wireless debugging.", style = MaterialTheme.typography.bodyMedium)
                     Text("2. Tap “Pair device with pairing code”. Keep that dialog open.", style = MaterialTheme.typography.bodyMedium)
-                    Text("3. Reply to the ADB Anywhere notification with code:port.", style = MaterialTheme.typography.bodyMedium)
+                    Text("3. Reply to the ADB Anywhere notification with the code, then the port.", style = MaterialTheme.typography.bodyMedium)
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = onNotify) {
@@ -80,30 +86,35 @@ fun SetupScreen(
                         Text("Developer settings", modifier = Modifier.padding(start = 8.dp))
                     }
                 }
-                OutlinedTextField(
-                    value = code,
-                    onValueChange = {
-                        code = it
-                        error = ""
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Pairing code and port") },
-                    placeholder = { Text("123456:37123") },
-                    singleLine = true,
-                    isError = error.isNotEmpty(),
-                    supportingText = {
-                        Text(
-                            error.ifEmpty {
-                                "The code and port are shown in the pairing dialog."
-                            },
-                        )
-                    },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = code,
+                        onValueChange = { code = it.filter(Char::isDigit).take(6) },
+                        modifier = Modifier.weight(1f),
+                        label = { Text("Pairing code") },
+                        placeholder = { Text("123456") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    )
+                    OutlinedTextField(
+                        value = port,
+                        onValueChange = { port = it.filter(Char::isDigit).take(5) },
+                        modifier = Modifier.weight(1f),
+                        label = { Text("Pairing port") },
+                        placeholder = { Text("37123") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    )
+                }
+                Text(
+                    "Both numbers are shown in Android's pairing dialog.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
-                        onClick = { onPair(code) },
-                        enabled = parsed != null && !busy,
+                        onClick = { pairing?.let(onPair) },
+                        enabled = pairing != null && !busy,
                     ) {
                         Text(if (state.phase == Phase.Pairing) "Pairing…" else "Pair")
                     }

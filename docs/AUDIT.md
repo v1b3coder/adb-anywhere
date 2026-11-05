@@ -862,7 +862,7 @@ Material 3 in `Theme.kt`.
 | §5 D6 Watchdog keeps D5, probes 5555, restarts daemon | **Partial** | Restarts daemon; sets `ADB_ENABLED=0` only when 5555 is open and keep-off is on; probes 5555 in both keep-off modes for the §8 residual warning (P0-6, fixed in `2b73e78`); re-asserts and verifies `ADB_WIFI_ENABLED=0` every tick (P0-5, fixed in `17277a2`); no backoff; a sticky restart or watchdog alarm resumes setup (P0-4, fixed in `284b75b`). |
 | §5 D7 Patched adbd per-key/per-service policy | **Partial** | Roles exist, but both allow all services (P1-11). |
 | §5 D8 Kotlin/Compose/Material 3/package | **Met** | App sources and manifest. |
-| §5 D9 Bootstrap pairing notification with `code:port` | **Met** | `ControlService.postPairingNotification`, `PairReplyReceiver`. |
+| §5 D9 Bootstrap pairing notification with the code, then the port | **Met** | `ControlService.postPairingNotification` (step 1), `postPairingPortNotification` (step 2), `PairReplyReceiver`. |
 | §5 D10 TCP only; USB/vsock disabled | **Met** | Daemon has no USB/vsock code. |
 | §5 D11 Settings UI shows current ADB state and warning | **Partial** | Settings reads `adb_enabled`, `adb_wifi_enabled` and the 5555 probe and shows the warnings (P2-6, fixed in `068201e`); `HomeScreen` shows the same platform state and warnings (P0-6, fixed in `2b73e78`). |
 | §5 D12 Explicit errors, no silent fallback/random-port redirect | **Partial** | Many errors are explicit; some failures are swallowed (`startForeground`, `postPairingNotification`, `scheduleWatchdog`). |

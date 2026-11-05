@@ -145,15 +145,34 @@ class ControlService : Service() {
                 AppLog.info("service", "key revocation; restarting to close sessions")
                 scope.launch { setup(forceRestart = true, enableSystemAdb = true) }
             }
+            // The pairing notification asks for the code first and the port
+            // second, so each reply arrives as its own intent. A reply with only
+            // the code starts the port step instead of pairing.
             ACTION_PAIR -> {
-                val code = intent.getStringExtra(EXTRA_CODE)
-                // Pairing is the first setup step, so it ends in a running daemon:
-                // the user asked for it explicitly.
-                if (code != null) {
-                    prefs.userWantsRunning = true
-                    scope.launch { pair(code) }
-                } else {
-                    AppLog.warn("service", "pair intent without a code")
+                val codeText = intent.getStringExtra(EXTRA_CODE)
+                val portText = intent.getStringExtra(EXTRA_PAIR_PORT)
+                val code = codeText?.let { PairingCode.parseCode(it) }
+                val port = portText?.let { PairingCode.parsePort(it) }
+                when {
+                    code == null -> {
+                        AppLog.warn("pair", "pairing code is not six digits")
+                        postPairingNotification(
+                            "The code is the six-digit number in Android's dialog.",
+                        )
+                    }
+                    port == null -> {
+                        if (portText != null) AppLog.warn("pair", "pairing port is not a port")
+                        postPairingPortNotification(
+                            code,
+                            if (portText != null) "The port is the number under the IP address." else "",
+                        )
+                    }
+                    else -> {
+                        // Pairing is the first setup step, so it ends in a running
+                        // daemon: the user asked for it explicitly.
+                        prefs.userWantsRunning = true
+                        scope.launch { pair(PairingCode(code, port)) }
+                    }
                 }
             }
             ACTION_WATCHDOG -> if (!resumeAfterRestart()) scope.launch { watchdog() }
@@ -492,14 +511,9 @@ class ControlService : Service() {
         AppLog.warn("setup", "system wireless debugging is not up after $timeoutMs ms")
     }
 
-    private suspend fun pair(codeText: String) {
-        val code = PairingCode.parse(codeText)
-        if (code == null) {
-            AppLog.error("pair", "pairing value is not code:port")
-            fail("Enter the pairing value as code:port, for example 123456:37123.")
-            return
-        }
+    private suspend fun pair(code: PairingCode) {
         AppLog.info("pair", "started on 127.0.0.1:${code.port}")
+        NotificationManagerCompat.from(this).cancel(Notifications.PAIRING_ID)
         ControlBus.update {
             it.copy(
                 phase = Phase.Pairing,
@@ -940,20 +954,49 @@ class ControlService : Service() {
         return builder.build()
     }
 
-    private fun postPairingNotification() {
-        val text = "Open Settings → Developer options → Wireless debugging → Pair device " +
-            "with pairing code. Then reply here with code:port."
-        val input = RemoteInput.Builder(EXTRA_PAIR_INPUT)
-            .setLabel("Pairing code and port")
+    /** Step 1: the six-digit code from Android's pairing dialog. */
+    private fun postPairingNotification(error: String = "") {
+        val text = buildString {
+            if (error.isNotEmpty()) append(error).append("\n\n")
+            append("Open Settings → Developer options → Wireless debugging → Pair device ")
+            append("with pairing code. Keep that dialog open, then reply with the six-digit code.")
+        }
+        val input = RemoteInput.Builder(INPUT_PAIR_CODE)
+            .setLabel("Pairing code")
             .build()
         val action = NotificationCompat.Action.Builder(
             android.R.drawable.ic_dialog_info,
-            "Enter code:port",
-            pairReplyPendingIntent(),
+            "Enter code",
+            pairReplyPendingIntent(ACTION_PAIR_CODE_REPLY, 10, null),
         ).addRemoteInput(input).build()
+        postPairing("Pair ADB Anywhere (1/2)", text, action)
+    }
+
+    /** Step 2: the port under the IP address in the same dialog. */
+    private fun postPairingPortNotification(code: String, error: String = "") {
+        val text = buildString {
+            if (error.isNotEmpty()) append(error).append("\n\n")
+            append("Now reply with the port under the IP address in the same dialog.")
+        }
+        val input = RemoteInput.Builder(INPUT_PAIR_PORT)
+            .setLabel("Pairing port")
+            .build()
+        val action = NotificationCompat.Action.Builder(
+            android.R.drawable.ic_dialog_info,
+            "Enter port",
+            pairReplyPendingIntent(ACTION_PAIR_PORT_REPLY, 12, code),
+        ).addRemoteInput(input).build()
+        postPairing("Pair ADB Anywhere (2/2)", text, action)
+    }
+
+    private fun postPairing(
+        title: String,
+        text: String,
+        action: NotificationCompat.Action,
+    ) {
         val notification = NotificationCompat.Builder(this, Notifications.CHANNEL_PAIRING)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("Pair ADB Anywhere")
+            .setContentTitle(title)
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -978,12 +1021,16 @@ class ControlService : Service() {
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )
 
-    private fun pairReplyPendingIntent(): PendingIntent = PendingIntent.getBroadcast(
-        this,
-        10,
-        Intent(this, PairReplyReceiver::class.java).setAction(ACTION_PAIR_REPLY),
-        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
-    )
+    private fun pairReplyPendingIntent(action: String, requestCode: Int, code: String?): PendingIntent {
+        val intent = Intent(this, PairReplyReceiver::class.java).setAction(action)
+        if (code != null) intent.putExtra(EXTRA_CODE, code)
+        return PendingIntent.getBroadcast(
+            this,
+            requestCode,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
+        )
+    }
 
     private fun registerNetwork() {
         val manager = getSystemService(ConnectivityManager::class.java) ?: return
@@ -1045,7 +1092,8 @@ class ControlService : Service() {
     companion object {
         const val ACTION_START = "cz.slush.adbanywhere.START"
         const val ACTION_PAIR = "cz.slush.adbanywhere.PAIR"
-        const val ACTION_PAIR_REPLY = "cz.slush.adbanywhere.PAIR_REPLY"
+        private const val ACTION_PAIR_CODE_REPLY = "cz.slush.adbanywhere.PAIR_CODE_REPLY"
+        private const val ACTION_PAIR_PORT_REPLY = "cz.slush.adbanywhere.PAIR_PORT_REPLY"
         const val ACTION_RESTART = "cz.slush.adbanywhere.RESTART"
         const val ACTION_REVOKE_KEYS = "cz.slush.adbanywhere.REVOKE_KEYS"
         const val ACTION_WATCHDOG = "cz.slush.adbanywhere.WATCHDOG"
@@ -1058,12 +1106,24 @@ class ControlService : Service() {
         private const val NETWORK_SETTLE_MS = 1_500L
         private const val SYSTEM_ADB_WAIT_MS = 15_000L
         const val EXTRA_CODE = "code"
+        const val EXTRA_PAIR_PORT = "pair_port"
         const val EXTRA_PORT = "port"
-        const val EXTRA_PAIR_INPUT = "pair_input"
+        const val INPUT_PAIR_CODE = "pair_code"
+        const val INPUT_PAIR_PORT = "pair_port"
 
-        fun start(context: Context, action: String, extra: String? = null) {
-            val intent = Intent(context, ControlService::class.java).setAction(action)
-            if (extra != null) intent.putExtra(EXTRA_CODE, extra)
+        fun start(context: Context, action: String) {
+            send(context, Intent(context, ControlService::class.java).setAction(action))
+        }
+
+        fun startPair(context: Context, code: String, port: String?) {
+            val intent = Intent(context, ControlService::class.java)
+                .setAction(ACTION_PAIR)
+                .putExtra(EXTRA_CODE, code)
+            if (port != null) intent.putExtra(EXTRA_PAIR_PORT, port)
+            send(context, intent)
+        }
+
+        private fun send(context: Context, intent: Intent) {
             try {
                 ContextCompat.startForegroundService(context, intent)
             } catch (_: Exception) {

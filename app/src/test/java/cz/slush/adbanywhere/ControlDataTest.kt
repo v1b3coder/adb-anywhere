@@ -32,6 +32,17 @@ class ControlDataTest {
     }
 
     @Test
+    fun pairingCodeParsesEachStep() {
+        assertEquals("123456", PairingCode.parseCode(" 123456 "))
+        assertEquals(37123, PairingCode.parsePort(" 37123 "))
+        assertNull(PairingCode.parseCode("12345"))
+        assertNull(PairingCode.parseCode("abcdef"))
+        assertNull(PairingCode.parsePort("0"))
+        assertNull(PairingCode.parsePort("65536"))
+        assertNull(PairingCode.parsePort("37 123"))
+    }
+
+    @Test
     fun pairingCodeRejectsBadValues() {
         assertNull(PairingCode.parse(""))
         assertNull(PairingCode.parse("123456"))

@@ -11,6 +11,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import cz.slush.adbanywhere.data.PairingCode
 import cz.slush.adbanywhere.service.AppLog
 import cz.slush.adbanywhere.service.ControlService
 import cz.slush.adbanywhere.ui.AdbAnywhereTheme
@@ -46,7 +47,7 @@ class MainActivity : ComponentActivity() {
     private fun handleIntent(intent: Intent?) {
         if (!BuildConfig.DEBUG) return
         intent?.getIntExtra("tlsPort", 0)?.takeIf { it > 0 }?.let(viewModel::rememberTlsPort)
-        intent?.getStringExtra("pair")?.let(viewModel::pair)
+        intent?.getStringExtra("pair")?.let { PairingCode.parse(it) }?.let(viewModel::pair)
         // The app only starts the daemon on an explicit start, so the harness
         // presses the same two buttons the user does.
         if (intent?.getBooleanExtra("start", false) == true) viewModel.start()

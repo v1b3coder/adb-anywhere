@@ -14,6 +14,7 @@ import androidx.lifecycle.viewModelScope
 import cz.slush.adbanywhere.data.AndroidPubKey
 import cz.slush.adbanywhere.data.AppKeyStore
 import cz.slush.adbanywhere.data.DeveloperKey
+import cz.slush.adbanywhere.data.PairingCode
 import cz.slush.adbanywhere.data.Prefs
 import cz.slush.adbanywhere.service.AppLog
 import cz.slush.adbanywhere.service.ControlBus
@@ -52,9 +53,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         ControlService.start(getApplication(), ControlService.ACTION_START)
     }
 
-    fun pair(code: String) {
+    fun pair(pairing: PairingCode) {
         AppLog.info("ui", "pair requested")
-        ControlService.start(getApplication(), ControlService.ACTION_PAIR, code)
+        ControlService.startPair(getApplication(), pairing.code, pairing.port.toString())
     }
 
     fun restart() {

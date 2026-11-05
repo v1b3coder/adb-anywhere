@@ -39,7 +39,8 @@ android.permission.WRITE_SECURE_SETTINGS` command instead of failing silently.
 3. Open Settings → Developer options → Wireless debugging → *Pair device with
    pairing code*.
 4. Tap *Show pairing notification* in the app, pull down the shade and reply with
-   `code:port`. The same value can be entered in the app's manual field.
+   the six-digit code, then with the port. The same values can be entered in the
+   app's manual fields.
 5. The app pairs, grants `WRITE_SECURE_SETTINGS`, deploys the patched `adbd`,
    verifies loopback and the VPN listener, and turns Android's wireless debugging
    off.

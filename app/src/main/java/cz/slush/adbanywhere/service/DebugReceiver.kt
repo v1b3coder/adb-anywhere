@@ -9,15 +9,16 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import cz.slush.adbanywhere.BuildConfig
+import cz.slush.adbanywhere.data.PairingCode
 
 class DebugReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (!BuildConfig.DEBUG) return
         when (intent.action) {
             ACTION_PAIR -> {
-                val code = intent.getStringExtra("code") ?: return
+                val pairing = intent.getStringExtra("code")?.let { PairingCode.parse(it) } ?: return
                 AppLog.info("debug", "pair intent received")
-                ControlService.start(context, ControlService.ACTION_PAIR, code)
+                ControlService.startPair(context, pairing.code, pairing.port.toString())
             }
         }
     }

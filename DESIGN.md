@@ -94,7 +94,7 @@ These are facts from AOSP `main`, not assumptions.
 | D6 | Watchdog | Keeps `ADB_WIFI_ENABLED=0`; probes 5555 on every tick and reports the open listener as the §8 residual warning; restarts the patched adbd through the system adbd when reachable |
 | D7 | Policy | Patched adbd enforces per-key and per-service rules; VPN ACL is the outer boundary |
 | D8 | UI stack | Kotlin, Jetpack Compose, Material 3; package `cz.slush.adbanywhere` |
-| D9 | Bootstrap pairing | Notification `RemoteInput` with `code:port` |
+| D9 | Bootstrap pairing | Two `RemoteInput` notifications: the six-digit code first, then the port |
 | D10 | Patched adbd transports | TCP only; USB and vsock disabled |
 | D11 | Settings UI | Shows the current ADB state and any warning in the UI and in the persistent foreground notification; no system-adb switch |
 | D12 | Failure policy | Explicit error and recovery steps; no silent fallback and no random-port redirect |
@@ -301,10 +301,10 @@ has no TCP listener, so there is nothing to monitor or turn off.
 
 1. User installs the app, opens it and taps ▶️ Start.
 2. App requests notification permission.
-3. App posts the pairing notification with a `code:port` `RemoteInput`.
+3. App posts the pairing notification asking for the six-digit code.
 4. User opens Settings → Developer options → Wireless debugging → Pair device with
    pairing code.
-5. User pulls the shade over the dialog and enters `code:port`.
+5. User pulls the shade over the dialog, enters the code, then the port.
 6. App pairs with the system adbd over loopback and stores its key.
 7. App self-grants `WRITE_SECURE_SETTINGS` over ADB.
 8. App extracts the patched adbd for the device ABI, pushes it to
