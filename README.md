@@ -74,10 +74,12 @@ listening.
 - Removing a key removes it from the key file and restarts the daemon, so the
   sessions that the key authenticated end. Per-key policy and filtering are not
   implemented yet: every key in the file may open every supported service.
-- Android's wireless debugging is turned off after the daemon is verified. The app
-  never stops the system adbd: on devices where init kills its cgroup, that would
-  also stop the patched adbd. The system adbd stays on USB and is not reachable
-  over TCP after `ADB_WIFI_ENABLED=0`.
+- Start turns the system adbd on when it is off and leaves it on while the patched
+  adbd runs. Stop stops the patched adbd and turns the system adbd off, so a
+  stopped app has no ADB at all, not even on USB. Boot after a stop re-asserts off.
+- The app never stops the system adbd while it needs the patched adbd: on devices
+  where init kills the adbd cgroup, that would also stop the patched adbd. The
+  security benefit is at Stop, not during a run.
 - If the system adbd is reachable over the network anyway, the app shows the
   warning in the UI and in its persistent foreground notification.
 - No root, no custom ROM, no proxy fallback and no random-port redirect.

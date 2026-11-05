@@ -33,6 +33,8 @@ import cz.slush.adbanywhere.adb.AdbManager
 import cz.slush.adbanywhere.adb.DaemonManager
 import cz.slush.adbanywhere.adb.Shell
 import cz.slush.adbanywhere.adb.SystemAdb
+import cz.slush.adbanywhere.data.AdbLifecycle
+import cz.slush.adbanywhere.data.AdbState
 import cz.slush.adbanywhere.data.AndroidPubKey
 import cz.slush.adbanywhere.data.AppKeyStore
 import cz.slush.adbanywhere.data.DeveloperKey
@@ -119,7 +121,7 @@ class ControlService : Service() {
             ACTION_START -> {
                 prefs.userWantsRunning = true
                 AppLog.info("service", "user asked to run")
-                scope.launch { setup() }
+                scope.launch { setup(enableSystemAdb = true) }
             }
             // Keys and settings are persisted either way; a stopped app applies them
             // on the next start instead of deploying a daemon the user turned off.
@@ -134,14 +136,14 @@ class ControlService : Service() {
             ACTION_RESTART -> {
                 prefs.userWantsRunning = true
                 AppLog.info("service", "restart requested")
-                scope.launch { setup(forceRestart = true) }
+                scope.launch { setup(forceRestart = true, enableSystemAdb = true) }
             }
             // A revocation must terminate sessions that were authenticated with the
             // removed key, so it restarts the daemon like an explicit restart. The UI
             // only sends it while the daemon runs.
             ACTION_REVOKE_KEYS -> {
                 AppLog.info("service", "key revocation; restarting to close sessions")
-                scope.launch { setup(forceRestart = true) }
+                scope.launch { setup(forceRestart = true, enableSystemAdb = true) }
             }
             ACTION_PAIR -> {
                 val code = intent.getStringExtra(EXTRA_CODE)
@@ -217,7 +219,10 @@ class ControlService : Service() {
         return true
     }
 
-    private suspend fun setup(forceRestart: Boolean = false) {
+    private suspend fun setup(
+        forceRestart: Boolean = false,
+        enableSystemAdb: Boolean = false,
+    ) {
         setupMutex.withLock {
             AppLog.info("setup", "started; restart=$forceRestart")
             ControlBus.update {
@@ -233,6 +238,7 @@ class ControlService : Service() {
             // A failed attempt must undo what it changed: it may have written the
             // bootstrap settings or reached a shell on the device.
             var cleanupRequired = false
+            var adbStateBefore: AdbState? = null
             try {
                 val vpnIp = VpnDetector.currentVpnAddress(this)
                 prefs.lastVpnIp = vpnIp ?: ""
@@ -262,7 +268,21 @@ class ControlService : Service() {
                     // bootstrap path after a reboot without a pre-existing app shell.
                     cleanupRequired = true
                     AppLog.info("setup", "bootstrap: opening system wireless debugging")
-                    if (SystemSettings.isWifiConnected(this)) {
+                    val current = SystemSettings.adbState(this)
+                    if (enableSystemAdb) {
+                        adbStateBefore = current
+                        val desired = AdbLifecycle.start(
+                            current = current,
+                            patchedAdbdAlive = daemonAlive,
+                            wifiConnected = SystemSettings.isWifiConnected(this),
+                        )
+                        SystemSettings.applyAdbState(this, desired)
+                        AppLog.info(
+                            "setup",
+                            "start: adb_enabled ${current.adbEnabled} -> ${desired.adbEnabled}, " +
+                                "adb_wifi_enabled ${current.adbWifiEnabled} -> ${desired.adbWifiEnabled}",
+                        )
+                    } else if (SystemSettings.isWifiConnected(this)) {
                         SystemSettings.setAdbWifiEnabled(this, true)
                         AppLog.info("setup", "bootstrap: adb_wifi_enabled=1")
                     }
@@ -385,7 +405,7 @@ class ControlService : Service() {
                 fail(e.message ?: "Setup failed")
             } finally {
                 if (cleanupRequired && ControlBus.state.value.phase != Phase.Running) {
-                    abortSetup()?.let { warning ->
+                    abortSetup(adbStateBefore)?.let { warning ->
                         val error = ControlBus.state.value.error
                         fail(if (error.isEmpty()) warning else "$error $warning")
                     }
@@ -403,8 +423,9 @@ class ControlService : Service() {
      * where the patched daemon is verified, and turning it off here would cut the
      * very connection the retry needs.
      */
-    private suspend fun abortSetup(): String? =
+    private suspend fun abortSetup(adbStateBefore: AdbState?): String? =
         withContext(Dispatchers.IO + NonCancellable) {
+            val context = this@ControlService
             val stopped = runCatching {
                 val shell = runCatching { daemonShell() }.getOrNull() ?: system.shell
                 try {
@@ -421,6 +442,10 @@ class ControlService : Service() {
                 Socket().use { it.connect(InetSocketAddress("127.0.0.1", prefs.loopbackPort), 300) }
                 true
             }.getOrDefault(false)
+            adbStateBefore?.let { previous ->
+                runCatching { SystemSettings.applyAdbState(context, previous) }
+                    .onFailure { AppLog.warn("setup", "cleanup cannot restore adb: ${it.message}") }
+            }
             AppLog.warn(
                 "setup",
                 "cleanup stopped=$stopped listening=$daemonListening",
@@ -711,6 +736,18 @@ class ControlService : Service() {
                 val stillListening = daemonListening()
                 cancelWatchdog()
                 watchdogJob?.cancel()
+                // Stop is the explicit point where the app releases the system adbd.
+                val adbStopped = withContext(Dispatchers.IO) {
+                    runCatching { SystemSettings.applyAdbState(this@ControlService, AdbLifecycle.stop()) }
+                }
+                if (adbStopped.isFailure) {
+                    fail(
+                        "Could not turn the system adb off: " +
+                            (adbStopped.exceptionOrNull()?.message ?: "unknown error"),
+                    )
+                    return@withLock
+                }
+                AppLog.info("service", "system adb off")
                 // The system adb state outlives the daemon: keep showing it.
                 refreshAdbStatus()
                 // The notification collector must not re-post the stopped state

@@ -1,8 +1,8 @@
 /*
  * SystemSettings - the app holds WRITE_SECURE_SETTINGS after the one-time ADB
- * grant, so it can re-assert the wireless-debugging bootstrap and hardening
- * settings directly. It reads ADB_ENABLED but never writes it: stopping the system
- * adbd would also kill the patched adbd on devices that share its cgroup.
+ * grant, so it can re-assert the system ADB lifecycle and the wireless-debugging
+ * hardening settings directly. It writes ADB_ENABLED only for Start/Stop, never
+ * while the patched adbd must keep running.
  */
 package cz.slush.adbanywhere.service
 
@@ -10,7 +10,11 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.provider.Settings
+import cz.slush.adbanywhere.data.AdbLifecycle
+import cz.slush.adbanywhere.data.AdbSetting
+import cz.slush.adbanywhere.data.AdbState
 import cz.slush.adbanywhere.data.AdbStatus
+import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.Socket
 
@@ -21,6 +25,10 @@ object SystemSettings {
     fun adbWifiEnabled(context: Context): Int =
         Settings.Global.getInt(context.contentResolver, "adb_wifi_enabled", 0)
 
+    fun setAdbEnabled(context: Context, enabled: Boolean): Boolean = runCatching {
+        Settings.Global.putInt(context.contentResolver, Settings.Global.ADB_ENABLED, if (enabled) 1 else 0)
+    }.getOrDefault(false)
+
     fun setAdbWifiEnabled(context: Context, enabled: Boolean): Boolean = runCatching {
         Settings.Global.putInt(
             context.contentResolver,
@@ -28,6 +36,30 @@ object SystemSettings {
             if (enabled) 1 else 0,
         )
     }.getOrDefault(false)
+
+    fun adbState(context: Context): AdbState = AdbState(
+        adbEnabled = adbEnabled(context),
+        adbWifiEnabled = adbWifiEnabled(context),
+    )
+
+    /** Writes only the settings whose value differs, then verifies the result. */
+    fun applyAdbState(context: Context, desired: AdbState) {
+        val current = adbState(context)
+        for (setting in AdbLifecycle.changes(current, desired)) {
+            val ok = when (setting) {
+                AdbSetting.ADB_ENABLED -> setAdbEnabled(context, desired.adbEnabled != 0)
+                AdbSetting.ADB_WIFI_ENABLED -> setAdbWifiEnabled(context, desired.adbWifiEnabled != 0)
+            }
+            if (!ok) throw IOException("Could not write ${setting.name.lowercase()}.")
+        }
+        val actual = adbState(context)
+        if (actual != desired) {
+            throw IOException(
+                "The system adb did not reach adb_enabled=${desired.adbEnabled} " +
+                    "adb_wifi_enabled=${desired.adbWifiEnabled}.",
+            )
+        }
+    }
 
     /**
      * DESIGN §7: 0 removes the framework's wireless-debugging timeout, so the
