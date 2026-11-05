@@ -45,10 +45,8 @@ import kotlinx.coroutines.withContext
 @Composable
 fun SettingsScreen(
     state: ControlState,
-    keepSystemAdbOff: Boolean,
     diagnosticLog: Boolean,
     appKey: String,
-    onToggleKeepOff: (Boolean) -> Unit,
     onToggleDiagnosticLog: (Boolean) -> Unit,
     onSavePorts: (Int, Int) -> String?,
     onBatteryExemption: (Activity) -> Unit,
@@ -64,7 +62,7 @@ fun SettingsScreen(
     }
     var status by remember { mutableStateOf<AdbStatus?>(null) }
     var reload by remember { mutableStateOf(0) }
-    LaunchedEffect(reload, keepSystemAdbOff, state.phase) {
+    LaunchedEffect(reload, state.phase) {
         status = withContext(Dispatchers.IO) { SystemSettings.status(context) }
     }
 
@@ -72,27 +70,6 @@ fun SettingsScreen(
         contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 96.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        item {
-            SectionCard("Keep system adb off") {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        "Keeps Android's system adb stopped. The original value is " +
-                            "restored when this is turned off.",
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Switch(
-                        checked = keepSystemAdbOff,
-                        onCheckedChange = onToggleKeepOff,
-                    )
-                }
-            }
-        }
-
         item {
             SectionCard("Battery") {
                 Text(
@@ -196,7 +173,7 @@ fun SettingsScreen(
                         if (current.port5555Open) "open" else "closed",
                         mono = true,
                     )
-                    current.warnings(keepSystemAdbOff).forEach { warning ->
+                    current.warnings().forEach { warning ->
                         Text(
                             warning,
                             style = MaterialTheme.typography.bodyMedium,

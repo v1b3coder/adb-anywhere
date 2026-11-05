@@ -20,10 +20,6 @@ class Prefs(context: Context) {
         get() = prefs.getInt("vpn_port", DEFAULT_VPN_PORT)
         set(value) = prefs.edit().putInt("vpn_port", value).apply()
 
-    var keepSystemAdbOff: Boolean
-        get() = prefs.getBoolean("keep_system_adb_off", false)
-        set(value) = prefs.edit().putBoolean("keep_system_adb_off", value).apply()
-
     var setupComplete: Boolean
         get() = prefs.getBoolean("setup_complete", false)
         set(value) = prefs.edit().putBoolean("setup_complete", value).apply()
@@ -45,10 +41,6 @@ class Prefs(context: Context) {
     var paired: Boolean
         get() = prefs.getBoolean("paired", false)
         set(value) = prefs.edit().putBoolean("paired", value).apply()
-
-    var originalAdbEnabled: String
-        get() = prefs.getString("original_adb_enabled", "") ?: ""
-        set(value) = prefs.edit().putString("original_adb_enabled", value).apply()
 
     var lastVpnIp: String
         get() = prefs.getString("last_vpn_ip", "") ?: ""

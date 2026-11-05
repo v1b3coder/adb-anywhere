@@ -70,7 +70,6 @@ fun AppRoot(viewModel: AppViewModel) {
     val appLogs by viewModel.appLog.collectAsStateWithLifecycle()
     val diagnosticLog by viewModel.diagnosticLog.collectAsStateWithLifecycle()
     val appFingerprint by viewModel.appFingerprint.collectAsStateWithLifecycle()
-    val keepOff by viewModel.keepSystemAdbOff.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -156,7 +155,6 @@ fun AppRoot(viewModel: AppViewModel) {
             when (screen) {
                 Screen.Home -> HomeScreen(
                     state = state,
-                    keepSystemAdbOff = keepOff,
                     onSetup = { screen = Screen.Setup; viewModel.start() },
                     onStart = viewModel::start,
                     onStop = viewModel::stop,
@@ -193,10 +191,8 @@ fun AppRoot(viewModel: AppViewModel) {
                 )
                 Screen.Settings -> SettingsScreen(
                     state = state,
-                    keepSystemAdbOff = keepOff,
                     diagnosticLog = diagnosticLog,
                     appKey = appFingerprint,
-                    onToggleKeepOff = viewModel::setKeepSystemAdbOff,
                     onToggleDiagnosticLog = viewModel::setDiagnosticLog,
                     onSavePorts = viewModel::setPorts,
                     onBatteryExemption = { viewModel.requestBatteryExemption(it) },

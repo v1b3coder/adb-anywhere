@@ -74,9 +74,10 @@ listening.
 - Removing a key removes it from the key file and restarts the daemon, so the
   sessions that the key authenticated end. Per-key policy and filtering are not
   implemented yet: every key in the file may open every supported service.
-- Android's wireless debugging is turned off after the daemon is verified. *Keep
-  system adb off* also sets `ADB_ENABLED=0` and restores the original value when
-  turned off.
+- Android's wireless debugging is turned off after the daemon is verified. The app
+  never stops the system adbd: on devices where init kills its cgroup, that would
+  also stop the patched adbd. The system adbd stays on USB and is not reachable
+  over TCP after `ADB_WIFI_ENABLED=0`.
 - No root, no custom ROM, no proxy fallback and no random-port redirect.
 
 ## Build and tests

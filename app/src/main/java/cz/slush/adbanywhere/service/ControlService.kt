@@ -233,7 +233,6 @@ class ControlService : Service() {
             // A failed attempt must undo what it changed: it may have written the
             // bootstrap settings or reached a shell on the device.
             var cleanupRequired = false
-            var adbEnabledBefore = -1
             try {
                 val vpnIp = VpnDetector.currentVpnAddress(this)
                 prefs.lastVpnIp = vpnIp ?: ""
@@ -260,19 +259,9 @@ class ControlService : Service() {
                     ) == PackageManager.PERMISSION_GRANTED
                 ) {
                     // The one-time grant persists, so the app can re-open the
-                    // bootstrap path after a reboot without touching adb.
+                    // bootstrap path after a reboot without a pre-existing app shell.
                     cleanupRequired = true
                     AppLog.info("setup", "bootstrap: opening system wireless debugging")
-                    if (prefs.keepSystemAdbOff) {
-                        // Record the value this run replaces, so a failure can
-                        // restore it and a later harden() keeps the real original.
-                        if (prefs.originalAdbEnabled.isEmpty()) {
-                            prefs.originalAdbEnabled = SystemSettings.adbEnabled(this).toString()
-                        }
-                        adbEnabledBefore = SystemSettings.adbEnabled(this)
-                        SystemSettings.setAdbEnabled(this, true)
-                        AppLog.info("setup", "bootstrap: adb_enabled $adbEnabledBefore -> 1")
-                    }
                     if (SystemSettings.isWifiConnected(this)) {
                         SystemSettings.setAdbWifiEnabled(this, true)
                         AppLog.info("setup", "bootstrap: adb_wifi_enabled=1")
@@ -396,7 +385,7 @@ class ControlService : Service() {
                 fail(e.message ?: "Setup failed")
             } finally {
                 if (cleanupRequired && ControlBus.state.value.phase != Phase.Running) {
-                    abortSetup(adbEnabledBefore)?.let { warning ->
+                    abortSetup()?.let { warning ->
                         val error = ControlBus.state.value.error
                         fail(if (error.isEmpty()) warning else "$error $warning")
                     }
@@ -409,15 +398,13 @@ class ControlService : Service() {
     }
 
     /**
-     * Undoes a failed setup attempt: stops the patched daemon and restores the
-     * ADB_ENABLED value the bootstrap replaced. It deliberately leaves the
-     * system wireless debugging alone: setup did not reach the point where the
-     * patched daemon is verified, and turning it off here would cut the very
-     * connection the retry needs.
+     * Undoes a failed setup attempt: stops the patched daemon. It deliberately
+     * leaves the system wireless debugging alone: setup did not reach the point
+     * where the patched daemon is verified, and turning it off here would cut the
+     * very connection the retry needs.
      */
-    private suspend fun abortSetup(adbEnabledBefore: Int): String? =
+    private suspend fun abortSetup(): String? =
         withContext(Dispatchers.IO + NonCancellable) {
-            val context = this@ControlService
             val stopped = runCatching {
                 val shell = runCatching { daemonShell() }.getOrNull() ?: system.shell
                 try {
@@ -434,12 +421,9 @@ class ControlService : Service() {
                 Socket().use { it.connect(InetSocketAddress("127.0.0.1", prefs.loopbackPort), 300) }
                 true
             }.getOrDefault(false)
-            if (adbEnabledBefore >= 0) {
-                SystemSettings.setAdbEnabled(context, adbEnabledBefore == 1)
-            }
             AppLog.warn(
                 "setup",
-                "cleanup stopped=$stopped listening=$daemonListening adb_enabled=$adbEnabledBefore",
+                "cleanup stopped=$stopped listening=$daemonListening",
             )
             if (daemonListening) {
                 "Cleanup incomplete: the custom adb still listens on " +
@@ -558,28 +542,14 @@ class ControlService : Service() {
         ).ensureOff()
     }
 
+    /**
+     * D5: turns the system wireless debugging off after the patched adbd is
+     * running. It never stops the system adbd: on devices where init kills the
+     * adbd cgroup, stopping it would also kill the patched adbd.
+     */
     private suspend fun harden() = withContext(Dispatchers.IO) {
-        val context = this@ControlService
         ensureWifiDebuggingOff()
         AppLog.info("harden", "system wireless debugging off")
-        if (prefs.keepSystemAdbOff) {
-            if (prefs.originalAdbEnabled.isEmpty()) {
-                prefs.originalAdbEnabled = SystemSettings.adbEnabled(context).toString()
-            }
-            if (!SystemSettings.setAdbEnabled(context, false)) {
-                throw IOException("Could not turn the system adb off. Check WRITE_SECURE_SETTINGS.")
-            }
-            if (SystemSettings.adbEnabled(context) != 0) {
-                throw IOException("The system adb could not be turned off. No random-port redirect is attempted.")
-            }
-            AppLog.info("harden", "adb_enabled=0")
-        } else {
-            if (prefs.originalAdbEnabled == "1" && SystemSettings.adbEnabled(context) != 1) {
-                SystemSettings.setAdbEnabled(context, true)
-                prefs.originalAdbEnabled = ""
-                AppLog.info("harden", "restored adb_enabled=1")
-            }
-        }
     }
 
     /**
@@ -658,31 +628,6 @@ class ControlService : Service() {
         }
         if (!SystemSettings.ensureNoAdbConnectionTimeout(this)) {
             AppLog.warn("watchdog", "adb_allowed_connection_time=0 was not accepted")
-        }
-        if (prefs.keepSystemAdbOff) {
-            val open = withContext(Dispatchers.IO) {
-                runCatching {
-                    val shell = daemonShell()
-                    val open5555 = shell.probe("127.0.0.1", 5555)
-                    if (open5555) {
-                        shell.exec("settings put global adb_enabled 0")
-                    }
-                    shell.close()
-                    open5555
-                }.getOrDefault(false)
-            }
-            if (open) {
-                AppLog.warn("watchdog", "system adb listens on 5555; turning it off")
-                val still = withContext(Dispatchers.IO) {
-                    runCatching {
-                        Socket().use { it.connect(InetSocketAddress("127.0.0.1", 5555), 300) }
-                        true
-                    }.getOrDefault(false)
-                }
-                if (still) {
-                    fail("The system adb could not be stopped. No random-port redirect is attempted.")
-                }
-            }
         }
         refreshAdbStatus()
         AppLog.info("watchdog", "ok")

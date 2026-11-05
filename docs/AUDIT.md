@@ -14,6 +14,10 @@ there are P0 correctness, security, and recovery defects, and the implementation
 has drifted substantially from the design. The app must not be described as
 production-ready until the P0 items below are fixed and the design is reconciled.
 
+**Later change:** the "Keep system adb off" switch was removed. The app now only
+turns wireless debugging off and never writes `ADB_ENABLED`; stopping the system
+adbd also killed the patched adbd on devices that share its cgroup.
+
 
 ## 0. Scorecard (informal)
 

@@ -1,7 +1,8 @@
 /*
  * SystemSettings - the app holds WRITE_SECURE_SETTINGS after the one-time ADB
- * grant, so it can re-assert the bootstrap state directly and does not need a
- * reachable shell to turn system adbd off again.
+ * grant, so it can re-assert the wireless-debugging bootstrap and hardening
+ * settings directly. It reads ADB_ENABLED but never writes it: stopping the system
+ * adbd would also kill the patched adbd on devices that share its cgroup.
  */
 package cz.slush.adbanywhere.service
 
@@ -19,10 +20,6 @@ object SystemSettings {
 
     fun adbWifiEnabled(context: Context): Int =
         Settings.Global.getInt(context.contentResolver, "adb_wifi_enabled", 0)
-
-    fun setAdbEnabled(context: Context, enabled: Boolean): Boolean = runCatching {
-        Settings.Global.putInt(context.contentResolver, Settings.Global.ADB_ENABLED, if (enabled) 1 else 0)
-    }.getOrDefault(false)
 
     fun setAdbWifiEnabled(context: Context, enabled: Boolean): Boolean = runCatching {
         Settings.Global.putInt(

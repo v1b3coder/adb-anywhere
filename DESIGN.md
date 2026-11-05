@@ -90,13 +90,13 @@ These are facts from AOSP `main`, not assumptions.
 | D2 | Data plane | One patched `adbd` instance with two listeners: `127.0.0.1:<portA>` for the app, `<vpn-ip>:<portB>` for developer machines |
 | D3 | App key | Ephemeral RSA keypair generated on first run; private key in app-private storage; public key in the patched adbd key file |
 | D4 | Developer machine pairing | QR or pasted public key from the developer machine; app confirms the fingerprint; user labels the machine; no pairing listener on the phone |
-| D5 | System adbd hardening | `ADB_WIFI_ENABLED=0` always after the patched adbd is running; `ADB_ENABLED=0` only with "Keep system adb off" (default off; restore the original value when unchecked) |
-| D6 | Watchdog | Keeps the D5 state; probes 5555 on every tick and sets `ADB_ENABLED=0` only when "Keep system adb off" is on; reports the open listener as the §8 residual warning; restarts the patched adbd |
+| D5 | System adbd hardening | `ADB_WIFI_ENABLED=0` always after the patched adbd is running; the system adbd stays on USB and the app never stops it |
+| D6 | Watchdog | Keeps the D5 state; probes 5555 on every tick and reports the open listener as the §8 residual warning; restarts the patched adbd through the system adbd when reachable |
 | D7 | Policy | Patched adbd enforces per-key and per-service rules; VPN ACL is the outer boundary |
 | D8 | UI stack | Kotlin, Jetpack Compose, Material 3; package `cz.slush.adbanywhere` |
 | D9 | Bootstrap pairing | Notification `RemoteInput` with `code:port` |
 | D10 | Patched adbd transports | TCP only; USB and vsock disabled |
-| D11 | Settings UI | "Keep system adb off" checkbox; shows the current ADB state and any warning |
+| D11 | Settings UI | Shows the current ADB state and any warning; no system-adb switch |
 | D12 | Failure policy | Explicit error and recovery steps; no silent fallback and no random-port redirect |
 
 ## 6. Architecture
@@ -188,11 +188,12 @@ because the key is idempotent; removing the key revokes it.
 - Mandatory: `ADB_WIFI_ENABLED=0` after the patched adbd is running. The
   framework stops the system TLS server (`persist.adb.tls_server.enable=0`); no ADB
   call is needed. The system adbd stays on USB, which is not a network listener.
-- Optional, "Keep system adb off" checked: `ADB_ENABLED=0`. `AdbService` stops
-  adbd and `UsbDeviceManager` removes ADB from the USB functions. The app stores
-  the original value and restores it when the checkbox is turned off.
-- Bootstrap: `ADB_ENABLED=1` and `ADB_WIFI_ENABLED=1` on Wi-Fi. The TLS server
-  starts; the app reads `service.adb.tls.port` and connects.
+- The app never stops the system adbd: on devices where init kills the adbd
+  cgroup, stopping it would also kill the patched adbd. `ADB_ENABLED` is read for
+  the status UI but never written.
+- Bootstrap: the system adbd must already be on (the app does not enable
+  `ADB_ENABLED`); `ADB_WIFI_ENABLED=1` on Wi-Fi opens the TLS path, and the app
+  reads `service.adb.tls.port` and connects.
 - The patched adbd ignores both toggles.
 
 ### Port behavior
@@ -247,11 +248,9 @@ has no TCP listener, so there is nothing to monitor or turn off.
 
 - Mandatory: set `ADB_WIFI_ENABLED=0`. The framework stops the system TLS
   server.
-- If "Keep system adb off" is checked: keep `ADB_ENABLED=0`. Probe
-  `127.0.0.1:5555` once after boot, after a network change, and after a USB
-  state change; if it is open, set `ADB_ENABLED=0`.
-- If the checkbox is off: leave `ADB_ENABLED` alone. Show an explicit warning and
-  link the checkbox if `127.0.0.1:5555` is open.
+- Probe `127.0.0.1:5555` on every tick and show an explicit warning when it is
+  open. Never set `ADB_ENABLED=0`: stopping the system adbd would also kill the
+  patched adbd on devices that share its cgroup.
 - Poll `127.0.0.1:<portA>` every 60 s while the screen is on and every 15 min
   via `AlarmManager.setExactAndAllowWhileIdle` otherwise.
 - If `<portA>` is down, restart the patched adbd through the system adbd if it is
@@ -259,8 +258,8 @@ has no TCP listener, so there is nothing to monitor or turn off.
 - Register `UsbManager.ACTION_USB_STATE` (sticky) and
   `ConnectivityManager.NetworkCallback`.
 - Backoff and hysteresis; never fight an explicit user "off".
-- If `ADB_ENABLED=0` does not stop adbd, show an explicit error and stop;
-  no random-port redirect.
+- The app never writes `ADB_ENABLED`; if the system adbd is off, bootstrap
+  fails with explicit recovery steps and no random-port redirect.
 
 ## 7. Flows
 
@@ -341,12 +340,8 @@ has no TCP listener, so there is nothing to monitor or turn off.
 1. `ACTION_USB_STATE` fires.
 2. If the system adbd is on USB, it is not a network listener; the app records
    this state and the patched adbd is unaffected.
-3. If the system adbd returns to TCP and "Keep system adb off" is on, the
-   watchdog sets `ADB_ENABLED=0`.
-4. If "Keep system adb off" is off, the app shows an explicit warning that the
-   plain listener is back and links the checkbox.
-5. If `ADB_ENABLED=0` does not stop it, the app shows an explicit error and
-   stops; no random-port redirect.
+3. If the system adbd returns to TCP, the app shows an explicit warning that the
+   plain listener is back. It never sets `ADB_ENABLED=0`.
 
 ## 8. Security model
 
@@ -358,10 +353,9 @@ has no TCP listener, so there is nothing to monitor or turn off.
 - **App channel**: loopback, independent of the VPN.
 - **System adbd**: USB (left on); not reachable over TCP after
   `ADB_WIFI_ENABLED=0`.
-- **Residual**: on devices where the system adbd exposes 5555, set
-  `ADB_ENABLED=0` only when "Keep system adb off" is on; otherwise show an
-  explicit warning and link the checkbox. If `ADB_ENABLED=0` fails, show an
-  explicit error; no random-port redirect.
+- **Residual**: on devices where the system adbd exposes 5555, show an explicit
+  warning. The app never stops the system adbd; the user must do that outside the
+  app, and the patched adbd may stop with it.
 - **Pairing**: QR is out-of-band, one-time, fingerprint-confirmed. No listener.
 - **Keys**: app key is ephemeral; developer keys are public only; private keys
   never leave their owners.
@@ -375,8 +369,8 @@ has no TCP listener, so there is nothing to monitor or turn off.
 | Failure | Response |
 |---|---|
 | Patched adbd dies | Restart via system adbd if reachable; otherwise show an explicit error with recovery steps |
-| System adbd returns to TCP | Watchdog sets `ADB_ENABLED=0` if "Keep system adb off" is on; otherwise shows an explicit warning |
-| `ADB_ENABLED=0` does not stop adbd | Show an explicit error; no random-port redirect |
+| System adbd returns to TCP | Watchdog shows an explicit warning; no `ADB_ENABLED` write |
+| System adbd is off | Bootstrap fails with explicit recovery steps; the app does not enable it |
 | VPN address changes | Restart patched adbd with the new address; loopback stays |
 | VPN down | Remove VPN listener; app still controls via loopback |
 | App key lost | Re-pair via notification; regenerate key; rewrite key file |
@@ -420,13 +414,10 @@ a different mode.
 - Reboot on cellular with no system adbd TCP listener: the app needs one
   Wi-Fi connection to bootstrap. This is a manual recovery step, not a blocker.
 - OEM blocks `pm grant WRITE_SECURE_SETTINGS`.
-- Plain listener remains when "Keep system adb off" is off and `is_usb=false`
-  or `service.adb.tcp.port` is set; the app shows an explicit warning and
-  links the checkbox.
-- `ADB_ENABLED=0` may not stop adbd on some OEMs; show an explicit error;
-  no random-port redirect.
-- After reboot with `ADB_ENABLED=0`, the app must set `ADB_ENABLED=1` to start
-  the system adbd for bootstrap; the TCP listener still depends on `is_usb`.
+- Plain listener remains when `is_usb=false` or `service.adb.tcp.port` is set;
+  the app shows an explicit warning.
+- System adbd is off: the app cannot bootstrap until the user turns USB debugging
+  or wireless debugging on; this is a manual recovery step.
 - Patched adbd is killed by LMK/Doze; no restart path if the system adbd is
   USB-only.
 - No silent fallback: if the patched adbd cannot run, the app shows an explicit

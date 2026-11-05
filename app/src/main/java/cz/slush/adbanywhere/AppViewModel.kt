@@ -41,9 +41,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val _appFingerprint = MutableStateFlow("")
     val appFingerprint: StateFlow<String> = _appFingerprint
 
-    private val _keepSystemAdbOff = MutableStateFlow(prefs.keepSystemAdbOff)
-    val keepSystemAdbOff: StateFlow<Boolean> = _keepSystemAdbOff
-
     init {
         viewModelScope.launch(Dispatchers.IO) {
             _appFingerprint.value = keyStore.publicKey.fingerprint
@@ -132,13 +129,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         // Revocation must close live sessions, so the service restarts the daemon
         // instead of only rewriting the key file (DESIGN.md §8).
         applyIfRunning(ControlService.ACTION_REVOKE_KEYS)
-    }
-
-    fun setKeepSystemAdbOff(enabled: Boolean) {
-        prefs.keepSystemAdbOff = enabled
-        _keepSystemAdbOff.value = enabled
-        AppLog.info("settings", "keep system adb off=$enabled")
-        applyIfRunning(ControlService.ACTION_APPLY_SETTINGS)
     }
 
     fun setPorts(loopback: Int, vpn: Int): String? {

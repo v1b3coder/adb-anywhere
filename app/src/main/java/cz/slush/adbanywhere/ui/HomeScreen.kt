@@ -52,7 +52,6 @@ import cz.slush.adbanywhere.service.Phase
 @Composable
 fun HomeScreen(
     state: ControlState,
-    keepSystemAdbOff: Boolean,
     onSetup: () -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
@@ -75,7 +74,7 @@ fun HomeScreen(
         }
         item {
             SectionCard("Security") {
-                SecurityRow(state.adbStatus, keepSystemAdbOff)
+                SecurityRow(state.adbStatus)
                 OutlinedButton(onClick = onOpenSettings) {
                     Icon(Icons.Rounded.Settings, contentDescription = null)
                     Text("Open settings", modifier = Modifier.padding(start = 8.dp))
@@ -86,7 +85,7 @@ fun HomeScreen(
             SectionCard("How it works") {
                 Text(
                     "Android's wireless debugging is only used once, to deploy the custom adb. " +
-                        "After that the app keeps it off and the custom adb binds loopback plus your VPN address.",
+                        "After that the app turns it off and the custom adb binds loopback plus your VPN address.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -264,8 +263,8 @@ private fun StatusHero(
  * are persistent: they survive every later status message.
  */
 @Composable
-private fun SecurityRow(status: AdbStatus?, keepSystemAdbOff: Boolean) {
-    val warnings = status?.warnings(keepSystemAdbOff).orEmpty()
+private fun SecurityRow(status: AdbStatus?) {
+    val warnings = status?.warnings().orEmpty()
     val off = status != null && warnings.isEmpty()
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -297,7 +296,7 @@ private fun SecurityRow(status: AdbStatus?, keepSystemAdbOff: Boolean) {
             Text(
                 when {
                     status == null -> "Run setup to read the system adb state."
-                    off -> "The custom adb is the only ADB endpoint."
+                    off -> "The custom adb is the network endpoint; the system adb stays on USB."
                     else -> "Open Settings to fix it."
                 },
                 style = MaterialTheme.typography.bodySmall,
