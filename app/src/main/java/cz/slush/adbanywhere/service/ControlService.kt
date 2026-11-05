@@ -946,7 +946,7 @@ class ControlService : Service() {
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .addAction(0, "Open", contentPendingIntent())
         if (state.phase == Phase.Running) {
-            builder.addAction(0, "Restart", servicePendingIntent(ACTION_RESTART))
+            builder.addAction(0, "Stop", servicePendingIntent(ACTION_STOP))
         }
         if (state.phase == Phase.NeedsPairing || state.phase == Phase.Error) {
             builder.addAction(0, "Pair", contentPendingIntent())
