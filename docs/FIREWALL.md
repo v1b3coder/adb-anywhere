@@ -1,6 +1,6 @@
 # adb-anywhere — Firewall design
 
-Status: proposal for review
+Status: decisions recorded; implementation pending
 Date: 2026-11-05
 Scope: optional firewall mode, IP allowlist, foreground-app allowlist, call
 policy with custom filters, audit log
@@ -50,6 +50,10 @@ its own shell commands.
 The requested design puts the TCP listener and relay in the app. The alternative is a
 focused `adbd` patch with a policy socket back to the app. This document proposes
 the app-side relay for the first version and records the trade-off.
+
+**Decision:** the first implementation is the app-side Kotlin relay. It is revisited
+only if throughput or protocol correctness becomes a problem; the parser stays small
+because it reads framing, not service semantics.
 
 | Option | Pros | Cons |
 |---|---|---|
@@ -130,11 +134,13 @@ instead.
   basis for the decision for the lifetime of that prompt.
 - The monitor polls every 1 s while an external session or a prompt exists, and every
   5 s otherwise. The relay never polls on the main thread.
-- On a foreground change away from the allowed set, the relay denies new `A_OPEN`s.
-  Whether it also closes live sessions is an open question (§15). While a prompt
-  is pending, the relay suspends live-session enforcement and keeps the captured
-  package as the basis for the decision; otherwise answering the prompt would trip
-  the rule.
+- On a foreground change away from the allowed set, the relay starts a grace timer
+  (default 15 s, configurable, `0` means immediate). If the target app returns
+  before it expires, nothing happens; otherwise the relay closes live sessions.
+  New connections and new `A_OPEN`s are denied immediately while the target app
+  is not foreground; the timer only delays closing live sessions. While a prompt
+  is pending, the relay suspends the timer and keeps the captured package as the
+  basis for the decision; otherwise answering the prompt would trip the rule.
 - The module is advisory with respect to Android's own app lifecycle: a package can
   be "resumed" while a system dialog is on top. The relay treats the last resumed
   activity as the foreground app, which is the same signal app blockers use.
@@ -261,11 +267,15 @@ Built-in rules, before user rules:
    `reboot:`, `usb:`, `tcpip:`, `abb:`, `restore:`, `disable-verity:`,
    `enable-verity:` and the test services).
 2. Deny `shell:` / `shell,v2:` with no command (interactive) unless the user has
-   created an explicit interactive-shell rule.
+   created an explicit interactive-shell capability rule. That rule allows the
+   session as a whole, not individual commands; it is labelled "full shell, not
+   filtered" in the UI.
 3. Deny any `A_STLS`.
 
 When no rule matches and call policy is on, the default is a prompt. When prompts
-are disabled, the default is deny. The default is never allow.
+are disabled, the default is deny. The default is never allow. A matching `ALLOW` or
+`DENY` rule never prompts; the prompt is only for an unmatched call. When call
+policy is off, every parsed call is allowed; the IP and app allowlists still apply.
 
 ### 7.5 Prompt flow
 
@@ -287,7 +297,9 @@ are disabled, the default is deny. The default is never allow.
    - **Always allow**: create an `ALLOW` rule with every field fixed, then allow.
    - **Custom filter**: open the editor; apply its rule, then allow or deny.
 6. Timeout is 30 s and defaults to deny. A closed prompt, a backgrounded app
-   without a notification tap, or a lost connection also denies.
+   without a notification tap, or a lost connection also denies. The ADB client has
+   no application-level timeout for an `A_OPEN`, so the prompt timeout is the
+   bound; the prompt shows a countdown.
 7. Pending prompts are capped at 8; excess calls are denied and audited.
 8. A `once` grant is bound to the connection and stream id, not to "the next
    call". It cannot be replayed by another connection.
@@ -308,7 +320,9 @@ For paths the editor offers exact or glob. For shell commands it shows the token
 `argv[]` and hides the raw command, because the raw command and the argv are two
 views of the same data. If the call has shell metacharacters, the editor does not
 allow unlocking the command or any argv token; it offers only an exact raw-shell rule
-with an explicit "raw shell" warning.
+with an explicit "raw shell" warning. For an interactive `shell:` call, the editor
+offers a single "full shell, not filtered" capability with an explicit confirmation;
+there are no fields to pin.
 
 The action selector is `Allow` or `Deny`. The preview shows the normalized rule in
 the same notation as the prompt, for example:
@@ -335,7 +349,9 @@ sandbox:
 - `;`, `|`, `&&`, `$(...)`, backticks and redirection change the command. They are
   a `metacharacters` field; a normal argv rule never matches them.
 - Interactive `shell:` is arbitrary after the first approval. It is denied by default
-  and needs an explicit rule.
+  and needs an explicit capability rule. When that rule exists, the relay logs the
+  open and close and does not inspect the typed commands; the UI labels the rule
+  "full shell, not filtered".
 - `sync:` paths can be bypassed with symlinks, `..`, bind mounts and aliases. Path
   matching is lexical and advisory.
 - `tcp:` and `reverse:` expose ports and specs; the rule matches the spec, not what
@@ -386,6 +402,7 @@ var firewallIpAllowlistEnabled: Boolean
 var firewallIpAllowlistJson: String
 var firewallAppAllowlistEnabled: Boolean
 var firewallAppAllowlistJson: String
+var firewallAppGraceMs: Long
 var firewallCallPolicyEnabled: Boolean
 var firewallCallRulesJson: String
 var firewallPromptTimeoutMs: Long
@@ -423,9 +440,10 @@ does not listen; the UI says "VPN is down" and external ADB is unavailable.
 - `FirewallScreen` sections:
   - **Status**: listener address, active sessions, pending prompts, last error.
   - **IP allowlist**: switch, list, add dialog (`a.b.c.d` or `a.b.c.d/n`), delete.
-  - **App allowlist**: switch, selected apps, searchable picker, delete.
-  - **Call policy**: switch, rule list, default action, prompt timeout, audit
-    log link.
+  - **App allowlist**: switch, selected apps, searchable picker, delete, grace
+    period (default 15 s, `0` means immediate).
+  - **Call policy**: switch, rule list, default action, prompt timeout,
+    interactive-shell capability, audit log link.
 - `CallPromptActivity` is a modal screen with the call summary and the four
   actions. It uses `setShowWhenLocked(false)` and refuses to show over the
   keyguard; a locked phone gets a denial instead.
@@ -502,7 +520,8 @@ JVM unit tests:
   `exec:`, `abb_exec:`, `sync:` SEND/RECV/STAT, `tcp:`, `reverse:`, unknown.
 - Rule matcher: exact, prefix, glob, any, first match, built-in denies.
 - Sync parser: split frames, path extraction, truncation, malformed.
-- Foreground app state machine with a fake clock and fake usage events.
+- Foreground app state machine with a fake clock and fake usage events,
+  including the grace timer and a return before it expires.
 - Audit ring, rotation and redaction.
 - Relay with in-memory sockets: allow, deny, hold, timeout, close, oversized frame.
 
@@ -510,8 +529,11 @@ Device/integration:
 
 - Real `adb` client through the relay: `shell`, `exec-out`, `push`, `pull`,
   `install`, `forward`, `reverse`, `logcat`.
+- VPN bind probe: bind and accept on the VPN address from the app process,
+  with and without per-app VPN exclusion.
 - IP deny: `adb connect` fails, no prompt, audit event.
-- App allowlist: switch apps and verify the decision.
+- App allowlist: switch apps and verify the decision, including the grace
+  timer and a return before it expires.
 - Call policy: allow once, always, block, custom filter, timeout.
 - Prompt while backgrounded: notification path.
 - Screen off: deny.
@@ -520,22 +542,33 @@ Device/integration:
 
 ## 14. Phasing
 
-- **Phase 1 — relay and IP allowlist**: mode switch, loopback-only daemon, TCP
-  relay, IP allowlist, connection audit, tab and Settings switch.
+- **Phase 1 — relay and IP allowlist**: probe the app's bind on the VPN
+  address, mode switch, loopback-only daemon, TCP relay, IP allowlist,
+  connection audit, tab and Settings switch.
 - **Phase 2 — call policy**: `A_OPEN` parser, shell/exec/abb_exec/tcp/reverse
-  calls, rules, prompt, custom filter, audit per call.
-- **Phase 3 — app allowlist**: `UsageStats` monitor, launcher picker, live
-  session enforcement, screen-off deny.
+  calls, rules, prompt, custom filter, interactive-shell capability, audit per
+  call.
+- **Phase 3 — app allowlist**: `UsageStats` monitor, launcher picker, grace
+  timer, live session enforcement, screen-off deny.
 - **Phase 4 — depth**: `sync:` path rules, shell-v2 stdin rules, IPv6, audit
   export and redaction presets, per-key defaults.
 
-## 15. Open questions
+## 15. Decisions and residual questions
 
-1. Relay placement: app-side Kotlin relay (as requested) versus a focused
-   `adbd` patch with a policy socket versus a hybrid.
-2. Foreground change: close live sessions at once, deny only new calls, or close
-   after a grace period.
-3. Prompt scope: prompt every `A_OPEN`, or apply rules first and prompt only
-   unmatched calls.
-4. Interactive `shell:` and shell metacharacters: deny by default, allow as one
-   explicitly approved capability, or parse stdin line by line.
+Decisions:
+
+1. Relay placement: app-side Kotlin relay.
+2. Foreground change: close live sessions after a configurable grace period
+   (default 15 s, `0` means immediate); a return before it expires cancels it.
+3. Prompt scope: apply rules first; prompt only an unmatched `A_OPEN`.
+4. Interactive `shell:`: allow as an explicit capability rule; log open and
+   close, do not inspect input; label it "full shell, not filtered".
+
+Residual questions for implementation:
+
+1. IPv6 allowlist entries: add after the IPv4 relay works, or keep IPv4 only.
+2. Audit redaction: default on or off; which field names are treated as
+   secrets.
+3. Per-key defaults: should a developer key carry its own default action and
+   rule set, or share one global rule set.
+4. Audit export: share a file, copy JSONL, or both.
