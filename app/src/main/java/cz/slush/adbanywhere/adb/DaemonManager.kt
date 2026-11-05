@@ -77,8 +77,6 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
         writeBinary(shell)
         writeKeys(shell, appKey, developers)
         stop(shell)
-        Thread.sleep(300)
-        loopbackPortForStop = loopbackPort
         val command = startCommand(shell, vpnIp, loopbackPort, vpnPort, exposeVpn)
         AppLog.info("adb", "starting ${Endpoint.listenSpec(loopbackPort, vpnIp, vpnPort, exposeVpn)}")
         val result = shell.exec(command, 10_000)
@@ -112,16 +110,16 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
         writeBinary(shell)
         writeKeys(shell, appKey, developers)
         Thread.sleep(200)
-        loopbackPortForStop = loopbackPort
         val start = startCommand(shell, vpnIp, loopbackPort, vpnPort, exposeVpn)
         AppLog.info(
             "adb",
             "restarting detached on ${Endpoint.listenSpec(loopbackPort, vpnIp, vpnPort, exposeVpn)}",
         )
-        val script = "kill \$(cat ${shell.quote(pidPath)}) 2>/dev/null || true; " +
-            "sleep 0.4; $start"
+        val scriptPath = "$remoteDir/adbd.restart.sh"
+        shell.writeTextFile(scriptPath, StaleDaemon.restartScript(start))
+        shell.chmod(scriptPath, "700")
         val result = shell.exec(
-            "setsid sh -c ${shell.quote(script)} </dev/null >/dev/null 2>&1 & echo \$!",
+            "setsid sh ${shell.quote(scriptPath)} </dev/null >/dev/null 2>&1 & echo \$!",
             10_000,
         )
         if (!result.ok) {
@@ -144,6 +142,9 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
         while (System.currentTimeMillis() < deadline && shell.probe("127.0.0.1", port)) {
             Thread.sleep(50)
         }
+        if (shell.probe("127.0.0.1", port)) {
+            throw IOException("old adbd still listens on 127.0.0.1:$port")
+        }
         waitForPort(shell, port, timeoutMs)
     }
 
@@ -164,30 +165,17 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
     }
 
     fun stop(shell: Shell) {
-        val pid = shell.exec("cat ${shell.quote(pidPath)} 2>/dev/null").stdout.trim()
-        if (pid.isNotEmpty() && pid.all { it.isDigit() }) {
-            AppLog.info("adb", "stopping pid=$pid")
-            shell.exec("kill $pid 2>/dev/null || true")
-        }
-        // Also stop a stale instance that lost its pid file. Filter on the
-        // process name so the shell running this command is never matched.
-        val marker = remoteDir
-        shell.exec(
-            "ps -A -o PID,NAME,ARGS | " +
-                "awk '\$2==\"adbd\" && index(\$0, \"$marker\") {print \$1}' | " +
-                "xargs -r kill 2>/dev/null || true",
-        )
+        // Kill every vendored adbd, not only the pid file PID: a process that
+        // lost the bind race can have written the pid file last, and a daemon
+        // started from another remote directory has a different pid file. The
+        // /proc scan needs no ps/awk/xargs and no lock.
+        AppLog.info("adb", "stopping every vendored adbd")
+        shell.exec(StaleDaemon.stopScript(), 10_000).requireOk("stop vendored adbd")
         shell.exec("rm -f ${shell.quote(pidPath)}")
-        val deadline = System.currentTimeMillis() + 2_000
-        while (System.currentTimeMillis() < deadline && shell.probe("127.0.0.1", loopbackPortForStop)) {
-            Thread.sleep(50)
-        }
     }
 
     fun isRunning(shell: Shell, loopbackPort: Int): Boolean =
         shell.probe("127.0.0.1", loopbackPort)
-
-    private var loopbackPortForStop: Int = 15037
 
     fun logTail(shell: Shell, lines: Int = 120): String =
         runCatching { shell.exec("tail -n $lines ${shell.quote(logPath)}").stdout }.getOrDefault("")

@@ -291,10 +291,14 @@ has no TCP listener, so there is nothing to monitor or turn off.
    defaults to running, so an update keeps the daemon supervised.
 3. Nothing brings the daemon up without that intent: opening the app, a
    reboot, a sticky restart and the watchdog all respect it.
-4. Opening the app while it runs re-checks the daemon; it never overrides a stop.
-5. Stop takes the setup mutex, so a stop during a deployment waits for the
+4. Start kills every vendored adbd it finds through `/proc` by its
+   `--listen` argument, waits for it to disappear and only then starts its own.
+   This needs no lock and no adbd change; a survivor aborts the start instead of
+   leaving two daemons.
+5. Opening the app while it runs re-checks the daemon; it never overrides a stop.
+6. Stop takes the setup mutex, so a stop during a deployment waits for the
    deployment and then stops the daemon; the loopback port confirms the stop.
-6. Key and settings changes are stored immediately and applied on the next start
+7. Key and settings changes are stored immediately and applied on the next start
    while stopped.
 
 ### First run
@@ -389,6 +393,7 @@ has no TCP listener, so there is nothing to monitor or turn off.
 | Failure | Response |
 |---|---|
 | Patched adbd dies | Restart via system adbd if reachable; otherwise show an explicit error with recovery steps |
+| Stale patched adbd after a crash | Start kills every adbd with `--listen` found through `/proc`, waits for it to exit and aborts if it survives |
 | System adbd returns to TCP | Watchdog shows an explicit warning; no `ADB_ENABLED` write |
 | System adbd is off | Bootstrap fails with explicit recovery steps; the app does not enable it |
 | VPN address changes | Restart patched adbd with the new address; loopback stays |

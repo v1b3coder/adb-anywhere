@@ -688,8 +688,14 @@ Fix: rely on `getprop`/mDNS, or document the limitation.
 
 ### P2-8 — `DaemonManager.restartDetached` has a restart race
 
-It kills the old daemon and starts the new one in a detached script, then `waitForPort`
-returns as soon as the old daemon's port is still open. The subsequent `probe(vpnIp, vpnPort)`
+**Status: fixed.** `restartDetached()` writes a detached script that kills
+every vendored adbd found through `/proc/<pid>/cmdline` by its `--listen`
+argument, waits for all of them to disappear, and only then starts the new one.
+`waitForRestart()` waits for the old loopback listener to close and fails
+instead of verifying a process that never died.
+
+It killed the old daemon and started the new one in a detached script, then `waitForPort`
+returned as soon as the old daemon's port was still open. The subsequent `probe(vpnIp, vpnPort)`
 can connect to the old daemon, so `verifyDaemon` can verify the old daemon and the new
 daemon may not be up yet.
 
@@ -697,7 +703,11 @@ Fix: wait for the old PID to disappear or the new PID file to change before prob
 
 ### P2-9 — `DaemonManager.stop` relies on `ps`/`awk`/`xargs` availability
 
-The stale-process cleanup uses `ps -A -o PID,NAME,ARGS`, `awk`, and `xargs -r`
+**Status: fixed.** `stop()` no longer uses `ps`/`awk`/`xargs`; it scans
+`/proc/<pid>/cmdline` for `--listen`, kills every match and waits for it to
+disappear. `deployAndStart()` runs it before starting.
+
+The stale-process cleanup used `ps -A -o PID,NAME,ARGS`, `awk`, and `xargs -r`
 (`DaemonManager.kt:143-151`). Toybox variants differ; if any is missing, the cleanup
 silently fails. The pid file is the primary path, but a daemon that loses its pid file is
 not cleaned.

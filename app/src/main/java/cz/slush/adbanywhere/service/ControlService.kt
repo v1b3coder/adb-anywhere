@@ -153,7 +153,12 @@ class ControlService : Service() {
             ACTION_START -> {
                 prefs.userWantsRunning = true
                 AppLog.info("service", "user asked to run")
-                scope.launch { setup(enableSystemAdb = true) }
+                // A fresh process or a failed setup can inherit a daemon from a
+                // previous run. Kill it and start this process's own daemon; a
+                // running daemon is already ours and is only re-checked.
+                val forceRestart = ControlBus.state.value.phase in
+                    setOf(Phase.Idle, Phase.Stopped, Phase.Error)
+                scope.launch { setup(forceRestart = forceRestart, enableSystemAdb = true) }
             }
             // Keys and settings are persisted either way; a stopped app applies them
             // on the next start instead of deploying a daemon the user turned off.
@@ -286,7 +291,7 @@ class ControlService : Service() {
             AppLog.info("service", "not resumed; the user stopped adb")
             return false
         }
-        if (!prefs.setupComplete || ControlBus.state.value.phase != Phase.Idle) {
+        if (ControlBus.state.value.phase != Phase.Idle) {
             AppLog.info("service", "not resumed; phase=${ControlBus.state.value.phase}")
             return false
         }
@@ -727,11 +732,10 @@ class ControlService : Service() {
         watchdogJob?.cancel()
         val shell = runCatching { daemonShell() }.getOrNull()
         if (shell != null) {
-            try {
-                daemon.stop(shell)
-            } finally {
-                shell.close()
+            runCatching { daemon.stop(shell) }.onFailure {
+                AppLog.warn("service", "stop before restart: ${it.message}")
             }
+            shell.close()
         } else {
             runCatching { daemon.stop(system.shell) }
         }
