@@ -193,11 +193,13 @@ persisted `paired=true` is stale.
   the old key may be in the system list or may never have been paired.  The app
   now detects `ADB pairing is required` and posts the one-reply pairing
   notification instead of reporting "wireless debugging is not reachable".
-- The notification `RemoteInput` wrapper is exercised by a debug-only
-  `DEBUG_PAIR_REPLY` action that builds a real `RemoteInput` result and calls
-  `PairReplyReceiver`.  The notification action itself is present in
-  `dumpsys notification`, but the AOSP notification shade did not render its
-  button in the group; the receiver and the RemoteInput extraction are covered.
+- The pairing notification has its own group (`Notifications.GROUP_PAIRING`),
+  separate from the foreground service group, so its "Enter code:port" action
+  renders in the shade and opens the RemoteInput editor.  A synthetic Send tap
+  did not submit the typed value in the headless emulator, so the debug-only
+  `DEBUG_PAIR_REPLY` injects a real `RemoteInput` result into
+  `PairReplyReceiver`; the receiver and the RemoteInput extraction are covered,
+  the final synthetic Send tap is not.
 - The AOSP emulator has `ro.adb.secure=0`, so the
   `AdbPairingRequiredException` branch is code-reviewed, not emulator-tested.
   The phone evidence for the stale `paired` flag is in the section above.
