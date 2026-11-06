@@ -224,6 +224,13 @@ class FirewallDataTest {
         val stat = SyncParser.parse(syncPayload(0x54415453, "/sdcard/c"))
         assertEquals("STAT", stat!!.direction)
 
+        val sendV2 = SyncParser.parse(syncPayload(0x32444e53, "/sdcard/d"))
+        assertEquals("SEND", sendV2!!.direction)
+        assertEquals("/sdcard/d", sendV2.path)
+
+        val statV2 = SyncParser.parse(syncPayload(0x32415453, "/sdcard/e"))
+        assertEquals("STAT", statV2!!.direction)
+
         assertNull(SyncParser.parse(ByteArray(4)))
         assertNull(SyncParser.parse(syncPayload(0x444e4553, "x".repeat(1025))))
     }

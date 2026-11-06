@@ -10,8 +10,10 @@ import cz.slush.adbanywhere.firewall.CallVerdict
 import cz.slush.adbanywhere.firewall.PromptDecision
 import cz.slush.adbanywhere.firewall.PromptResponse
 import cz.slush.adbanywhere.firewall.RelayPolicy
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -133,6 +135,39 @@ class AdbRelayTest {
     }
 
     @Test
+    fun deniesSyncV2StatAfterOkay() = runBlocking {
+        val pipes = pipes()
+        val policy = FakePolicy()
+        val audit = AuditLog(null) { false }
+        val relay = AdbRelay(
+            pipes.clientIn, pipes.relayToClient,
+            pipes.serverIn, pipes.relayToServer,
+            policy,
+            audit,
+            "peer",
+        ) {}
+        relay.start()
+        try {
+            pipes.clientToRelay.write(frame(AdbFrameCodec.A_OPEN, 7, 0, "sync:".toByteArray()))
+            assertNotNull(withTimeout(3_000) { AdbFrameCodec.read(pipes.serverReader) })
+
+            pipes.serverToRelay.write(frame(AdbFrameCodec.A_OKAY, 9, 7, ByteArray(0)))
+            assertNotNull(withTimeout(3_000) { AdbFrameCodec.read(pipes.clientReader) })
+
+            policy.verdict = CallVerdict(CallDecision.DENY)
+            pipes.clientToRelay.write(
+                frame(AdbFrameCodec.A_WRTE, 7, 9, syncPayload("/data/secret", 0x32415453)),
+            )
+            val denied = withTimeoutOrNull(2_000) {
+                audit.entries.first { events -> events.any { it.event == "call_denied" } }
+            }
+            assertNotNull(denied)
+        } finally {
+            relay.close()
+        }
+    }
+
+    @Test
     fun closesOnMalformedFrame() = runBlocking {
         val pipes = pipes()
         val relay = AdbRelay(
@@ -182,10 +217,10 @@ class AdbRelayTest {
             AdbFrameCodec.write(it, command, arg0, arg1, payload)
         }.toByteArray()
 
-    private fun syncPayload(path: String): ByteArray =
+    private fun syncPayload(path: String, id: Int = 0x444e4553): ByteArray =
         ByteBuffer.allocate(8 + path.length)
             .order(ByteOrder.LITTLE_ENDIAN)
-            .putInt(0x444e4553)
+            .putInt(id)
             .putInt(path.length)
             .put(path.toByteArray())
             .array()
