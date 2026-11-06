@@ -8,6 +8,7 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import cz.slush.adbanywhere.data.Endpoint
+import cz.slush.adbanywhere.data.Prefs
 import cz.slush.adbanywhere.data.VpnInterface
 import java.net.Inet4Address
 import java.net.NetworkInterface
@@ -15,6 +16,8 @@ import java.util.Collections
 
 object VpnDetector {
     fun currentVpnAddress(context: Context): String? {
+        val override = runCatching { Prefs(context).debugVpnIp }.getOrNull()
+        if (!override.isNullOrBlank()) return override
         val fromManager = runCatching { fromConnectivityManager(context) }.getOrNull()
         if (!fromManager.isNullOrBlank()) return fromManager
         return runCatching { fromNetworkInterfaces() }.getOrNull()

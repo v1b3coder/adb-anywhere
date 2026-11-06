@@ -88,6 +88,11 @@ class Prefs(context: Context) {
         get() = prefs.getBoolean("daemon_firewall_mode", false)
         set(value) = prefs.edit().putBoolean("daemon_firewall_mode", value).apply()
 
+    /** Debug-only VPN address override for the emulator e2e. */
+    var debugVpnIp: String
+        get() = prefs.getString("debug_vpn_ip", "") ?: ""
+        set(value) = prefs.edit().putString("debug_vpn_ip", value).apply()
+
     var firewallEnabled: Boolean
         get() = prefs.getBoolean("firewall_enabled", false)
         set(value) = prefs.edit().putBoolean("firewall_enabled", value).apply()

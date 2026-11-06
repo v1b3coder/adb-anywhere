@@ -27,6 +27,7 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.RemoteInput
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import cz.slush.adbanywhere.BuildConfig
 import cz.slush.adbanywhere.MainActivity
 import cz.slush.adbanywhere.R
 import cz.slush.adbanywhere.adb.AdbManager
@@ -916,6 +917,7 @@ class ControlService : Service() {
     }
 
     private fun isVpnActive(): Boolean {
+        if (BuildConfig.DEBUG && prefs.debugVpnIp.isNotBlank()) return true
         val manager = getSystemService(ConnectivityManager::class.java) ?: return false
         val network = manager.activeNetwork ?: return false
         val capabilities = manager.getNetworkCapabilities(network) ?: return false

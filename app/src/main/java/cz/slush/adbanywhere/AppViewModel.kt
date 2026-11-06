@@ -222,6 +222,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         ControlService.start(getApplication(), ControlService.ACTION_START)
     }
 
+    fun setDebugVpnIp(ip: String) {
+        AppLog.info("debug", "vpn ip override=${ip.ifBlank { "cleared" }}")
+        prefs.debugVpnIp = ip.trim()
+        if (prefs.userWantsRunning) {
+            ControlService.start(getApplication(), ControlService.ACTION_APPLY_SETTINGS)
+        }
+    }
+
     fun setBootstrap(host: String, port: Int) {
         if (host.isBlank() || port !in 1024..65535) return
         prefs.bootstrapHost = host

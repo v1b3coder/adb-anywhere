@@ -58,6 +58,7 @@ class MainActivity : ComponentActivity() {
         intent?.getStringExtra("firewallIp")?.let { ip ->
             Log.i("AdbAnywhere", "debug firewall ip result=${viewModel.addIp(ip) ?: "ok"}")
         }
+        intent?.getStringExtra("vpnIp")?.let(viewModel::setDebugVpnIp)
         if (intent?.hasExtra("firewallIpAllowlist") == true) {
             viewModel.setIpAllowlistEnabled(intent.getBooleanExtra("firewallIpAllowlist", false))
         }

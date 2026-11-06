@@ -183,7 +183,7 @@ same close a device sends for an unknown service. The relay does not forward the
 | `shell,v2,raw:<cmd>` | same, plus shell-v2 stdin packets | Stdin after `OPEN` is opaque |
 | `exec:<cmd>` | `command`, `argv[]` | Same as shell |
 | `abb_exec:<argv\0...>` | NUL-separated `argv[]` | Used by `adb install` / `uninstall` |
-| `sync:` | `direction`, `path`, `mode`, `size` from sync frames | File contents are opaque |
+| `sync:` | v1 and v2 `direction`, `path`, `mode`, `size` from sync frames | File contents are opaque |
 | `tcp:<port>` | `port` | Device port for `adb forward` |
 | `reverse:forward:<remote>;<local>` | `remote`, `local` specs | Both are `tcp:` / `local*:` specs |
 | `framebuffer:` | none | Screen stream is opaque |
@@ -236,7 +236,8 @@ a normal argv match.
 
 `sync:` is parsed as a per-stream state machine:
 
-- First client frame is `STAT`, `LSTAT`, `LIST`, `SEND` or `RECV`.
+- First client frame is a sync v1 or v2 `STAT`, `LSTAT`, `LIST`, `SEND` or
+  `RECV` (`STA2`, `LST2`, `LIS2`, `SND2`, `RCV2`).
 - `SEND` and `RECV` carry the device path; `SEND` v2 adds mode and flags.
 - `DATA` frames carry file bytes and are forwarded without inspection.
 - A path rule matches the normalized lexical path. Symlinks and `..` are not
@@ -417,6 +418,9 @@ var firewallPromptTimeoutMs: Long
 var firewallRedactAudit: Boolean
 ```
 
+Debug-only: `debugVpnIp` overrides the detected VPN address for the emulator
+e2e (`--es vpnIp`); a release build never sets it.
+
 `ControlState` gains a `FirewallState` with the listener address, active
 sessions, pending prompts, last denial and last error. `ControlService` owns the
 relay exactly as it owns the daemon.
@@ -534,9 +538,11 @@ JVM unit tests:
 - ADB frame parser: valid header, bad magic, oversized payload, truncated
   payload, `A_OPEN`, `A_CLSE`, `A_WRTE`, `A_AUTH`.
 - Call parser: `shell:` v1/v2, quotes, escapes, metacharacters, interactive,
-  `exec:`, `abb_exec:`, `sync:` SEND/RECV/STAT, `tcp:`, `reverse:`, unknown.
+  `exec:`, `abb_exec:`, `sync:` SEND/RECV/STAT v1 and v2, `tcp:`, `reverse:`,
+  unknown.
 - Rule matcher: exact, prefix, glob, any, first match, built-in denies.
-- Sync parser: split frames, path extraction, truncation, malformed.
+- Sync parser: v1 and v2 ids, split frames, path extraction, truncation,
+  malformed.
 - Foreground app state machine with a fake clock and fake usage events,
   including the grace timer and a return before it expires.
 - Audit ring, rotation and redaction.
@@ -544,6 +550,9 @@ JVM unit tests:
 
 Device/integration:
 
+- Emulator e2e: `scripts/e2e-firewall-emulator.sh` creates a debug-only
+  fake VPN address, then exercises the relay, IP and app allowlists, call policy
+  prompts, sync push/pull and the audit log against the real `adb` client.
 - Real `adb` client through the relay: `shell`, `exec-out`, `push`, `pull`,
   `install`, `forward`, `reverse`, `logcat`.
 - VPN bind probe: bind and accept on the VPN address from the app process,
@@ -603,7 +612,8 @@ Implemented in the app:
   injected `A_CLSE`.
 - `firewall/AdbCallParser.kt`: `shell`, `exec`, `abb_exec`, `sync`, `tcp`,
   `reverse`, `framebuffer`; unknown and unsupported services are denied.
-- `firewall/SyncParser.kt`: the first client sync frame, path and direction.
+- `firewall/SyncParser.kt`: the first client sync frame, path and direction,
+  v1 and v2 ids.
 - `firewall/CallRules.kt`: built-in denies, first-match user rules, prompt and
   deny defaults.
 - `firewall/AdbRelay.kt`: the byte relay, `A_OPEN` policy, sync path policy,
@@ -611,7 +621,8 @@ Implemented in the app:
 - `firewall/FirewallProxy.kt`: VPN listener, IP allowlist, app allowlist, grace
   timer, connection caps and the relay.
 - `firewall/ForegroundAppMonitor.kt` and `ForegroundTracker.kt`: `UsageStatsManager`,
-  screen and keyguard state.
+  screen and keyguard state; the first sample queries the last hour, so a
+  long-running foreground app is still seen.
 - `firewall/AuditLog.kt`: the bounded JSONL log and ring.
 - `firewall/FirewallConfigStore.kt`: the persisted configuration.
 - `adb/SystemAdb.closePlainListener()`: sends `usb:` to the system adbd so the
