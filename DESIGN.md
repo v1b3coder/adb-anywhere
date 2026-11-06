@@ -90,7 +90,7 @@ These are facts from AOSP `main`, not assumptions.
 | D2 | Data plane | One patched `adbd` instance with two listeners: `127.0.0.1:<portA>` for the app, `<vpn-ip>:<portB>` for developer machines |
 | D3 | App key | Ephemeral RSA keypair generated on first run; private key in app-private storage; public key in the patched adbd key file |
 | D4 | Developer machine pairing | QR or pasted public key from the developer machine; app confirms the fingerprint; user labels the machine; no pairing listener on the phone |
-| D5 | System adbd lifecycle | Start writes `ADB_WIFI_ENABLED=1` even when it already reads 1; Stop stops only the patched adbd. The opt-in Settings switch "Turn system adb off on Stop" makes Start write `ADB_ENABLED=1` and Stop write `ADB_ENABLED=0`; the default never writes `ADB_ENABLED` |
+| D5 | System adbd lifecycle | Start writes `ADB_ENABLED=1` when it reads 0, then tries the system adbd's existing TCP listeners; on Wi-Fi it falls back to `ADB_WIFI_ENABLED=1` even when it already reads 1. Stop stops only the patched adbd; the opt-in Settings switch "Turn system adb off on Stop" makes Stop write `ADB_ENABLED=0` |
 | D6 | Watchdog | Keeps `ADB_WIFI_ENABLED=0`; probes 5555 on every tick and reports the open listener as the §8 residual warning; restarts the patched adbd through the system adbd when reachable; never writes `ADB_ENABLED` (the opt-in switch is the only writer) |
 | D7 | Policy | Patched adbd enforces per-key and per-service rules; VPN ACL is the outer boundary |
 | D8 | UI stack | Kotlin, Jetpack Compose, Material 3; package `cz.slush.adbanywhere` |
@@ -192,10 +192,14 @@ because the key is idempotent; removing the key revokes it.
   removes the USB recovery path and, on devices where the pairing store is
   tied to it, can lose the paired key.  The opt-in Settings switch makes this
   explicit: off by default, so a Stop leaves ADB and its paired key alone.
-- Bootstrap: Start writes `ADB_WIFI_ENABLED=1` even when it already reads 1; the
-  framework can have the setting on while its TLS server is down, and a skipped
-  write leaves it down.  Start waits 900 ms, then connects.  With the opt-in switch
-  on, Start first writes `ADB_ENABLED=1` when it reads 0.
+- Bootstrap: after pairing, the app key is in the system adbd's `user_keys`.
+  Start writes `ADB_ENABLED=1` when it reads 0 (safe: it does not delete the key)
+  and then tries the system adbd's existing TCP listeners: the TLS property, the
+  last TLS port, the plain 5555 listener and mDNS.  On Wi-Fi, if none answers,
+  it writes `ADB_WIFI_ENABLED=1` even when it already reads 1, waits 900 ms and
+  retries.  On mobile data the system adbd has no TCP listener unless the plain
+  listener was enabled over USB (`adb tcpip 5555`) or root; the app fails with that
+  instruction instead of waiting for Wi-Fi wireless debugging.
 - The patched adbd ignores both toggles.
 
 ### Start/Stop ownership
@@ -215,14 +219,15 @@ The Settings switch **Turn system adb off on Stop** is the opt-in ownership:
   `ADB_ENABLED=0` and `ADB_WIFI_ENABLED=0`.  Android may drop the paired key
   when ADB is turned off, so the next Start can need a new pairing code.
 
-| Action | `ADB_ENABLED` (switch off) | `ADB_ENABLED` (switch on) | `ADB_WIFI_ENABLED` | Patched adbd |
-|---|---|---|---|---|
-| Start, patched adbd down | unchanged | `1` when off | `1` on Wi-Fi | deploy |
-| Start, patched adbd up | unchanged | unchanged | unchanged | keep running |
-| Running | unchanged | unchanged | `0` after harden | keep running |
-| Stop | unchanged | `0` | `0` | stop |
-| Boot after Start | unchanged | unchanged | `1` on Wi-Fi | deploy |
-| Boot after Stop | unchanged | unchanged | unchanged | not running |
+| Action | `ADB_ENABLED` | `ADB_WIFI_ENABLED` | Patched adbd |
+|---|---|---|---|
+| Start, patched adbd down | `1` when off | `1` only in the Wi-Fi fallback | deploy |
+| Start, patched adbd up | unchanged | unchanged | keep running |
+| Running | unchanged | `0` after harden | keep running |
+| Stop, switch off | unchanged | unchanged | stop |
+| Stop, switch on | `0` | `0` | stop |
+| Boot after Start | unchanged | `1` only in the Wi-Fi fallback | deploy |
+| Boot after Stop | unchanged | unchanged | not running |
 
 ### Port behavior
 

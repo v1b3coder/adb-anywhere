@@ -357,39 +357,45 @@ class ControlService : Service() {
                     )
                 }
 
-                step(0, StepStatus.Active, "Connecting to Android's wireless debugging")
+                step(0, StepStatus.Active, "Connecting to Android's adb")
                 var daemonAlive = withContext(Dispatchers.IO) { probeDaemon() }
                 AppLog.info("setup", "custom adb alive=$daemonAlive dir=${prefs.remoteDir}")
-                // The opt-in D5 ownership enables ADB before the bootstrap, so a
-                // user who turned ADB off can start the app again. Enabling ADB is
-                // safe: it does not delete the paired key. The default never
-                // writes ADB_ENABLED, so Android keeps the key and USB recovery.
-                if (!daemonAlive && prefs.turnSystemAdbOffOnStop &&
-                    SystemSettings.adbEnabled(this) == 0
-                ) {
-                    AppLog.info("setup", "system adb is off; enabling it for the bootstrap")
+                val canWriteSettings = ContextCompat.checkSelfPermission(
+                    this,
+                    android.Manifest.permission.WRITE_SECURE_SETTINGS,
+                ) == PackageManager.PERMISSION_GRANTED
+                // After pairing, the app key is in the system adbd's user_keys.
+                // ADB_ENABLED=1 is necessary but not sufficient: it starts the
+                // system adbd, but the app still needs a TCP shell.  Enabling ADB
+                // is safe; it does not delete the paired key.  The opt-in switch
+                // only controls whether Stop turns ADB off again.
+                if (!daemonAlive && canWriteSettings && SystemSettings.adbEnabled(this) == 0) {
+                    AppLog.info("setup", "system adb is off; enabling it")
                     SystemSettings.setAdbEnabled(this, true)
                     delay(500)
                 }
-                if (!daemonAlive && prefs.setupComplete &&
-                    ContextCompat.checkSelfPermission(
-                        this,
-                        android.Manifest.permission.WRITE_SECURE_SETTINGS,
-                    ) == PackageManager.PERMISSION_GRANTED
+                // Try the system adbd's existing listeners first.  The plain 5555
+                // listener and the TLS property both work on mobile data; wireless
+                // debugging is only the fallback for the first shell after a reboot.
+                var systemAlive = if (daemonAlive) false
+                else withContext(Dispatchers.IO) { system.ensureConnected() }
+                if (!daemonAlive && !systemAlive && canWriteSettings &&
+                    prefs.setupComplete && SystemSettings.isWifiConnected(this)
                 ) {
                     // The one-time grant persists, so the app can re-open the
-                    // bootstrap path after a reboot without a pre-existing app shell.
+                    // wireless-debugging bootstrap after a reboot without a
+                    // pre-existing app shell.  This is the Wi-Fi fallback, not the
+                    // normal start: on mobile data the system adbd has no TCP
+                    // listener and the app cannot open one without USB or root.
                     cleanupRequired = true
                     AppLog.info("setup", "bootstrap: opening system wireless debugging")
                     // Always write the setting, even when it already reads 1: the
                     // framework can have the setting on while its TLS server is down,
-                    // and a skipped write leaves that state in place. Never write
-                    // ADB_ENABLED here: it restarts the system adbd and drops the
-                    // paired keys.
-                    if (SystemSettings.isWifiConnected(this)) {
-                        SystemSettings.setAdbWifiEnabled(this, true)
-                        AppLog.info("setup", "bootstrap: adb_wifi_enabled=1")
-                    }
+                    // and a skipped write leaves that state in place.  Never write
+                    // ADB_ENABLED here: it restarts the system adbd and can drop
+                    // the paired keys on some devices.
+                    SystemSettings.setAdbWifiEnabled(this, true)
+                    AppLog.info("setup", "bootstrap: adb_wifi_enabled=1")
                     // The framework disables wireless debugging on its timeout;
                     // 0 keeps the bootstrap path open after the app backgrounds.
                     if (!SystemSettings.ensureNoAdbConnectionTimeout(this)) {
@@ -398,9 +404,8 @@ class ControlService : Service() {
                     delay(900)
                     awaitSystemWirelessDebugging()
                     ControlBus.update { it.copy(message = "Preparing…") }
+                    systemAlive = withContext(Dispatchers.IO) { system.ensureConnected() }
                 }
-                var systemAlive = if (daemonAlive) false
-                else withContext(Dispatchers.IO) { system.ensureConnected() }
                 // A stale paired flag is the most common pairing failure: the
                 // app key is no longer in the system adbd, so a connect is
                 // rejected with "ADB pairing is required". Drop the flag and
@@ -450,9 +455,10 @@ class ControlService : Service() {
                         needsPairing()
                     } else {
                         fail(
-                            "Android's wireless debugging is not reachable and the custom adb is down. " +
-                                "Connect to Wi-Fi once, or open Settings → Developer options → " +
-                                "Wireless debugging and try again.",
+                            "Android's adb is not reachable and the custom adb is down. " +
+                                "The app key is paired, but the system adbd has no TCP listener. " +
+                                "Connect Wi-Fi once, or enable USB debugging and run " +
+                                "`adb tcpip 5555` over USB, then press Start again.",
                         )
                     }
                     return@withLock
@@ -1286,7 +1292,7 @@ class ControlService : Service() {
     }
 
     private fun initialSteps() = listOf(
-        SetupStep("Connect to Android's wireless debugging"),
+        SetupStep("Connect to Android's adb"),
         SetupStep("Deploy the custom adb"),
         SetupStep("Verify the listeners"),
         SetupStep("Start the firewall relay"),

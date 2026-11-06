@@ -17,7 +17,9 @@ The design is in [DESIGN.md](DESIGN.md).
 - Android 12 or newer, stock ROM, no root.
 - A VPN that gives the phone a stable address reachable by the developer
   machines (Tailscale or WireGuard).
-- One Wi-Fi connection for the first pairing and for the first boot after a reboot.
+- One Wi-Fi connection for the first pairing. After a reboot the app needs one TCP
+  shell: Wi-Fi wireless debugging, the plain 5555 listener (`adb tcpip 5555` over
+  USB), or root.
 - The developer machine has its `~/.android/adbkey.pub` at hand.
 
 ## Install
@@ -102,11 +104,11 @@ path rules are lexical and advisory. The full design and its limits are in
 - Removing a key removes it from the key file and restarts the daemon, so the
   sessions that the key authenticated end. Per-key policy and filtering are not
   implemented yet: every key in the file may open every supported service.
-- Start turns the system adbd on only when the opt-in *Turn system adb off on
-  Stop* switch is on.  The default leaves `ADB_ENABLED` alone, so Android keeps
-  the paired key and the USB recovery path.  Stop stops the patched adbd; with the
-  switch on it also turns the system adbd off (and Start turns it back on), and
-  Android may then drop the paired key, so the next Start can need a new code.
+- Start enables the system adbd when `ADB_ENABLED` is 0 (safe: it does not delete
+  the paired key), then tries its existing TCP listeners.  On Wi-Fi it falls back to
+  wireless debugging; on mobile data it needs the plain 5555 listener or root.
+  Stop stops the patched adbd; the opt-in *Turn system adb off on Stop* switch
+  makes Stop turn ADB off, and Start turns it back on.
 - The app never stops the system adbd while it needs the patched adbd: on devices
   where init kills the adbd cgroup, that would also stop the patched adbd.  The
   security benefit is at Stop, not during a run.

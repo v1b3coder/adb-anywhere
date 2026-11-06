@@ -140,6 +140,7 @@ persisted `paired=true` is stale.
 | C8 | P2 | Watchdog turns off the system wireless debugging every tick | `ensureWifiDebuggingOff()` in `watchdog()` | Only harden once after setup; leave the recovery path |
 | C9 | P0 | A custom VPN/loopback port in the ephemeral range can equal Android's random wireless-debugging TLS port; the app then connects to the wrong listener and reports "pairing required" | phone: wireless debugging `100.64.0.10:43935`, app endpoint `100.64.0.10:43935`; `connect 127.0.0.1:43935 requires pairing` | Defaults are 15037/15038 (below 32768); reject ports >= 32768 in Settings and in `setup`; guard the firewall port |
 | C10 | P0 | With the firewall on, the custom adbd can still hold the VPN port, so the relay cannot bind it | "port 5556 is occupied" after enabling the firewall | Restart the custom adbd loopback-only when the firewall is on and the VPN port is still open |
+| C11 | P0 | Start required wireless debugging even after pairing; on mobile data `ADB_ENABLED=1` is necessary but not sufficient | phone: mobile-data start failed, `ADB_ENABLED=1`, no TLS listener | Try the system adbd's existing listeners first; Wi-Fi fallback only on Wi-Fi; explicit mobile-data instruction |
 
 ## Fixes in this tree
 
@@ -152,11 +153,14 @@ persisted `paired=true` is stale.
   which produced `CERTIFICATE_AND_PRIVATE_KEY_MISMATCH` during pairing and a
   stale `paired=true` after a later regeneration.  `AppKeyStoreTest` covers
   concurrent first use of three instances.
-- Bootstrap: `setup()` writes `adb_wifi_enabled=1` unconditionally when
-  Wi-Fi is up, writes `adb_allowed_connection_time=0`, waits 900 ms and calls
-  `ensureConnected()`.  `awaitSystemWirelessDebugging()` retries mDNS every 5 s
-  for 30 s.  The debug bootstrap address is one-shot.  The default never
-  writes `ADB_ENABLED`.
+- Bootstrap: `setup()` writes `ADB_ENABLED=1` when it reads 0 (safe; it does
+  not delete the paired key), tries the system adbd's existing TCP listeners
+  first (TLS property, last port, plain 5555, mDNS), and only then falls back
+  to `ADB_WIFI_ENABLED=1` on Wi-Fi, writes `adb_allowed_connection_time=0`,
+  waits 900 ms and calls `ensureConnected()`.  `awaitSystemWirelessDebugging()`
+  retries mDNS every 5 s for 30 s.  The debug bootstrap address is one-shot.
+  On mobile data without the plain 5555 listener the app fails with an explicit
+  instruction instead of waiting for Wi-Fi wireless debugging.
 - Stop: stops only the custom daemon by default.  It does not write
   `ADB_ENABLED` or `adb_wifi_enabled`; the system wireless debugging and
   its paired keys survive.  With the opt-in switch on, Stop also writes
