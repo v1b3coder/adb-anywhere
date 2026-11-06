@@ -96,8 +96,9 @@ fun HomeScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
-                    "Start turns the system adb on when it is off. Stop turns it off, so a " +
-                        "stopped app has no ADB at all, not even on USB.",
+                    "Start uses Android's wireless debugging once to bootstrap. Stop follows " +
+                        "Settings → System adb: by default the system adb and its paired key " +
+                        "are left alone, so the phone stays recoverable.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -305,6 +306,8 @@ private fun SecurityRow(status: AdbStatus?) {
             Text(
                 when {
                     status == null -> "Run setup to read the system adb state."
+                    off && status?.adbEnabled == 0 ->
+                        "ADB is off. Start turns it back on when the switch is on."
                     off -> "The custom adb is the network endpoint; the system adb stays on USB."
                     else -> "Open Settings to fix it."
                 },

@@ -69,12 +69,12 @@ done
 i=0
 while [ "$i" -lt 60 ]; do
     adb -s "$serial" shell 'dumpsys notification --noredact' |
-        grep -q 'android.title=String (ADB Anywhere is running)' && break
+        grep -q 'android.title=String (ADB Anywhere' && break
     sleep 1
     i=$((i + 1))
 done
 adb -s "$serial" shell 'dumpsys notification --noredact' |
-    grep -q 'android.title=String (ADB Anywhere is running)'
+    grep -q 'android.title=String (ADB Anywhere'
 echo "sticky restart ok"
 
 # A stop is remembered: after the process is killed and the app is reopened the
@@ -83,28 +83,28 @@ adb -s "$serial" shell "am start -n $pkg/.MainActivity --ez stop true" >/dev/nul
 i=0
 while [ "$i" -lt 30 ]; do
     adb -s "$serial" shell 'dumpsys notification --noredact' |
-        grep -q 'ADB Anywhere is running' || break
+        grep -q 'android.title=String (ADB Anywhere' || break
     sleep 1
     i=$((i + 1))
 done
-! adb -s "$serial" shell 'dumpsys notification --noredact' | grep -q 'ADB Anywhere is running'
+! adb -s "$serial" shell 'dumpsys notification --noredact' | grep -q 'android.title=String (ADB Anywhere'
 pid_stopped=$(adb -s "$serial" shell pidof "$pkg" | tr -d '\r' | cut -d' ' -f1)
 [ -n "$pid_stopped" ]
 adb -s "$serial" shell "kill -9 $pid_stopped"
 sleep 5
 adb -s "$serial" shell "am start -n $pkg/.MainActivity" >/dev/null
 sleep 6
-! adb -s "$serial" shell 'dumpsys notification --noredact' | grep -q 'ADB Anywhere is running'
+! adb -s "$serial" shell 'dumpsys notification --noredact' | grep -q 'android.title=String (ADB Anywhere'
 adb -s "$serial" shell "am start -n $pkg/.MainActivity --ez start true" >/dev/null
 i=0
 while [ "$i" -lt 60 ]; do
     adb -s "$serial" shell 'dumpsys notification --noredact' |
-        grep -q 'android.title=String (ADB Anywhere is running)' && break
+        grep -q 'android.title=String (ADB Anywhere' && break
     sleep 1
     i=$((i + 1))
 done
 adb -s "$serial" shell 'dumpsys notification --noredact' |
-    grep -q 'android.title=String (ADB Anywhere is running)'
+    grep -q 'android.title=String (ADB Anywhere'
 echo "stop and start ok"
 
 echo "e2e ok"

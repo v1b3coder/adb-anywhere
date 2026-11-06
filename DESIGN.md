@@ -90,13 +90,13 @@ These are facts from AOSP `main`, not assumptions.
 | D2 | Data plane | One patched `adbd` instance with two listeners: `127.0.0.1:<portA>` for the app, `<vpn-ip>:<portB>` for developer machines |
 | D3 | App key | Ephemeral RSA keypair generated on first run; private key in app-private storage; public key in the patched adbd key file |
 | D4 | Developer machine pairing | QR or pasted public key from the developer machine; app confirms the fingerprint; user labels the machine; no pairing listener on the phone |
-| D5 | System adbd lifecycle | Start writes `ADB_WIFI_ENABLED=1` even when it already reads 1; Stop stops only the patched adbd; the app never writes `ADB_ENABLED` |
-| D6 | Watchdog | Keeps `ADB_WIFI_ENABLED=0`; probes 5555 on every tick and reports the open listener as the §8 residual warning; restarts the patched adbd through the system adbd when reachable; never writes `ADB_ENABLED` |
+| D5 | System adbd lifecycle | Start writes `ADB_WIFI_ENABLED=1` even when it already reads 1; Stop stops only the patched adbd. The opt-in Settings switch "Turn system adb off on Stop" makes Start write `ADB_ENABLED=1` and Stop write `ADB_ENABLED=0`; the default never writes `ADB_ENABLED` |
+| D6 | Watchdog | Keeps `ADB_WIFI_ENABLED=0`; probes 5555 on every tick and reports the open listener as the §8 residual warning; restarts the patched adbd through the system adbd when reachable; never writes `ADB_ENABLED` (the opt-in switch is the only writer) |
 | D7 | Policy | Patched adbd enforces per-key and per-service rules; VPN ACL is the outer boundary |
 | D8 | UI stack | Kotlin, Jetpack Compose, Material 3; package `cz.slush.adbanywhere` |
 | D9 | Bootstrap pairing | One `RemoteInput` notification: reply with `code:port` from the open dialog |
 | D10 | Patched adbd transports | TCP only; USB and vsock disabled |
-| D11 | Settings UI | Shows the current ADB state and any warning in the UI and in the persistent foreground notification; no system-adb switch |
+| D11 | Settings UI | Shows the current ADB state, any warning in the UI and in the persistent foreground notification, and the opt-in "Turn system adb off on Stop" switch |
 | D12 | Failure policy | Explicit error and recovery steps; no silent fallback and no random-port redirect |
 
 ## 6. Architecture
@@ -188,30 +188,41 @@ because the key is idempotent; removing the key revokes it.
 - Mandatory: `ADB_WIFI_ENABLED=0` after the patched adbd is running. The
   framework stops the system TLS server (`persist.adb.tls_server.enable=0`); no ADB
   call is needed. The system adbd stays on USB, which is not a network listener.
-- The app never stops the system adbd.  Writing `ADB_ENABLED=0` would stop it,
-  drop the paired keys and remove the only recovery path.
+- The app never stops the system adbd by default.  Writing `ADB_ENABLED=0`
+  removes the USB recovery path and, on devices where the pairing store is
+  tied to it, can lose the paired key.  The opt-in Settings switch makes this
+  explicit: off by default, so a Stop leaves ADB and its paired key alone.
 - Bootstrap: Start writes `ADB_WIFI_ENABLED=1` even when it already reads 1; the
   framework can have the setting on while its TLS server is down, and a skipped
-  write leaves it down.  Start waits 900 ms, then connects.
+  write leaves it down.  Start waits 900 ms, then connects.  With the opt-in switch
+  on, Start first writes `ADB_ENABLED=1` when it reads 0.
 - The patched adbd ignores both toggles.
 
 ### Start/Stop ownership
 
-Start and Stop never write `ADB_ENABLED`.  Start writes `ADB_WIFI_ENABLED=1`
+The default never writes `ADB_ENABLED`.  Start writes `ADB_WIFI_ENABLED=1`
 when the patched adbd is down and Wi-Fi is up, then waits 900 ms before it
 connects; the write is not skipped when the setting already reads 1, because the
 framework can have the setting on while its TLS server is down.  Stop stops only
 the patched adbd; the system wireless debugging and its paired keys survive as the
 recovery path.
 
-| Action | `ADB_WIFI_ENABLED` | Patched adbd |
-|---|---|---|
-| Start, patched adbd down | `1` on Wi-Fi | deploy |
-| Start, patched adbd up | unchanged | keep running |
-| Running | `0` after harden | keep running |
-| Stop | unchanged | stop |
-| Boot after Start | `1` on Wi-Fi | deploy |
-| Boot after Stop | unchanged | not running |
+The Settings switch **Turn system adb off on Stop** is the opt-in ownership:
+
+- Off (default): Start and Stop never write `ADB_ENABLED`; Stop leaves the
+  system adb and its paired key alone.
+- On: Start writes `ADB_ENABLED=1` when it reads 0, and Stop writes
+  `ADB_ENABLED=0` and `ADB_WIFI_ENABLED=0`.  Android may drop the paired key
+  when ADB is turned off, so the next Start can need a new pairing code.
+
+| Action | `ADB_ENABLED` (switch off) | `ADB_ENABLED` (switch on) | `ADB_WIFI_ENABLED` | Patched adbd |
+|---|---|---|---|---|
+| Start, patched adbd down | unchanged | `1` when off | `1` on Wi-Fi | deploy |
+| Start, patched adbd up | unchanged | unchanged | unchanged | keep running |
+| Running | unchanged | unchanged | `0` after harden | keep running |
+| Stop | unchanged | `0` | `0` | stop |
+| Boot after Start | unchanged | unchanged | `1` on Wi-Fi | deploy |
+| Boot after Stop | unchanged | unchanged | unchanged | not running |
 
 ### Port behavior
 
@@ -275,8 +286,9 @@ has no TCP listener, so there is nothing to monitor or turn off.
 - Register `UsbManager.ACTION_USB_STATE` (sticky) and
   `ConnectivityManager.NetworkCallback`.
 - Backoff and hysteresis; never fight an explicit user "off".
-- The app never writes `ADB_ENABLED`; if the system adbd is off, bootstrap
-  fails with explicit recovery steps and no random-port redirect.
+- The app never writes `ADB_ENABLED` unless the opt-in switch is on; if the
+  system adbd is off and the switch is off, bootstrap fails with explicit recovery
+  steps and no random-port redirect.
 
 ## 7. Flows
 
@@ -306,7 +318,7 @@ has no TCP listener, so there is nothing to monitor or turn off.
 3. App posts the pairing notification asking for the six-digit code.
 4. User opens Settings → Developer options → Wireless debugging → Pair device with
    pairing code.
-5. User pulls the shade over the dialog, enters the code, then the port.
+5. User pulls the shade over the dialog and replies once with `code:port`.
 6. App pairs with the system adbd over loopback and stores its key.
 7. App self-grants `WRITE_SECURE_SETTINGS` over ADB.
 8. App extracts the patched adbd for the device ABI, pushes it to

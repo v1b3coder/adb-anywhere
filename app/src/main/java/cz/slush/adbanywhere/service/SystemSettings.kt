@@ -1,8 +1,9 @@
 /*
  * SystemSettings - the app holds WRITE_SECURE_SETTINGS after the one-time ADB
  * grant, so it can re-assert the wireless-debugging bootstrap and hardening
- * settings directly. It reads ADB_ENABLED but never writes it: stopping the system
- * adbd would drop the paired keys and the only recovery path.
+ * settings directly. It writes ADB_ENABLED only when the user opts into the
+ * Start/Stop ownership; the default never touches it, so Android keeps the paired
+ * key and the USB recovery path.
  */
 package cz.slush.adbanywhere.service
 
@@ -25,6 +26,15 @@ object SystemSettings {
         Settings.Global.putInt(
             context.contentResolver,
             "adb_wifi_enabled",
+            if (enabled) 1 else 0,
+        )
+    }.getOrDefault(false)
+
+    /** Only the opt-in D5 ownership writes ADB_ENABLED; the default never does. */
+    fun setAdbEnabled(context: Context, enabled: Boolean): Boolean = runCatching {
+        Settings.Global.putInt(
+            context.contentResolver,
+            Settings.Global.ADB_ENABLED,
             if (enabled) 1 else 0,
         )
     }.getOrDefault(false)

@@ -46,9 +46,11 @@ import kotlinx.coroutines.withContext
 fun SettingsScreen(
     state: ControlState,
     firewallEnabled: Boolean,
+    turnSystemAdbOffOnStop: Boolean,
     diagnosticLog: Boolean,
     appKey: String,
     onToggleFirewall: (Boolean) -> Unit,
+    onToggleTurnSystemAdbOffOnStop: (Boolean) -> Unit,
     onToggleDiagnosticLog: (Boolean) -> Unit,
     onSavePorts: (Int, Int) -> String?,
     onBatteryExemption: (Activity) -> Unit,
@@ -206,11 +208,28 @@ fun SettingsScreen(
                 }
                 Text(
                     "Wireless debugging is always turned off after the custom adb is verified. " +
-                        "Start and Stop also turn the system adb on and off; Stop leaves no ADB, " +
-                        "not even on USB.",
+                        "The switch below also lets Stop turn ADB itself off; it is off by " +
+                        "default so Android keeps the paired key and the USB recovery path.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "Turn system adb off on Stop\n" +
+                            "On: Stop turns ADB off and Start turns it back on. Android may " +
+                            "drop the paired key, so pair again on the next Start.",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Switch(
+                        checked = turnSystemAdbOffOnStop,
+                        onCheckedChange = onToggleTurnSystemAdbOffOnStop,
+                    )
+                }
             }
         }
 

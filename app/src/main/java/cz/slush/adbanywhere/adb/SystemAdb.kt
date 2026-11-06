@@ -22,26 +22,35 @@ class SystemAdb(
     val manager = AdbManager(context, keys)
     val shell: Shell get() = Shell(manager)
 
+    /** True when the last [ensureConnected] reached a listener that needs a pair. */
+    @Volatile
+    var pairingRequired = false
+        private set
+
     suspend fun pair(code: PairingCode): Boolean = withContext(Dispatchers.IO) {
         manager.pairTo("127.0.0.1", code.port, code.code)
     }
 
     suspend fun ensureConnected(): Boolean = withContext(Dispatchers.IO) {
+        pairingRequired = false
         if (manager.isConnected) return@withContext true
 
         // A previously authorized ADB channel can bootstrap the app when the
         // system wireless debugging UI is not reachable. This is the same path
         // as USB `adb tcpip` followed by `adb connect`, but the address is
-        // supplied by the debug-only intent used in the end-to-end test.
+        // supplied by the debug-only intent used in the end-to-end test. It is
+        // one-shot: a stale forward must not be retried on every later setup.
         if (prefs.bootstrapHost.isNotBlank() && prefs.bootstrapPort > 0) {
-            AppLog.info(
-                "system",
-                "bootstrap ${prefs.bootstrapHost}:${prefs.bootstrapPort}",
-            )
-            if (manager.connectTo(prefs.bootstrapHost, prefs.bootstrapPort)) {
+            val host = prefs.bootstrapHost
+            val port = prefs.bootstrapPort
+            prefs.bootstrapHost = ""
+            prefs.bootstrapPort = 0
+            AppLog.info("system", "bootstrap $host:$port")
+            if (manager.connectTo(host, port)) {
                 AppLog.info("system", "bootstrap connected")
                 return@withContext true
             }
+            pairingRequired = pairingRequired || manager.pairingRequired
             AppLog.warn("system", "bootstrap failed")
         }
 
@@ -58,6 +67,7 @@ class SystemAdb(
                 AppLog.info("system", "connected on 127.0.0.1:$port")
                 return@withContext true
             }
+            pairingRequired = pairingRequired || manager.pairingRequired
         }
 
         // Android 13+ no longer publishes service.adb.tls.port; the port is only
@@ -70,13 +80,14 @@ class SystemAdb(
                 AppLog.info("system", "connected via mDNS on 127.0.0.1:$port")
                 return@withContext true
             }
+            pairingRequired = pairingRequired || manager.pairingRequired
         }
         AppLog.info("system", "no listener found on ports $candidates")
         false
     }
 
-    suspend fun discoverTlsPorts(): List<Int> = withContext(Dispatchers.IO) {
-        MdnsDiscovery(context).discoverAll("_adb-tls-connect._tcp")
+    suspend fun discoverTlsPorts(timeoutMs: Long = 4_000): List<Int> = withContext(Dispatchers.IO) {
+        MdnsDiscovery(context).discoverAll("_adb-tls-connect._tcp", timeoutMs)
     }
 
     /**

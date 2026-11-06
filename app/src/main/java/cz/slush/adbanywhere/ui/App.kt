@@ -73,6 +73,7 @@ fun AppRoot(viewModel: AppViewModel) {
     val logs by viewModel.logs.collectAsStateWithLifecycle()
     val appLogs by viewModel.appLog.collectAsStateWithLifecycle()
     val diagnosticLog by viewModel.diagnosticLog.collectAsStateWithLifecycle()
+    val turnSystemAdbOffOnStop by viewModel.turnSystemAdbOffOnStop.collectAsStateWithLifecycle()
     val appFingerprint by viewModel.appFingerprint.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
@@ -174,7 +175,6 @@ fun AppRoot(viewModel: AppViewModel) {
                 )
                 Screen.Setup -> SetupScreen(
                     state = state,
-                    onPair = viewModel::pair,
                     onSetup = viewModel::start,
                     onNotify = viewModel::postPairingNotification,
                     onOpenDeveloperSettings = {
@@ -220,9 +220,11 @@ fun AppRoot(viewModel: AppViewModel) {
                 Screen.Settings -> SettingsScreen(
                     state = state,
                     firewallEnabled = firewall.enabled,
+                    turnSystemAdbOffOnStop = turnSystemAdbOffOnStop,
                     diagnosticLog = diagnosticLog,
                     appKey = appFingerprint,
                     onToggleFirewall = viewModel::setFirewallEnabled,
+                    onToggleTurnSystemAdbOffOnStop = viewModel::setTurnSystemAdbOffOnStop,
                     onToggleDiagnosticLog = viewModel::setDiagnosticLog,
                     onSavePorts = viewModel::setPorts,
                     onBatteryExemption = { viewModel.requestBatteryExemption(it) },

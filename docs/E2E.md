@@ -24,8 +24,10 @@ The phone test is the real product path:
 2. Add the host public key with the app's *Keys → Add key* flow.
 3. Open Settings → Developer options → Wireless debugging → *Pair device with
    pairing code*.
-4. Read the code and port from the dialog and pair from the app (notification
-   replies or the manual fields).
+4. Read the code and port from the dialog and reply once to the ADB Anywhere
+   notification with `code:port`.  The notification reply keeps the app in the
+   background, so Android's pairing dialog stays open while the app connects.  Do not
+   switch back to the app: opening it closes the dialog on AOSP.
 5. The app deploys the daemon with `127.0.0.1:15037` and
    `<vpn-ip>:15038`, verifies both and turns Android's wireless debugging off.
 6. From the developer machine run:

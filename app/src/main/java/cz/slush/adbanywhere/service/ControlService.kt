@@ -123,11 +123,7 @@ class ControlService : Service() {
         }
 
         startForeground(ControlBus.state.value)
-        notificationJob = scope.launch {
-            ControlBus.state.collect { state ->
-                updateNotification(state)
-            }
-        }
+        ensureNotificationCollector()
         scope.launch {
             ControlBus.update { it.copy(appFingerprint = keys.publicKey.fingerprint) }
         }
@@ -151,6 +147,12 @@ class ControlService : Service() {
             ACTION_START -> {
                 prefs.userWantsRunning = true
                 AppLog.info("service", "user asked to run")
+                // A Stop followed immediately by a Start must not lose the new
+                // start: stopForeground removed the notification and the
+                // collector, so re-promote the service and restart the collector
+                // before the setup runs.
+                ensureNotificationCollector()
+                if (!foregroundStarted) startForeground(ControlBus.state.value)
                 // A fresh process or a failed setup can inherit a daemon from a
                 // previous run. Kill it and start this process's own daemon; a
                 // running daemon is already ours and is only re-checked.
@@ -247,7 +249,7 @@ class ControlService : Service() {
             ACTION_STOP -> {
                 prefs.userWantsRunning = false
                 AppLog.info("service", "stop requested")
-                stopEverything()
+                stopEverything(startId)
                 return START_NOT_STICKY
             }
         }
@@ -333,6 +335,17 @@ class ControlService : Service() {
                 step(0, StepStatus.Active, "Connecting to Android's wireless debugging")
                 var daemonAlive = withContext(Dispatchers.IO) { probeDaemon() }
                 AppLog.info("setup", "custom adb alive=$daemonAlive dir=${prefs.remoteDir}")
+                // The opt-in D5 ownership enables ADB before the bootstrap, so a
+                // user who turned ADB off can start the app again. Enabling ADB is
+                // safe: it does not delete the paired key. The default never
+                // writes ADB_ENABLED, so Android keeps the key and USB recovery.
+                if (!daemonAlive && prefs.turnSystemAdbOffOnStop &&
+                    SystemSettings.adbEnabled(this) == 0
+                ) {
+                    AppLog.info("setup", "system adb is off; enabling it for the bootstrap")
+                    SystemSettings.setAdbEnabled(this, true)
+                    delay(500)
+                }
                 if (!daemonAlive && prefs.setupComplete &&
                     ContextCompat.checkSelfPermission(
                         this,
@@ -363,6 +376,15 @@ class ControlService : Service() {
                 }
                 var systemAlive = if (daemonAlive) false
                 else withContext(Dispatchers.IO) { system.ensureConnected() }
+                // A stale paired flag is the most common pairing failure: the
+                // app key is no longer in the system adbd, so a connect is
+                // rejected with "ADB pairing is required". Drop the flag and
+                // ask for a new code instead of failing the whole setup.
+                if (!daemonAlive && !systemAlive && system.pairingRequired) {
+                    AppLog.warn("setup", "the system adb rejected the app key; pairing required")
+                    needsPairing()
+                    return@withLock
+                }
                 if (firewallConfig.enabled && vpnIp != null &&
                     SystemSettings.isPortOpen(vpnIp, prefs.vpnPort) &&
                     firewallProxy?.isListening != true
@@ -608,43 +630,26 @@ class ControlService : Service() {
      */
     private suspend fun awaitSystemWirelessDebugging(timeoutMs: Long = SYSTEM_ADB_WAIT_MS) {
         val deadline = System.currentTimeMillis() + timeoutMs
-        var asked = false
-        // Android 13+ does not publish service.adb.tls.port. The TLS port is
-        // only in the mDNS advertisement, so resolve it before waiting on the
-        // property.
         val ports = LinkedHashSet<Int>()
-        system.tlsPort()?.let(ports::add)
-        if (ports.isEmpty()) {
-            AppLog.info("system", "service.adb.tls.port is empty; resolving mDNS")
-            ports += system.discoverTlsPorts()
+        var nextDiscovery = 0L
+        ControlBus.update {
+            it.copy(message = "Confirm Android's wireless debugging prompt…")
         }
-        if (ports.isNotEmpty()) {
-            AppLog.info("system", "waiting for system wireless debugging on $ports")
-            ControlBus.update {
-                it.copy(message = "Confirm Android's wireless debugging prompt…")
-            }
-            while (System.currentTimeMillis() < deadline) {
-                val open = ports.firstOrNull(SystemSettings::isLocalPortOpen)
-                if (open != null) {
-                    prefs.lastTlsPort = open
-                    AppLog.info("setup", "system wireless debugging is up on 127.0.0.1:$open")
-                    return
-                }
-                delay(100)
-            }
-        }
+        // The advertisement appears a few seconds after the setting write, so
+        // mDNS must be retried during the wait instead of resolved once before
+        // the loop. On Android 13+ the port is only in the advertisement.
         while (System.currentTimeMillis() < deadline) {
-            val current = system.tlsPort()
-            if (current != null && SystemSettings.isLocalPortOpen(current)) {
-                prefs.lastTlsPort = current
-                AppLog.info("setup", "system wireless debugging is up on 127.0.0.1:$current")
-                return
+            system.tlsPort()?.let(ports::add)
+            val now = System.currentTimeMillis()
+            if (ports.none(SystemSettings::isLocalPortOpen) && now >= nextDiscovery) {
+                nextDiscovery = now + MDNS_RETRY_MS
+                ports += system.discoverTlsPorts(MDNS_TIMEOUT_MS)
             }
-            if (!asked) {
-                asked = true
-                ControlBus.update {
-                    it.copy(message = "Confirm Android's wireless debugging prompt…")
-                }
+            val open = ports.firstOrNull(SystemSettings::isLocalPortOpen)
+            if (open != null) {
+                prefs.lastTlsPort = open
+                AppLog.info("setup", "system wireless debugging is up on 127.0.0.1:$open")
+                return
             }
             delay(250)
         }
@@ -681,6 +686,7 @@ class ControlService : Service() {
 
     private fun needsPairing() {
         AppLog.warn("setup", "pairing required")
+        prefs.paired = false
         ControlBus.update {
             it.copy(
                 phase = Phase.NeedsPairing,
@@ -1119,7 +1125,7 @@ class ControlService : Service() {
      * arrives during a deployment cannot race the deployment and leave an orphaned
      * daemon behind. The loopback port is the authority on whether the stop worked.
      */
-    private fun stopEverything() {
+    private fun stopEverything(startId: Int) {
         AppLog.info("service", "stopping adb and the service")
         scope.launch {
             setupMutex.withLock {
@@ -1136,13 +1142,26 @@ class ControlService : Service() {
                         AppLog.warn("service", "stop cannot reach adb: ${it.message}")
                     }
                 }
+                // The opt-in D5 ownership turns the system adb off on Stop.
+                // Off is the default: Stop leaves Android's paired key and the
+                // USB recovery path alone. Stop never writes ADB_ENABLED unless
+                // the user turned this on.
+                if (prefs.turnSystemAdbOffOnStop) {
+                    AppLog.info("service", "turning the system adb off")
+                    val adb = SystemSettings.setAdbEnabled(this@ControlService, false)
+                    val wifi = SystemSettings.setAdbWifiEnabled(this@ControlService, false)
+                    if (!adb || !wifi) {
+                        AppLog.warn("service", "could not turn the system adb off")
+                    }
+                }
                 // The daemon kills itself through its own shell, so the socket can
                 // take a moment to close. Give it the same grace as stop().
                 val stillListening = daemonListening()
                 cancelWatchdog()
                 watchdogJob?.cancel()
-                // The system wireless debugging outlives the daemon and is the
-                // recovery path: stop only the patched daemon here.
+                // The system adb outlives the daemon. The default leaves it
+                // alone, so its paired key and the USB recovery path survive;
+                // only the opt-in ownership turns it off.
                 refreshAdbStatus()
                 // The notification collector must not re-post the stopped state
                 // after the foreground notification is removed below.
@@ -1163,7 +1182,11 @@ class ControlService : Service() {
                     )
                 }
                 ServiceCompat.stopForeground(this@ControlService, ServiceCompat.STOP_FOREGROUND_REMOVE)
-                stopSelf()
+                foregroundStarted = false
+                // startId scopes the stop to this request: a Start that arrived
+                // while the stop was running keeps the service alive and setup()
+                // then re-promotes it.
+                stopSelf(startId)
             }
         }
     }
@@ -1213,8 +1236,8 @@ class ControlService : Service() {
         SetupStep("Connect to Android's wireless debugging"),
         SetupStep("Deploy the custom adb"),
         SetupStep("Verify the listeners"),
-        SetupStep("Turn system wireless debugging off"),
         SetupStep("Start the firewall relay"),
+        SetupStep("Turn system wireless debugging off"),
     )
 
     private fun startForeground(state: ControlState) {
@@ -1229,6 +1252,15 @@ class ControlService : Service() {
             foregroundStarted = true
         }.onFailure {
             AppLog.error("service", "startForeground failed", it)
+        }
+    }
+
+    private fun ensureNotificationCollector() {
+        if (notificationJob?.isActive == true) return
+        notificationJob = scope.launch {
+            ControlBus.state.collect { state ->
+                updateNotification(state)
+            }
         }
     }
 
@@ -1443,7 +1475,9 @@ class ControlService : Service() {
         const val ACTION_APPLY_FIREWALL = "cz.slush.adbanywhere.APPLY_FIREWALL"
         const val ACTION_STOP = "cz.slush.adbanywhere.STOP"
         private const val NETWORK_SETTLE_MS = 1_500L
-        private const val SYSTEM_ADB_WAIT_MS = 15_000L
+        private const val SYSTEM_ADB_WAIT_MS = 30_000L
+        private const val MDNS_RETRY_MS = 5_000L
+        private const val MDNS_TIMEOUT_MS = 2_000L
         private const val MAX_PROMPTS = 8
         private const val BIND_ATTEMPTS = 10
         private const val BIND_RETRY_MS = 500L

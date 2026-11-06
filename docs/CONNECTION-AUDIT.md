@@ -133,7 +133,7 @@ persisted `paired=true` is stale.
 | C1 | P0 | Stop writes `ADB_ENABLED=0`, stops the system adbd and clears the paired app key | `a4757c4`, device paired list only `dev@bro` | Remove `AdbLifecycle.stop()` from Stop/Boot; never write `ADB_ENABLED` |
 | C2 | P0 | `applyAdbState()` skips the write when the settings already match; a stale TLS server stays down | app log `adb_wifi_enabled 1 -> 1`, `service.adb.tls.port=` | Always write `adb_wifi_enabled=1` on bootstrap and wait 900 ms |
 | C3 | P0 | Start writes `ADB_ENABLED=1` and `ADB_WIFI_ENABLED=1` without waiting for adbd | `a4757c4` | Do not write `ADB_ENABLED`; keep the old `setAdbWifiEnabled` + delay path |
-| C4 | P0 | The app key is not in the system adbd; `prefs.paired=true` is stale | `dumpsys adb user_keys` only `dev@bro`; `connect 44607: ADB pairing is required` | Pair again; tie `paired` to the key fingerprint |
+| C4 | P0 | The app key is not in the system adbd; `prefs.paired=true` is stale | `dumpsys adb user_keys` only `dev@bro`; `connect 44607: ADB pairing is required` | Pair again; the real cause is the `AppKeyStore` identity race below |
 | C5 | P1 | Two-step pairing can mix code and port from different dialogs | pairing code 00:34:44, port 00:35:00, pair failed | One notification with `code:port`, or one in-app form |
 | C6 | P1 | mDNS returns the first resolved port, which can be a stale advertisement | mDNS 34857 stale, 44607 actual | Collect all ports and try them; keep mDNS as fallback |
 | C7 | P1 | Restart starts the replacement without waiting for the old pid | `2c76489`, 40+ s `/proc` scan | `ps` + pid wait, `/proc` fallback; `awaitRestartScripts` |
@@ -163,3 +163,111 @@ persisted `paired=true` is stale.
   pairing notification with `code:port` from the open dialog.
 - Two simultaneous starts from different app processes are still
   last-writer-wins; there is no cross-process lock.
+
+## Emulator end-to-end (2026-11-06)
+
+A clean API 35 AOSP emulator (`adbanywhere-e2e`, x86_64, `-wipe-data`) was used
+for the whole control plane.  `ro.adb.secure=0` on the emulator means the system
+adbd accepts a key without pairing, so pairing was exercised separately with the
+real pairing dialog; the bootstrap and Start/Stop paths are identical to the phone.
+
+### Pairing failure reproduced and root-caused
+
+The first pair attempt after a fresh install failed with:
+
+```
+[pair] pair 127.0.0.1:32885 failed: Error configuring certificate:
+  SSL routines:OPENSSL_internal:CERTIFICATE_AND_PRIVATE_KEY_MISMATCH
+```
+
+The app's `AppKeyStore` had three independent `by lazy` properties, each of
+which called `loadOrCreate()`.  On a fresh install the service reads
+`keyPair`, `certificate`, `publicKeyB64` and `publicKey` from different
+threads (the setup coroutine and the app-fingerprint coroutine).  Two of them can
+both see missing files, generate a pair, delete and rewrite the files, and the
+in-memory `keyPair` and `certificate` then belong to different generations.
+The on-disk files match each other; the process's certificate does not match its
+private key.  The same race explains the phone's stale `paired=true`: a pair can
+succeed with generation A, a later lazy property regenerates B, and the system
+adbd then rejects B with `ADB pairing is required`.
+
+Fix: one `identity` lazy in `AppKeyStore`; `keyPair`, `certificate`,
+`publicKeyB64` and `publicKey` all derive from it.  `loadOrCreate()` is also
+`synchronized`.
+
+After the fix, the same pairing dialog paired successfully:
+
+```
+[pair] started on 127.0.0.1:35357
+[pair] paired; starting setup
+[setup] running; endpoint=not available yet
+```
+
+`dumpsys adb user_keys` then contained the app key (`adb-anywhere`) next to
+the host key.  The key survived the opt-in Stop (`ADB_ENABLED=0`), the next
+Start (`ADB_ENABLED=1`), the mDNS bootstrap, a process kill and a daemon
+restart.
+
+### Bootstrap and connection
+
+- Start with the patched daemon down writes `ADB_WIFI_ENABLED=1`, then retries
+  mDNS during the wait.  The emulator log shows the first advertisement
+  `10.0.2.16:45525`, the next one `10.0.2.16:35783`, and
+  `system wireless debugging is up on 127.0.0.1:35783`.  This is the phone
+  path: Android 13+ does not publish `service.adb.tls.port`.
+- `SystemAdb` then connected on the TLS port, granted
+  `WRITE_SECURE_SETTINGS`, deployed the patched adbd on
+  `127.0.0.1:15037` and hardened `ADB_WIFI_ENABLED=0`.
+- `adb forward tcp:15037 tcp:15037` + `adb connect 127.0.0.1:15037`
+  authenticated with the host key and `shell id` returned `uid=0(root)` (the
+  emulator was `adb root`; a phone returns `uid=2000(shell)`).
+
+### Start/Stop with the switch off (default)
+
+- Stop stopped only the patched adbd (`stopping pids=[6036]`), left
+  `ADB_ENABLED=1`, `ADB_WIFI_ENABLED=0` and the app key in `user_keys`.
+- Start reconnected through the system TLS listener and redeployed the patched
+  adbd without a new pairing code.
+- A process kill (`kill -9`) restored the service through `START_STICKY`:
+  `[service] resuming after a process restart`, `[setup] started; restart=true`,
+  `[adb] restarting detached`, listeners verified and the host connection
+  recovered.
+- The Home Restart button produced the same detached restart and the host
+  connection recovered.
+- A Stop followed immediately by Start was also tested.  The service stayed
+  alive, re-promoted its foreground notification, restarted the collector and
+  reached Running with a fresh daemon; `stopSelf(startId)` prevents the Stop from
+  swallowing the later Start.
+- A boot after an emulator `adb root` left `/data/local/tmp/adb-anywhere` owned by
+  root, so the shell adbd could not overwrite `adb_keys`.  `Shell.writeTextFile`
+  now removes the target before writing, and the boot flow recovered.  This is an
+  emulator-only ownership case; a phone's system adbd is always shell.
+
+### Start/Stop with the switch on (opt-in)
+
+- Stop wrote `ADB_ENABLED=0` and `ADB_WIFI_ENABLED=0`; the host adb went
+  offline, which is the intended full-ownership behavior.
+- Start from the stopped app wrote `ADB_ENABLED=1`, waited for the system adbd,
+  opened wireless debugging (`ADB_WIFI_ENABLED=1`), resolved the new TLS port
+  over mDNS, deployed the patched adbd and hardened wireless debugging again.
+  The app key was still in `user_keys` on this emulator, so no new pairing was
+  needed.
+- The switch is off by default and is the only path that writes
+  `ADB_ENABLED=0`; the default keeps the old pre-firewall behavior.
+
+### Pairing UI
+
+The in-app code/port form was removed.  Opening the app closes Android's
+pairing dialog, so the form could never win the race on AOSP.  The Setup screen
+now shows the notification path only: reply once with `code:port`; the notification
+reply keeps the app in the background and the dialog open.  `PairReplyReceiver`
+forwards the single reply to the same `pair()` call.
+
+### Still not covered on the emulator
+
+- `ro.adb.secure=1` is not set on the AOSP emulator, so the
+  `ADB pairing is required` detection (`SystemAdb.pairingRequired`) is covered by
+  code review, not by an emulator failure.  The phone evidence for the stale
+  `paired` flag is in the section above.
+- A real phone's VPN interface and the firewall relay are not part of this run;
+  the firewall was off.

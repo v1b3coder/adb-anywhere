@@ -5,7 +5,6 @@
 package cz.slush.adbanywhere.data
 
 import android.content.Context
-import android.util.Base64
 import org.bouncycastle.asn1.x500.X500Name
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter
 import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder
@@ -20,16 +19,23 @@ import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 import java.security.interfaces.RSAPublicKey
 import java.security.spec.PKCS8EncodedKeySpec
+import java.util.Base64
 import java.util.Date
 
-class AppKeyStore(context: Context) {
-    private val dir = context.createDeviceProtectedStorageContext().filesDir
+class AppKeyStore(private val dir: File) {
+    constructor(context: Context) : this(context.createDeviceProtectedStorageContext().filesDir)
+
     private val privateFile = File(dir, "appkey.pk8")
     private val certFile = File(dir, "appcert.pem")
     private val publicFile = File(dir, "appkey.pub")
 
-    val keyPair: KeyPair by lazy { loadOrCreate().first }
-    val certificate: X509Certificate by lazy { loadOrCreate().second }
+    private val identity: Pair<KeyPair, X509Certificate> by lazy { loadOrCreate() }
+
+    // All four properties derive from one identity. Three independent lazies
+    // could generate three pairs, and the certificate would then not match the
+    // private key (CERTIFICATE_AND_PRIVATE_KEY_MISMATCH during pairing).
+    val keyPair: KeyPair get() = identity.first
+    val certificate: X509Certificate get() = identity.second
     val publicKeyB64: String by lazy {
         AndroidPubKey.encodeLine(keyPair.public as RSAPublicKey, "app")
     }
@@ -37,6 +43,7 @@ class AppKeyStore(context: Context) {
         AndroidPubKey.parse(publicKeyB64)!!
     }
 
+    @Synchronized
     private fun loadOrCreate(): Pair<KeyPair, X509Certificate> {
         load()?.let { return it }
         val generated = generate()
@@ -93,7 +100,7 @@ class AppKeyStore(context: Context) {
     }
 
     private fun pem(certificate: X509Certificate): String {
-        val encoded = Base64.encodeToString(certificate.encoded, Base64.NO_WRAP)
+        val encoded = Base64.getEncoder().encodeToString(certificate.encoded)
         return "-----BEGIN CERTIFICATE-----\n$encoded\n-----END CERTIFICATE-----\n"
     }
 }

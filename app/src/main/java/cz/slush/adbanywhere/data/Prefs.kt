@@ -75,6 +75,15 @@ class Prefs(context: Context) {
         get() = prefs.getString("remote_dir", "/data/local/tmp/adb-anywhere") ?: "/data/local/tmp/adb-anywhere"
         set(value) = prefs.edit().putString("remote_dir", value.trim()).apply()
 
+    /**
+     * D5: the opt-in Start/Stop ownership of the system adbd. Off is the default:
+     * the app never writes ADB_ENABLED, so Android keeps the paired key and the
+     * USB recovery path. On turns ADB off on Stop and back on on Start.
+     */
+    var turnSystemAdbOffOnStop: Boolean
+        get() = prefs.getBoolean("turn_system_adb_off_on_stop", false)
+        set(value) = prefs.edit().putBoolean("turn_system_adb_off_on_stop", value).apply()
+
     var daemonFirewallMode: Boolean
         get() = prefs.getBoolean("daemon_firewall_mode", false)
         set(value) = prefs.edit().putBoolean("daemon_firewall_mode", value).apply()

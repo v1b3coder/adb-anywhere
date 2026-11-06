@@ -38,9 +38,10 @@ android.permission.WRITE_SECURE_SETTINGS` command instead of failing silently.
 2. Tap ▶️ *Start* in the status card. Nothing starts the daemon before that.
 3. Open Settings → Developer options → Wireless debugging → *Pair device with
    pairing code*.
-4. Tap *Show pairing notification* in the app, pull down the shade and reply with
-   the six-digit code, then with the port. The same values can be entered in the
-   app's manual fields.
+4. Tap *Show pairing notification* in the app, pull down the shade and reply
+   once with `code:port` (for example `123456:37123`).  Opening the app closes
+   Android's pairing dialog on AOSP, so the notification reply is the reliable
+   path; the in-app manual fields were removed for that reason.
 5. The app pairs, grants `WRITE_SECURE_SETTINGS`, deploys the patched `adbd`,
    verifies loopback and the VPN listener, and turns Android's wireless debugging
    off.
@@ -101,11 +102,13 @@ path rules are lexical and advisory. The full design and its limits are in
 - Removing a key removes it from the key file and restarts the daemon, so the
   sessions that the key authenticated end. Per-key policy and filtering are not
   implemented yet: every key in the file may open every supported service.
-- Start turns the system adbd on when it is off and leaves it on while the patched
-  adbd runs. Stop stops the patched adbd and turns the system adbd off, so a
-  stopped app has no ADB at all, not even on USB. Boot after a stop re-asserts off.
+- Start turns the system adbd on only when the opt-in *Turn system adb off on
+  Stop* switch is on.  The default leaves `ADB_ENABLED` alone, so Android keeps
+  the paired key and the USB recovery path.  Stop stops the patched adbd; with the
+  switch on it also turns the system adbd off (and Start turns it back on), and
+  Android may then drop the paired key, so the next Start can need a new code.
 - The app never stops the system adbd while it needs the patched adbd: on devices
-  where init kills the adbd cgroup, that would also stop the patched adbd. The
+  where init kills the adbd cgroup, that would also stop the patched adbd.  The
   security benefit is at Stop, not during a run.
 - If the system adbd is reachable over the network anyway, the app shows the
   warning in the UI and in its persistent foreground notification.

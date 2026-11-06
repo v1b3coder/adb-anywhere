@@ -103,6 +103,10 @@ class Shell(private val manager: AdbManager) {
     fun writeTextFile(path: String, text: String) {
         val quoted = quote(path)
         val bytes = text.toByteArray(StandardCharsets.UTF_8)
+        // Replace instead of truncating: a file left by a different uid (for
+        // example a root adbd during an emulator test) is not writable in place,
+        // but the directory is.
+        exec("rm -f $quoted").requireOk("remove $path")
         exec("printf '%s' ${quote(text)} > $quoted").requireOk("write $path")
         val size = exec("wc -c < $quoted").stdout.trim().toLongOrNull()
         if (size != bytes.size.toLong()) {

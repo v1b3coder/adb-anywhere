@@ -24,6 +24,7 @@ import cz.slush.adbanywhere.firewall.IpNetwork
 import cz.slush.adbanywhere.service.AppLog
 import cz.slush.adbanywhere.service.ControlBus
 import cz.slush.adbanywhere.service.ControlService
+import cz.slush.adbanywhere.service.Phase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -41,6 +42,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val firewall = ControlBus.firewallConfig
     val appLog = AppLog.entries
     val diagnosticLog = AppLog.enabled
+    private val _turnSystemAdbOffOnStop = MutableStateFlow(prefs.turnSystemAdbOffOnStop)
+    val turnSystemAdbOffOnStop: StateFlow<Boolean> = _turnSystemAdbOffOnStop
 
 
     /** The user's last explicit start or stop. Opening the app never overrides it. */
@@ -55,6 +58,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     init {
         viewModelScope.launch(Dispatchers.IO) {
             _appFingerprint.value = keyStore.publicKey.fingerprint
+        }
+        // A stopped app has no service to restore the phase after the process
+        // was killed; the UI must show Stop instead of the first-run Set up.
+        if (!prefs.userWantsRunning && prefs.setupComplete) {
+            ControlBus.update {
+                it.copy(phase = Phase.Stopped, message = "Stopped")
+            }
         }
     }
 
@@ -92,6 +102,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun setDiagnosticLog(enabled: Boolean) {
         prefs.diagnosticLog = enabled
         AppLog.setEnabled(enabled)
+    }
+
+    /** D5: opt-in Start/Stop ownership of the system adbd. Off is the default. */
+    fun setTurnSystemAdbOffOnStop(enabled: Boolean) {
+        AppLog.info("settings", "turn system adb off on stop=$enabled")
+        prefs.turnSystemAdbOffOnStop = enabled
+        _turnSystemAdbOffOnStop.value = enabled
     }
 
     /**

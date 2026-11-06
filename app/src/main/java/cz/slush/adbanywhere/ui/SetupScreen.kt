@@ -15,7 +15,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.NotificationsActive
 import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material3.Button
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -33,30 +32,19 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import cz.slush.adbanywhere.data.PairingCode
 import cz.slush.adbanywhere.service.ControlState
 import cz.slush.adbanywhere.service.Phase
 
 @Composable
 fun SetupScreen(
     state: ControlState,
-    onPair: (PairingCode) -> Unit,
     onSetup: () -> Unit,
     onNotify: () -> Unit,
     onOpenDeveloperSettings: () -> Unit,
     onSetTlsPort: (Int) -> String?,
 ) {
-    var code by rememberSaveable { mutableStateOf("") }
-    var port by rememberSaveable { mutableStateOf("") }
     var tlsPort by rememberSaveable { mutableStateOf("") }
     var portError by remember { mutableStateOf("") }
-    val parsedCode = remember(code) { PairingCode.parseCode(code) }
-    val parsedPort = remember(port) { PairingCode.parsePort(port) }
-    val pairing = if (parsedCode != null && parsedPort != null) {
-        PairingCode(parsedCode, parsedPort)
-    } else {
-        null
-    }
     val busy = state.phase == Phase.Pairing || state.phase == Phase.Deploying
 
     LazyColumn(
@@ -74,7 +62,12 @@ fun SetupScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("1. Open Settings → Developer options → Wireless debugging.", style = MaterialTheme.typography.bodyMedium)
                     Text("2. Tap “Pair device with pairing code”. Keep that dialog open.", style = MaterialTheme.typography.bodyMedium)
-                    Text("3. Reply to the ADB Anywhere notification with the code, then the port.", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "3. Reply to the ADB Anywhere notification once, with code:port " +
+                            "(for example 123456:37123). Opening this app closes Android's " +
+                            "pairing dialog, so the notification is the reliable path.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = onNotify) {
@@ -86,38 +79,13 @@ fun SetupScreen(
                         Text("Developer settings", modifier = Modifier.padding(start = 8.dp))
                     }
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = code,
-                        onValueChange = { code = it.filter(Char::isDigit).take(6) },
-                        modifier = Modifier.weight(1f),
-                        label = { Text("Pairing code") },
-                        placeholder = { Text("123456") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    )
-                    OutlinedTextField(
-                        value = port,
-                        onValueChange = { port = it.filter(Char::isDigit).take(5) },
-                        modifier = Modifier.weight(1f),
-                        label = { Text("Pairing port") },
-                        placeholder = { Text("37123") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    )
-                }
                 Text(
-                    "Both numbers are shown in Android's pairing dialog.",
+                    "Both numbers are in Android's pairing dialog. The notification reply keeps " +
+                        "the app in the background, so the dialog stays open while it connects.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = { pairing?.let(onPair) },
-                        enabled = pairing != null && !busy,
-                    ) {
-                        Text(if (state.phase == Phase.Pairing) "Pairing…" else "Pair")
-                    }
                     if (state.phase == Phase.NeedsPairing || state.phase == Phase.Error) {
                         TextButton(onClick = onSetup) {
                             Text("Retry connection")

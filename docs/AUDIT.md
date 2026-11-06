@@ -14,11 +14,12 @@ there are P0 correctness, security, and recovery defects, and the implementation
 has drifted substantially from the design. The app must not be described as
 production-ready until the P0 items below are fixed and the design is reconciled.
 
-**Later change:** the "Keep system adb off" switch was removed. Start and Stop now
-own `ADB_ENABLED`: Start enables the system adbd when it is off, Stop disables it,
-and boot after a stop re-asserts off. The app never stops the system adbd while it
-needs the patched adbd: on devices that share its cgroup, that would also kill the
-patched adbd.
+**Later change:** the destructive `ADB_ENABLED` ownership is now opt-in.  The
+Settings switch *Turn system adb off on Stop* is off by default, so Start and Stop
+never write `ADB_ENABLED`; Android keeps the paired key and the USB recovery path.
+With the switch on, Start enables the system adbd when it is off and Stop disables
+it.  The app never stops the system adbd while it needs the patched adbd: on devices
+that share its cgroup, that would also kill the patched adbd.
 
 
 ## 0. Scorecard (informal)
@@ -546,11 +547,17 @@ a predictable TCP port.
 
 ### P1-15 — The app key generation is racy
 
-`AppKeyStore.keyPair` and `certificate` are separate `by lazy` properties, each calling
-`loadOrCreate()` (`AppKeyStore.kt:31-33`). `loadOrCreate()` is not synchronized. The service
-reads `keys.publicKey` from one coroutine while `AppViewModel` reads it from another; on first
-run both can generate different keypairs and write different files. The private key and certificate
-can then mismatch, and the daemon rejects the app key.
+**Status: fixed in the connection-audit follow-up.** `AppKeyStore` now has a single
+`identity` lazy; `keyPair`, `certificate`, `publicKeyB64` and `publicKey` all derive
+from it, and `loadOrCreate()` is synchronized.  On the emulator the old code produced
+`CERTIFICATE_AND_PRIVATE_KEY_MISMATCH` during pairing; after the fix the same dialog
+paired and the app key appeared in `dumpsys adb user_keys`.
+
+`AppKeyStore.keyPair` and `certificate` were separate `by lazy` properties, each calling
+`loadOrCreate()` (`AppKeyStore.kt:31-33`). `loadOrCreate()` was not synchronized. The service
+read `keys.publicKey` from one coroutine while `AppViewModel` read it from another; on first
+run both could generate different keypairs and write different files. The private key and certificate
+could then mismatch, and the daemon rejected the app key.
 
 Impact: first-run flakiness, especially on slow devices.
 
@@ -870,13 +877,13 @@ Material 3 in `Theme.kt`.
 | §5 D2 One patched adbd with two listeners | **Functional, not as designed** | Two listeners work, but the daemon is an independent implementation, not a patched AOSP adbd (P1-1). |
 | §5 D3 App key ephemeral, private in app storage, public in daemon key file | **Met** | `AppKeyStore`, `KeyFiles`, `DaemonManager`. |
 | §5 D4 QR/paste pairing, fingerprint confirmation, label, no listener | **Met** | `KeysScreen`, `AndroidPubKey`, `DeveloperKey`; no pairing listener. |
-| §5 D5 `ADB_WIFI_ENABLED=0` always; `ADB_ENABLED=0` only with keep-off; restore original | **Partial** | `harden()` and the watchdog re-assert and verify `ADB_WIFI_ENABLED=0` (P0-5, fixed in `17277a2`); `ADB_ENABLED=0` still only with keep-off; failed setup restores the bootstrap and the pre-bootstrap `ADB_ENABLED` (P0-2, fixed in `a99716e`). |
-| §5 D6 Watchdog keeps D5, probes 5555, restarts daemon | **Partial** | Restarts daemon; sets `ADB_ENABLED=0` only when 5555 is open and keep-off is on; probes 5555 in both keep-off modes for the §8 residual warning (P0-6, fixed in `2b73e78`); re-asserts and verifies `ADB_WIFI_ENABLED=0` every tick (P0-5, fixed in `17277a2`); no backoff; a sticky restart or watchdog alarm resumes setup (P0-4, fixed in `284b75b`). |
+| §5 D5 `ADB_WIFI_ENABLED=0` always; `ADB_ENABLED=0` only with the opt-in switch | **Met** | `harden()` and the watchdog re-assert and verify `ADB_WIFI_ENABLED=0` (P0-5, fixed in `17277a2`); `ADB_ENABLED` is written only by the opt-in *Turn system adb off on Stop* switch (default off); failed setup stops only the patched adbd. |
+| §5 D6 Watchdog keeps D5, probes 5555, restarts daemon | **Met** | Restarts daemon; never writes `ADB_ENABLED`; probes 5555 for the §8 residual warning (P0-6, fixed in `2b73e78`); re-asserts and verifies `ADB_WIFI_ENABLED=0` every tick (P0-5, fixed in `17277a2`); no backoff; a sticky restart or watchdog alarm resumes setup (P0-4, fixed in `284b75b`). |
 | §5 D7 Patched adbd per-key/per-service policy | **Partial** | Roles exist, but both allow all services (P1-11). |
 | §5 D8 Kotlin/Compose/Material 3/package | **Met** | App sources and manifest. |
-| §5 D9 Bootstrap pairing notification with the code, then the port | **Met** | `ControlService.postPairingNotification` (step 1), `postPairingPortNotification` (step 2), `PairReplyReceiver`. |
+| §5 D9 Bootstrap pairing notification with one `code:port` reply | **Met** | `ControlService.postPairingNotification`, `PairReplyReceiver`; the in-app form was removed because opening the app closes Android's pairing dialog. |
 | §5 D10 TCP only; USB/vsock disabled | **Met** | Daemon has no USB/vsock code. |
-| §5 D11 Settings UI shows current ADB state and warning | **Partial** | Settings reads `adb_enabled`, `adb_wifi_enabled` and the 5555 probe and shows the warnings (P2-6, fixed in `068201e`); `HomeScreen` shows the same platform state and warnings (P0-6, fixed in `2b73e78`). |
+| §5 D11 Settings UI shows current ADB state, warning and the opt-in switch | **Met** | Settings reads `adb_enabled`, `adb_wifi_enabled` and the 5555 probe, shows the warnings (P2-6, fixed in `068201e`) and the *Turn system adb off on Stop* switch; `HomeScreen` shows the same platform state and warnings (P0-6, fixed in `2b73e78`). |
 | §5 D12 Explicit errors, no silent fallback/random-port redirect | **Partial** | Many errors are explicit; some failures are swallowed (`startForeground`, `postPairingNotification`, `scheduleWatchdog`). |
 | §6 Patch set in `daemon/` | **Not met** | No `daemon/` directory; independent daemon (P1-1). |
 | §6 Key provisioning: app key only at startup, developer keys appended | **Partial** | App writes app + developer keys before start; app key is not the only startup key (minor). |
