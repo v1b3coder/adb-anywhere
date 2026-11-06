@@ -1,5 +1,6 @@
 /*
  * AppCatalog - lists the launcher apps the foreground-app allowlist can select.
+ * ADB Anywhere itself is included, so it can be allowlisted like any other app.
  * The manifest queries element makes them visible on Android 11+.
  */
 package cz.slush.adbanywhere.firewall
@@ -20,7 +21,6 @@ class AppCatalog(private val context: Context) {
                     label = it.loadLabel(context.packageManager).toString(),
                 )
             }
-            .filter { it.packageName != context.packageName }
             .distinctBy { it.packageName }
             .sortedBy { it.label.lowercase() }
     }.getOrDefault(emptyList())

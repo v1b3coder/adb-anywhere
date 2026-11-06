@@ -120,8 +120,9 @@ instead.
   user to Settings → Special app access → Usage access. If it is missing, the
   module cannot be enabled and the UI says why. Work-profile apps are out of
   scope for the first version.
-- ADB Anywhere itself is excluded from the picker and is only exempt while a
-  prompt is visible.
+- ADB Anywhere itself appears in the picker and can be allowlisted like any other
+  app, so external ADB keeps working while its own UI is in the foreground. A
+  visible prompt is exempt from the app check regardless of the allowlist.
 - The relay checks the package at `accept()` and again at `A_OPEN`. The first
   check closes a connection whose target app is not foreground before any ADB
   handshake; the second closes a connection whose target app lost the foreground
