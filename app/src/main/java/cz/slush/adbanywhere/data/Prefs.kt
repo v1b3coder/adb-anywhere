@@ -131,5 +131,13 @@ class Prefs(context: Context) {
     companion object {
         const val DEFAULT_LOOPBACK_PORT = 15037
         const val DEFAULT_VPN_PORT = 15038
+
+        /**
+         * Android's wireless-debugging TLS server binds port 0, so the kernel
+         * picks from the ephemeral range.  A custom loopback or VPN port at or
+         * above this value can collide with it; the defaults and the UI keep both
+         * below it.
+         */
+        const val EPHEMERAL_PORT_START = 32768
     }
 }

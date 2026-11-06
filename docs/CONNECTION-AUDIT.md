@@ -138,6 +138,8 @@ persisted `paired=true` is stale.
 | C6 | P1 | mDNS returns the first resolved port, which can be a stale advertisement | mDNS 34857 stale, 44607 actual | Collect all ports and try them; keep mDNS as fallback |
 | C7 | P1 | Restart starts the replacement without waiting for the old pid | `2c76489`, 40+ s `/proc` scan | `ps` + pid wait, `/proc` fallback; `awaitRestartScripts` |
 | C8 | P2 | Watchdog turns off the system wireless debugging every tick | `ensureWifiDebuggingOff()` in `watchdog()` | Only harden once after setup; leave the recovery path |
+| C9 | P0 | A custom VPN/loopback port in the ephemeral range can equal Android's random wireless-debugging TLS port; the app then connects to the wrong listener and reports "pairing required" | phone: wireless debugging `100.64.0.10:43935`, app endpoint `100.64.0.10:43935`; `connect 127.0.0.1:43935 requires pairing` | Defaults are 15037/15038 (below 32768); reject ports >= 32768 in Settings and in `setup`; guard the firewall port |
+| C10 | P0 | With the firewall on, the custom adbd can still hold the VPN port, so the relay cannot bind it | "port 5556 is occupied" after enabling the firewall | Restart the custom adbd loopback-only when the firewall is on and the VPN port is still open |
 
 ## Fixes in this tree
 
@@ -182,6 +184,14 @@ persisted `paired=true` is stale.
   default; on makes Start write `ADB_ENABLED=1` and Stop write
   `ADB_ENABLED=0`.  Android may drop the paired key when ADB is turned off,
   so the next Start can need a new pairing code.
+- Ports: `EPHEMERAL_PORT_START = 32768`.  The defaults are 15037/15038, below
+  the range Android uses for the random wireless-debugging TLS port.  Settings
+  rejects a custom loopback/VPN port at or above 32768, and `setup()` fails with
+  a clear message if an older pref is in that range.
+- Firewall: when it is on, the relay owns the VPN port and the custom adbd must
+  be loopback-only.  If the custom adbd still holds the VPN port, `setup()` now
+  restarts it loopback-only before the relay binds.  This fixes the
+  "port 5556 is occupied" error after enabling the firewall.
 - Pairing failure logging: `AdbManager.pairTo()` logs the exception.
 - Files: `Shell.writeTextFile()` removes the target before writing, so a file
   left by a different uid (an emulator `adb root` run) does not block the

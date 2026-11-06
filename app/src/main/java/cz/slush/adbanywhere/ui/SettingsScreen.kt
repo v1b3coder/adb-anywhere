@@ -116,7 +116,8 @@ fun SettingsScreen(
             SectionCard("Ports") {
                 Text(
                     "The loopback port is for the app. The VPN port is for developer machines. " +
-                        "Both are stable across reboots.",
+                        "Both are stable across reboots. Use ports below 32768: Android's " +
+                        "wireless debugging picks its random port from the ephemeral range.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

@@ -308,6 +308,22 @@ class ControlService : Service() {
                 AppLog.info("setup", "skipped; the user stopped adb")
                 return@withLock
             }
+            // A stored port from an older build can sit in the ephemeral range
+            // that Android's wireless debugging uses for its random TLS port.
+            // Fail with a clear instruction instead of connecting to the wrong
+            // listener and reporting "pairing required".
+            if (prefs.loopbackPort >= Prefs.EPHEMERAL_PORT_START ||
+                prefs.vpnPort >= Prefs.EPHEMERAL_PORT_START
+            ) {
+                fail(
+                    "The loopback or VPN port is in Android's ephemeral range. " +
+                        "Change it in Settings to a port below " +
+                        "${Prefs.EPHEMERAL_PORT_START} (for example " +
+                        "${Prefs.DEFAULT_LOOPBACK_PORT}/${Prefs.DEFAULT_VPN_PORT}), " +
+                        "then press Start again.",
+                )
+                return@withLock
+            }
             val previous = ControlBus.state.value
             AppLog.info("setup", "started; restart=$forceRestart")
             ControlBus.update {
@@ -414,6 +430,20 @@ class ControlService : Service() {
                     }
                 }
                 AppLog.info("setup", "system adb alive=$systemAlive")
+                // With the firewall on, the relay owns the VPN port and the custom
+                // adbd must be loopback-only.  A daemon started before the
+                // firewall was enabled still holds the VPN port even when the
+                // persisted daemonFirewallMode already reads true.  The port is the
+                // authority: restart the daemon loopback-only before the relay binds.
+                val vpnPortBusy = firewallConfig.enabled && daemonAlive && vpnIp != null &&
+                    SystemSettings.isPortOpen(vpnIp, prefs.vpnPort)
+                if (vpnPortBusy) {
+                    AppLog.warn(
+                        "firewall",
+                        "the custom adb still listens on the firewall port; " +
+                            "restarting it loopback-only",
+                    )
+                }
                 cleanupRequired = cleanupRequired || daemonAlive || systemAlive
                 if (!daemonAlive && !systemAlive) {
                     if (!prefs.paired) {
@@ -458,12 +488,12 @@ class ControlService : Service() {
                 val portsChanged = prefs.loopbackPort != previous.loopbackPort ||
                     prefs.vpnPort != previous.vpnPort
                 val restart = forceRestart || !daemonAlive || portsChanged ||
-                    (exposeVpn && vpnChanged) || firewallChanged
+                    (exposeVpn && vpnChanged) || firewallChanged || vpnPortBusy
                 AppLog.info(
                     "setup",
                     "deploy: adbAlive=$daemonAlive vpnChanged=$vpnChanged " +
                         "portsChanged=$portsChanged firewallChanged=$firewallChanged " +
-                        "restart=$restart",
+                        "vpnPortBusy=$vpnPortBusy restart=$restart",
                 )
                 if (daemonAlive && !restart) {
                     // No key was revoked: the daemon reloads the key file on the

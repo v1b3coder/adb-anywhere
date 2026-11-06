@@ -163,6 +163,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (loopback !in 1024..65535) return "The loopback port must be between 1024 and 65535."
         if (vpn !in 1024..65535) return "The VPN port must be between 1024 and 65535."
         if (loopback == vpn) return "The two ports must be different."
+        if (loopback >= Prefs.EPHEMERAL_PORT_START || vpn >= Prefs.EPHEMERAL_PORT_START) {
+            return "Use ports below ${Prefs.EPHEMERAL_PORT_START}: Android's wireless " +
+                "debugging picks its port from the ephemeral range, so a higher port " +
+                "can collide with it."
+        }
         prefs.loopbackPort = loopback
         prefs.vpnPort = vpn
         AppLog.info("settings", "ports loopback=$loopback vpn=$vpn")
