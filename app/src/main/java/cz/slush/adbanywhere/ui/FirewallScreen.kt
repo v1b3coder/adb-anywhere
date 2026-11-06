@@ -35,6 +35,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
@@ -79,6 +80,7 @@ fun FirewallScreen(
     if (showApps) {
         AppPickerDialog(
             apps = apps,
+            selfPackage = LocalContext.current.packageName,
             onDismiss = { showApps = false },
             onAdd = {
                 onAddApp(it)
@@ -331,6 +333,7 @@ fun FirewallScreen(
 @Composable
 private fun AppPickerDialog(
     apps: List<AppEntry>,
+    selfPackage: String,
     onDismiss: () -> Unit,
     onAdd: (String) -> Unit,
 ) {
@@ -353,6 +356,15 @@ private fun AppPickerDialog(
         ) {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Allow ADB for an app", style = MaterialTheme.typography.titleLarge)
+                if (filtered.any { it.packageName == selfPackage }) {
+                    Text(
+                        "Allowing ADB Anywhere itself is insecure: external ADB stays " +
+                            "open while this app is in front, not only while you watch " +
+                            "the log. The approval dialog is not counted.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
                 OutlinedTextField(
                     value = query,
                     onValueChange = { query = it },

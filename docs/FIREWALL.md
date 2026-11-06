@@ -113,7 +113,8 @@ instead.
   (modal sheet with a search field and a `LazyColumn`), not a plain dropdown,
   because the list is long.
 - The current foreground package comes from `UsageStatsManager.queryEvents` with
-  `ACTIVITY_RESUMED` / `ACTIVITY_PAUSED`, reading the last resumed package.
+  `ACTIVITY_RESUMED` / `ACTIVITY_PAUSED`, reading the last resumed package, but
+  skipping a resume of the app's own approval dialog.
   `PACKAGE_USAGE_STATS` is an appop, not a runtime permission; the manifest
   declares it and the app grants it with
   `appops set <package> GET_USAGE_STATS allow` through its own shell, or sends the
@@ -121,8 +122,13 @@ instead.
   module cannot be enabled and the UI says why. Work-profile apps are out of
   scope for the first version.
 - ADB Anywhere itself appears in the picker and can be allowlisted like any other
-  app, so external ADB keeps working while its own UI is in the foreground. A
-  visible prompt is exempt from the app check regardless of the allowlist.
+  app, so external ADB keeps working while its own UI is in the foreground. The
+  picker warns that this is the weakest choice, because it covers every screen of
+  the app, not only the audit log.
+- The approval dialog is not a foreground app. A resumed `CallPromptActivity`
+  leaves the previous package in place, so a call that raises the dialog cannot
+  make the app allowlist pass by itself. A visible prompt is still exempt from the
+  app check, so answering it does not close the call.
 - The relay checks the package at `accept()` and again at `A_OPEN`. The first
   check closes a connection whose target app is not foreground before any ADB
   handshake; the second closes a connection whose target app lost the foreground
@@ -130,9 +136,9 @@ instead.
 - Screen off or keyguard locked means no foreground app: external calls are denied.
 - The package is sampled at `A_OPEN` time. A prompt captures the package that was
   resumed when the call arrived, not the package that is resumed when the user
-  answers. ADB Anywhere itself is exempt while a prompt is visible, otherwise the
-  act of answering the prompt would close the call. The captured package remains the
-  basis for the decision for the lifetime of that prompt.
+  answers. The app check is exempt while a prompt is visible, otherwise the act of
+  answering the prompt would close the call. The captured package remains the basis
+  for the decision for the lifetime of that prompt.
 - The monitor polls every 1 s while an external session or a prompt exists, and every
   5 s otherwise. The relay never polls on the main thread.
 - On a foreground change away from the allowed set, the relay starts a grace timer
@@ -144,7 +150,8 @@ instead.
   basis for the decision; otherwise answering the prompt would trip the rule.
 - The module is advisory with respect to Android's own app lifecycle: a package can
   be "resumed" while a system dialog is on top. The relay treats the last resumed
-  activity as the foreground app, which is the same signal app blockers use.
+  activity as the foreground app, which is the same signal app blockers use. The
+  one exception is the app's own approval dialog, which is skipped.
 
 ## 7. Module: call policy
 
@@ -448,8 +455,9 @@ calls `adb tcpip` and never moves to another port silently.
 - `FirewallScreen` sections:
   - **Status**: listener address, active sessions, pending prompts, last error.
   - **IP allowlist**: switch, list, add dialog (`a.b.c.d` or `a.b.c.d/n`), delete.
-  - **App allowlist**: switch, selected apps, searchable picker, delete, grace
-    period (default 15 s, `0` means immediate).
+  - **App allowlist**: switch, selected apps, searchable picker with a warning
+    when ADB Anywhere itself is listed, delete, grace period (default 15 s, `0`
+    means immediate).
   - **Call policy**: switch, rule list, default action, prompt timeout,
     interactive-shell capability, audit log link.
 - `CallPromptActivity` is a modal screen with the call summary and the four
@@ -542,6 +550,8 @@ Device/integration:
 - IP deny: `adb connect` fails, no prompt, audit event.
 - App allowlist: switch apps and verify the decision, including the grace
   timer and a return before it expires.
+- Self allowlist: allowlisting ADB Anywhere keeps ADB open in its UI, and a call
+  that raises the approval dialog does not count as the foreground app.
 - Call policy: allow once, always, block, custom filter, timeout.
 - Prompt while backgrounded: notification path.
 - Screen off: deny.

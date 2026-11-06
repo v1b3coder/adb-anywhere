@@ -82,7 +82,9 @@ The tab has four modules:
 - **IP allowlist**: only listed IPv4 addresses and CIDR ranges may connect; an
   empty list denies every peer.
 - **App allowlist**: external ADB is available only while a selected app is in the
-  foreground. A configurable grace period covers a short switch.
+  foreground. A configurable grace period covers a short switch. The app's own
+  approval dialog never counts as the foreground app, so a call cannot grant itself
+  access by raising the dialog.
 - **Call policy**: every `A_OPEN` is parsed into a service call. Rules run first;
   an unmatched call asks through a notification or a dialog. `Block` denies this
   call, `Allow once` allows it, `Always allow` creates an exact rule, and

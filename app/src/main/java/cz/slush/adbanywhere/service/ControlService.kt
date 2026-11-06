@@ -108,7 +108,10 @@ class ControlService : Service() {
         ) { firewallStore.load().redactAudit }
         ControlBus.audit = auditLog.entries
         ControlBus.firewallConfig.value = firewallStore.load()
-        foregroundMonitor = ForegroundAppMonitor(this) {
+        foregroundMonitor = ForegroundAppMonitor(
+            this,
+            CallPromptActivity::class.java.name,
+        ) {
             (firewallProxy?.activeSessions ?: 0) > 0 || prompts.isNotEmpty()
         }
 

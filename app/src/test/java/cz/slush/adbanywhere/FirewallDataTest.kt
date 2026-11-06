@@ -260,6 +260,21 @@ class FirewallDataTest {
     }
 
     @Test
+    fun foregroundTrackerIgnoresTheApprovalDialog() {
+        val tracker = ForegroundTracker(
+            selfPackage = "cz.slush.adbanywhere",
+            promptActivity = "cz.slush.adbanywhere.ui.CallPromptActivity",
+        )
+        tracker.onResumed("com.example.app", "com.example.app.MainActivity")
+        tracker.onResumed("cz.slush.adbanywhere", "cz.slush.adbanywhere.ui.CallPromptActivity")
+        assertEquals("com.example.app", tracker.state().foreground)
+        tracker.onResumed("cz.slush.adbanywhere", "cz.slush.adbanywhere.MainActivity")
+        assertEquals("cz.slush.adbanywhere", tracker.state().foreground)
+        tracker.onResumed("com.example.other", "com.example.other.CallPromptActivity")
+        assertEquals("com.example.other", tracker.state().foreground)
+    }
+
+    @Test
     fun configRoundTripsThroughJson() {
         val config = FirewallConfig(
             enabled = true,

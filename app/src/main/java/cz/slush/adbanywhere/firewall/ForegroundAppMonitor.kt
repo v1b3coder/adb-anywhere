@@ -1,7 +1,8 @@
 /*
  * ForegroundAppMonitor - samples the resumed package with UsageStatsManager. It
  * polls faster while the relay has an external session or a prompt, and slower
- * otherwise. The module is advisory; screen off and keyguard clear the foreground.
+ * otherwise. The module is advisory; screen off and keyguard clear the foreground,
+ * and the app's own approval dialog does not replace it.
  */
 package cz.slush.adbanywhere.firewall
 
@@ -22,9 +23,10 @@ import kotlinx.coroutines.launch
 
 class ForegroundAppMonitor(
     private val context: Context,
+    promptActivity: String,
     private val active: () -> Boolean,
 ) {
-    private val tracker = ForegroundTracker()
+    private val tracker = ForegroundTracker(context.packageName, promptActivity)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val _state = MutableStateFlow(ForegroundState())
     val state: StateFlow<ForegroundState> = _state.asStateFlow()
@@ -61,7 +63,7 @@ class ForegroundAppMonitor(
                 while (events.hasNextEvent()) {
                     events.getNextEvent(event)
                     if (event.eventType == UsageEvents.Event.ACTIVITY_RESUMED) {
-                        tracker.onResumed(event.packageName)
+                        tracker.onResumed(event.packageName, event.className)
                     }
                 }
             }
