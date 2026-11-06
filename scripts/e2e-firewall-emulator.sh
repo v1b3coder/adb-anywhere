@@ -36,7 +36,7 @@ prefs() {
 }
 
 audit() {
-    adb -s "$serial" shell "run-as $pkg tail -n 400 /data/user_de/0/$pkg/files/firewall-audit.jsonl"
+    adb -s "$serial" shell "run-as $pkg tail -n 2000 /data/user_de/0/$pkg/files/firewall-audit.jsonl"
 }
 
 audit_has() { audit | grep -q "\"event\":\"$1\""; }
@@ -140,6 +140,7 @@ say "prepare the emulator"
 adb -s "$serial" shell "pm grant $pkg android.permission.WRITE_SECURE_SETTINGS" >/dev/null 2>&1 || true
 adb -s "$serial" shell "pm grant $pkg android.permission.POST_NOTIFICATIONS" >/dev/null 2>&1 || true
 adb -s "$serial" shell "appops set $pkg GET_USAGE_STATS allow" >/dev/null 2>&1 || true
+adb -s "$serial" shell "appops set $pkg SYSTEM_ALERT_WINDOW allow" >/dev/null 2>&1 || true
 adb -s "$serial" shell "am force-stop $pkg"
 adb -s "$serial" root >/dev/null 2>&1 || true
 adb -s "$serial" wait-for-device
@@ -165,7 +166,13 @@ sleep 8
 adb -s "$serial" shell "netstat -ltn 2>/dev/null" | grep -q "127.0.0.1:$relay_port" && ok "relay listening" || bad "relay not listening"
 adb -s "$serial" forward tcp:$relay_port tcp:$relay_port >/dev/null
 relay_connect
-adb -s "$relay" shell id 2>/dev/null | grep -q "uid=" && ok "relay shell" || bad "relay shell"
+i=0
+while [ "$i" -lt 20 ]; do
+    adb -s "$relay" shell id 2>/dev/null | grep -q "uid=" && break
+    sleep 1
+    i=$((i + 1))
+done
+[ "$i" -lt 20 ] && ok "relay shell" || bad "relay shell"
 
 say "baseline calls"
 run_ok "shell" shell id
@@ -238,6 +245,23 @@ if prompt_call "custom filter" shell 'ls /sdcard'; then
     audit_has call_allowed && ok "custom filter audit" || bad "custom filter audit"
 fi
 
+say "floating prompt"
+adb -s "$serial" shell input keyevent 3
+sleep 2
+(adb -s "$relay" shell getprop ro.product.board >"$tmp/call.out" 2>&1; echo $? >"$tmp/call.rc") &
+CALL_PID=$!
+if wait_for_text "ADB call needs approval"; then
+    ok "overlay prompt while backgrounded"
+    prompt_tap "Allow once"
+    finish_call
+    audit_has call_allowed && ok "overlay allow audit" || bad "overlay allow audit"
+else
+    bad "no overlay prompt while backgrounded"
+    kill "$CALL_PID" 2>/dev/null || true
+fi
+adb -s "$serial" shell "am start -n $pkg/.MainActivity" >/dev/null 2>&1
+sleep 3
+
 say "sync path"
 (adb -s "$relay" push "$tmp/push.txt" /data/local/tmp/e2e-sync.txt >"$tmp/call.out" 2>&1; echo $? >"$tmp/call.rc") &
 CALL_PID=$!
@@ -289,7 +313,13 @@ intent "--ez firewall true"
 sleep 8
 prefs | grep -q 'firewall_enabled" value="true"' && ok "firewall on stored" || bad "firewall on stored"
 relay_connect
-adb -s "$relay" shell id 2>/dev/null | grep -q "uid=" && ok "firewall on restores the relay" || bad "firewall on restores the relay"
+i=0
+while [ "$i" -lt 20 ]; do
+    adb -s "$relay" shell id 2>/dev/null | grep -q "uid=" && break
+    sleep 1
+    i=$((i + 1))
+done
+[ "$i" -lt 20 ] && ok "firewall on restores the relay" || bad "firewall on restores the relay"
 
 say "audit"
 for event in connection_open call_open call_prompted call_allowed call_denied call_timeout ip_denied app_denied; do

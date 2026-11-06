@@ -35,15 +35,18 @@ class CallPromptActivity : ComponentActivity() {
             LaunchedEffect(Unit) { finish() }
             return
         }
-        CallPrompt(request) { decision, rule ->
-            ControlService.startPromptResponse(
-                this,
-                request.id,
-                decision,
-                rule?.toJson()?.toString(),
-            )
-            finish()
-        }
+        CallPrompt(
+            request,
+            onDecision = { decision, rule ->
+                ControlService.startPromptResponse(
+                    this,
+                    request.id,
+                    decision,
+                    rule?.toJson()?.toString(),
+                )
+                finish()
+            },
+        )
     }
 
     companion object {

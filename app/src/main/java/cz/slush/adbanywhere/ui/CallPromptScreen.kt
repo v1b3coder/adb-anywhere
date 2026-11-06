@@ -1,6 +1,8 @@
 /*
- * CallPrompt - the approval screen for one pending ADB call. It never shows over
- * the keyguard, and it always resolves to Block when dismissed.
+ * CallPrompt - the approval card for one pending ADB call. It is either a dialog
+ * (the activity/notification path) or an inline card hosted by the floating
+ * overlay. It never shows over the keyguard and always resolves to Block when
+ * dismissed.
  */
 package cz.slush.adbanywhere.ui
 
@@ -33,22 +35,34 @@ import cz.slush.adbanywhere.firewall.PromptRequest
 fun CallPrompt(
     request: PromptRequest,
     onDecision: (String, CallRule?) -> Unit,
+    inline: Boolean = false,
 ) {
     var custom by remember { mutableStateOf(false) }
     if (custom) {
-        RuleEditorDialog(
-            call = request.call,
-            onDismiss = { custom = false },
-            onSave = { rule -> onDecision("custom", rule) },
-        )
+        if (inline) {
+            Surface(
+                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                shape = RoundedCornerShape(24.dp),
+                tonalElevation = 6.dp,
+            ) {
+                RuleEditorContent(
+                    call = request.call,
+                    onDismiss = { custom = false },
+                    onSave = { rule -> onDecision("custom", rule) },
+                )
+            }
+        } else {
+            RuleEditorDialog(
+                call = request.call,
+                onDismiss = { custom = false },
+                onSave = { rule -> onDecision("custom", rule) },
+            )
+        }
         return
     }
-    Dialog(
-        onDismissRequest = { onDecision("block", null) },
-        properties = DialogProperties(usePlatformDefaultWidth = false),
-    ) {
+    val card: @Composable () -> Unit = {
         Surface(
-            modifier = Modifier.fillMaxWidth().padding(24.dp),
+            modifier = Modifier.fillMaxWidth().padding(if (inline) 16.dp else 24.dp),
             shape = RoundedCornerShape(24.dp),
             tonalElevation = 6.dp,
         ) {
@@ -97,6 +111,16 @@ fun CallPrompt(
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text("Dismiss denies the call") }
             }
+        }
+    }
+    if (inline) {
+        card()
+    } else {
+        Dialog(
+            onDismissRequest = { onDecision("block", null) },
+            properties = DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            card()
         }
     }
 }

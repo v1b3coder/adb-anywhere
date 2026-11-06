@@ -1,6 +1,6 @@
 # Floating call prompt — design
 
-Status: approved
+Status: implemented
 Date: 2026-11-06
 Scope: the call-policy approval prompt, shown as a non-modal overlay above the
 current app instead of a notification that sometimes opens an activity
@@ -123,7 +123,17 @@ Manual:
 `docs/FIREWALL.md` §7.5 (prompt flow) and §10 (UI) are updated with the
 overlay path and the notification fallback.
 
-## 9. Decisions
+## 9. Implementation notes
+
+The overlay is `ui/CallPromptOverlay.kt`, hosted by `ControlService`. It uses a
+`ComposeView` in a `TYPE_APPLICATION_OVERLAY` window with
+`FLAG_NOT_TOUCH_MODAL`, so touches outside the card still reach the app.
+`ViewTreeLifecycleOwner` and `ViewTreeSavedStateRegistryOwner` are set
+reflectively because the Android variants of those classes are not on the module's
+compile classpath. `CallPrompt` gained an `inline` mode, and the rule editor body
+is `RuleEditorContent` with a fixed Save/Cancel footer.
+
+## 10. Decisions
 
 1. Prompt style: non-modal floating card. The call is already held for 30 s, so
    the prompt does not need to block the phone too.

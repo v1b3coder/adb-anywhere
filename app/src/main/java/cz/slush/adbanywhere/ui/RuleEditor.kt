@@ -1,6 +1,7 @@
 /*
  * RuleEditor - the custom filter editor. It starts with every field fixed and
  * lets the user unlock the fields that may vary. A broad rule is labelled.
+ * The Save/Cancel footer is outside the scrolling field list so it stays visible.
  */
 package cz.slush.adbanywhere.ui
 
@@ -44,12 +45,6 @@ fun RuleEditorDialog(
     onDismiss: () -> Unit,
     onSave: (CallRule) -> Unit,
 ) {
-    var action by remember { mutableStateOf(CallAction.ALLOW) }
-    var fixed by remember { mutableStateOf(call.fields.keys.toSet()) }
-    var pathGlob by remember { mutableStateOf(false) }
-    val fields = remember(call) {
-        call.fields.toList().sortedBy { it.first }
-    }
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
@@ -59,122 +54,140 @@ fun RuleEditorDialog(
             shape = RoundedCornerShape(24.dp),
             tonalElevation = 6.dp,
         ) {
-            LazyColumn(
-                modifier = Modifier.fillMaxWidth().heightIn(max = 560.dp),
-                contentPadding = PaddingValues(20.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                item {
-                    Text(
-                        "Custom filter",
-                        style = MaterialTheme.typography.titleLarge,
+            RuleEditorContent(call = call, onDismiss = onDismiss, onSave = onSave)
+        }
+    }
+}
+
+@Composable
+fun RuleEditorContent(
+    call: AdbCall,
+    onDismiss: () -> Unit,
+    onSave: (CallRule) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var action by remember { mutableStateOf(CallAction.ALLOW) }
+    var fixed by remember { mutableStateOf(call.fields.keys.toSet()) }
+    var pathGlob by remember { mutableStateOf(false) }
+    val fields = remember(call) {
+        call.fields.toList().sortedBy { it.first }
+    }
+    Column(modifier.fillMaxWidth()) {
+        LazyColumn(
+            modifier = Modifier.fillMaxWidth().heightIn(max = 480.dp),
+            contentPadding = PaddingValues(20.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            item {
+                Text(
+                    "Custom filter",
+                    style = MaterialTheme.typography.titleLarge,
+                )
+            }
+            item {
+                Text(
+                    call.raw,
+                    fontFamily = FontFamily.Monospace,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 4,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            items(fields) { (name, value) ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Checkbox(
+                        checked = name in fixed,
+                        enabled = !call.metacharacters,
+                        onCheckedChange = { checked ->
+                            fixed = if (checked) fixed + name else fixed - name
+                        },
                     )
+                    Column(Modifier.weight(1f)) {
+                        Text(name, style = MaterialTheme.typography.labelMedium)
+                        Text(
+                            value,
+                            fontFamily = FontFamily.Monospace,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
+            }
+            if ("path" in call.fields) {
                 item {
-                    Text(
-                        call.raw,
-                        fontFamily = FontFamily.Monospace,
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = 4,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                items(fields) { (name, value) ->
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Checkbox(
-                            checked = name in fixed,
-                            enabled = !call.metacharacters,
-                            onCheckedChange = { checked ->
-                                fixed = if (checked) fixed + name else fixed - name
-                            },
+                            checked = pathGlob,
+                            onCheckedChange = { pathGlob = it },
                         )
-                        Column(Modifier.weight(1f)) {
-                            Text(name, style = MaterialTheme.typography.labelMedium)
-                            Text(
-                                value,
-                                fontFamily = FontFamily.Monospace,
-                                style = MaterialTheme.typography.bodySmall,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                    }
-                }
-                if ("path" in call.fields) {
-                    item {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Checkbox(
-                                checked = pathGlob,
-                                onCheckedChange = { pathGlob = it },
-                            )
-                            Text("Match the path as a glob")
-                        }
-                    }
-                }
-                item {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        OutlinedButton(
-                            onClick = { action = CallAction.ALLOW },
-                        ) { Text("Allow") }
-                        OutlinedButton(
-                            onClick = { action = CallAction.DENY },
-                        ) { Text("Deny") }
-                    }
-                }
-                if (fixed.isEmpty()) {
-                    item {
-                        Text(
-                            "This rule matches every call of ${call.service}.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.error,
-                        )
-                    }
-                }
-                item {
-                    Text(
-                        preview(call, action, fixed, pathGlob),
-                        fontFamily = FontFamily.Monospace,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-                item {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End,
-                    ) {
-                        TextButton(onClick = onDismiss) { Text("Cancel") }
-                        Button(
-                            onClick = {
-                                val predicates = fixed.mapNotNull { name ->
-                                    val value = call.fields[name] ?: return@mapNotNull null
-                                    if (name == "path" && pathGlob) {
-                                        CallPredicate.Glob(name, value)
-                                    } else {
-                                        CallPredicate.Exact(name, value)
-                                    }
-                                }
-                                onSave(
-                                    CallRule(
-                                        id = java.util.UUID.randomUUID().toString(),
-                                        action = action,
-                                        service = call.service,
-                                        predicates = predicates,
-                                    ),
-                                )
-                            },
-                        ) { Text("Save rule") }
+                        Text("Match the path as a glob")
                     }
                 }
             }
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedButton(
+                        onClick = { action = CallAction.ALLOW },
+                    ) { Text("Allow") }
+                    OutlinedButton(
+                        onClick = { action = CallAction.DENY },
+                    ) { Text("Deny") }
+                }
+            }
+            if (fixed.isEmpty()) {
+                item {
+                    Text(
+                        "This rule matches every call of ${call.service}.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+            item {
+                Text(
+                    preview(call, action, fixed, pathGlob),
+                    fontFamily = FontFamily.Monospace,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth()
+                .padding(start = 20.dp, end = 20.dp, bottom = 16.dp),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+            Button(
+                onClick = {
+                    val predicates = fixed.mapNotNull { name ->
+                        val value = call.fields[name] ?: return@mapNotNull null
+                        if (name == "path" && pathGlob) {
+                            CallPredicate.Glob(name, value)
+                        } else {
+                            CallPredicate.Exact(name, value)
+                        }
+                    }
+                    onSave(
+                        CallRule(
+                            id = java.util.UUID.randomUUID().toString(),
+                            action = action,
+                            service = call.service,
+                            predicates = predicates,
+                        ),
+                    )
+                },
+            ) { Text("Save rule") }
         }
     }
 }

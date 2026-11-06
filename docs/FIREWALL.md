@@ -81,7 +81,8 @@ instead.
 | `AuditLog` | app | Bounded JSONL log and in-memory ring |
 | `FirewallState` | app | Publish listener, sessions, prompts and errors to the UI |
 | `FirewallScreen` | app UI | Status, modules, rules, audit |
-| `CallPromptActivity` | app UI | Approve or deny one pending call |
+| `CallPromptOverlay` | app UI | Non-modal floating card above the current app |
+| `CallPromptActivity` | app UI | Fallback dialog when the overlay permission is missing |
 | `RuleEditor` | app UI | Custom filter editor |
 
 ## 5. Module: IP allowlist
@@ -291,26 +292,29 @@ policy is off, every parsed call is allowed; the IP and app allowlists still app
 1. The relay parses `A_OPEN` and evaluates the rules.
 2. No rule matches: the stream is held. The relay does not forward `A_OPEN`
    upstream yet.
-3. If the app is foreground and the screen is interactive, a dialog appears. If the
-   app is background, a high-priority notification with a `Review` action appears
-   instead; the call waits. If the screen is off or locked, the call is denied
-   without a prompt. The screen-off rule is separate from the app allowlist: an
+3. If the app can draw overlays (`SYSTEM_ALERT_WINDOW`), a non-modal floating
+   card appears above the current app, whether or not ADB Anywhere is foreground.
+   Without the overlay permission, the prompt falls back to the activity and a
+   high-priority notification with a `Review` action; the call waits. If the screen
+   is off or locked, the call is denied without a prompt. The screen-off rule is separate from the app allowlist: an
    `A_OPEN` that arrived while the target app was foreground is still decided by
    the prompt, even if the screen turns off while the prompt is open.
 4. The prompt shows the source IP, the key label if the fingerprint was matched,
    the service, the parsed fields, and the raw service string. Values are monospace
    and truncated to 512 characters per field.
-5. The user chooses:
+5. The custom filter editor keeps its Save/Cancel footer outside the scrolling
+   field list, so the action is always visible.
+6. The user chooses:
    - **Block**: deny this call; no rule.
    - **Allow once**: allow this call; no rule.
    - **Always allow**: create an `ALLOW` rule with every field fixed, then allow.
    - **Custom filter**: open the editor; apply its rule, then allow or deny.
-6. Timeout is 30 s and defaults to deny. A closed prompt, a backgrounded app
-   without a notification tap, or a lost connection also denies. The ADB client has
+7. Timeout is 30 s and defaults to deny. A closed prompt, a dismissed overlay, or a
+   lost connection also denies. The ADB client has
    no application-level timeout for an `A_OPEN`, so the prompt timeout is the
    bound; the prompt shows a countdown.
-7. Pending prompts are capped at 8; excess calls are denied and audited.
-8. A `once` grant is bound to the connection and stream id, not to "the next
+8. Pending prompts are capped at 8; excess calls are denied and audited.
+9. A `once` grant is bound to the connection and stream id, not to "the next
    call". It cannot be replayed by another connection.
 
 `Block` means "deny this call"; "always deny" is a custom filter with the `DENY`
@@ -464,9 +468,12 @@ calls `adb tcpip` and never moves to another port silently.
     means immediate).
   - **Call policy**: switch, rule list, default action, prompt timeout,
     interactive-shell capability, audit log link.
-- `CallPromptActivity` is a modal screen with the call summary and the four
-  actions. It uses `setShowWhenLocked(false)` and refuses to show over the
-  keyguard; a locked phone gets a denial instead.
+- `CallPromptOverlay` is a `TYPE_APPLICATION_OVERLAY` window hosted by
+  `ControlService`. It is non-modal (`FLAG_NOT_TOUCH_MODAL`), shows the same card,
+  and is reachable only after the user grants Display over other apps. It cannot show
+  over the keyguard; a locked phone gets a denial instead.
+- `CallPromptActivity` remains the fallback when the overlay permission is missing.
+  It uses `setShowWhenLocked(false)` and refuses to show over the keyguard.
 - `RuleEditor` is a modal screen with field rows, lock toggles, action selector,
   preview and save.
 - The ongoing notification adds one line: `Firewall: 2 sessions, 1 prompt` or
@@ -483,6 +490,8 @@ calls `adb tcpip` and never moves to another port silently.
 | VPN goes down | Relay stops; external ADB unavailable; UI says why |
 | App process is killed | Service restart starts the relay again; prompts are lost and denied |
 | `UsageStats` permission missing | App allowlist cannot be enabled; UI shows the grant action |
+| Overlay permission missing | Notification fallback, unchanged |
+| Overlay add rejected by the OEM | Notification fallback; diagnostic log |
 | Prompt not answered | 30 s timeout, deny, audit |
 | Notifications denied | Prompt cannot be shown; deny after timeout, audit |
 | Prompt queue full | Deny excess, audit |
@@ -560,6 +569,11 @@ Device/integration:
 - IP deny: `adb connect` fails, no prompt, audit event.
 - App allowlist: switch apps and verify the decision, including the grace
   timer and a return before it expires.
+- Floating prompt: with `SYSTEM_ALERT_WINDOW`, background the app, fire a call,
+  assert the card is visible above the launcher, answer it, and assert the call
+  proceeds without a notification tap.
+- Custom filter footer: open the editor and assert Save rule and Cancel are visible
+  without scrolling.
 - Self allowlist: allowlisting ADB Anywhere keeps ADB open in its UI, and a call
   that raises the approval dialog does not count as the foreground app.
 - Call policy: allow once, always, block, custom filter, timeout.
@@ -630,8 +644,9 @@ Implemented in the app:
 - `service/ControlService.kt`: loopback-only daemon when the firewall is on,
   full-stack restart on a firewall toggle, relay lifecycle, port takeover from the
   system plain listener, prompt notification and response.
-- `ui/FirewallScreen.kt`, `ui/CallPromptScreen.kt`, `ui/CallPromptActivity.kt`,
-  `ui/RuleEditor.kt`: the tab, the prompt and the custom filter.
+- `ui/FirewallScreen.kt`, `ui/CallPromptScreen.kt`, `ui/CallPromptOverlay.kt`,
+  `ui/CallPromptActivity.kt`, `ui/RuleEditor.kt`: the tab, the floating prompt,
+  the notification fallback and the custom filter.
 - `ui/SettingsScreen.kt` and `ui/App.kt`: the switch and the conditional tab.
 
 Tests:

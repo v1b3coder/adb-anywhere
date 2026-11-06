@@ -341,6 +341,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun launcherApps(): List<AppEntry> = AppCatalog(getApplication()).launcherApps()
 
+    fun requestOverlayAccess() {
+        val intent = Intent(
+            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+            Uri.parse("package:${getApplication<Application>().packageName}"),
+        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        AppLog.info("firewall", "display over other apps requested")
+        runCatching { getApplication<Application>().startActivity(intent) }
+    }
+
     fun grantUsageAccess() {
         viewModelScope.launch(Dispatchers.IO) {
             val manager = cz.slush.adbanywhere.adb.AdbManager(getApplication(), keyStore)

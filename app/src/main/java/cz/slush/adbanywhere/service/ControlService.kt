@@ -21,7 +21,9 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.RemoteInput
@@ -53,6 +55,7 @@ import cz.slush.adbanywhere.firewall.PromptDecision
 import cz.slush.adbanywhere.firewall.PromptRequest
 import cz.slush.adbanywhere.firewall.PromptResponse
 import cz.slush.adbanywhere.ui.CallPromptActivity
+import cz.slush.adbanywhere.ui.CallPromptOverlay
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -95,6 +98,7 @@ class ControlService : Service() {
     private lateinit var auditLog: AuditLog
     private var firewallProxy: FirewallProxy? = null
     private var foregroundMonitor: ForegroundAppMonitor? = null
+    private var promptOverlay: CallPromptOverlay? = null
     // Relay threads and the main thread add, answer and remove prompts, so the map
     // must be concurrent; the service also iterates it when it stops the relay.
     private val prompts =
@@ -119,6 +123,7 @@ class ControlService : Service() {
         ) { firewallStore.load().redactAudit }
         ControlBus.audit = auditLog.entries
         ControlBus.firewallConfig.value = firewallStore.load()
+        promptOverlay = CallPromptOverlay(this)
         foregroundMonitor = ForegroundAppMonitor(
             this,
             CallPromptActivity::class.java.name,
@@ -277,6 +282,7 @@ class ControlService : Service() {
 
     override fun onDestroy() {
         AppLog.info("service", "destroyed")
+        hidePromptOverlay()
         stopFirewall("The service stopped")
         if (ControlBus.state.value.phase == Phase.Running) {
             ControlBus.update {
@@ -941,6 +947,7 @@ class ControlService : Service() {
             firewallProxy?.stop()
             firewallProxy = null
             foregroundMonitor?.stop()
+            hidePromptOverlay()
             prompts.values.forEach { it.cancel() }
             prompts.clear()
             ControlBus.pendingPrompt.value = null
@@ -952,6 +959,14 @@ class ControlService : Service() {
                     ),
                 )
             }
+        }
+    }
+
+    private fun hidePromptOverlay() {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            promptOverlay?.hide()
+        } else {
+            Handler(Looper.getMainLooper()).post { promptOverlay?.hide() }
         }
     }
 
@@ -983,13 +998,22 @@ class ControlService : Service() {
         prompts[request.id] = deferred
         ControlBus.pendingPrompt.value = request
         ControlBus.update { it.copy(firewall = it.firewall.copy(pendingPrompts = prompts.size)) }
-        postPromptNotification(request)
-        runCatching {
-            startActivity(
-                Intent(this, CallPromptActivity::class.java)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    .putExtra(CallPromptActivity.EXTRA_PROMPT_ID, request.id),
-            )
+        // The overlay is the primary prompt: it floats above the current app
+        // without a notification tap. The notification and activity stay as the
+        // fallback when the app cannot draw overlays.
+        val shown = withContext(Dispatchers.Main) {
+            promptOverlay?.show(request) == true
+        }
+        AppLog.info("firewall", "prompt ${request.call.service} overlay=$shown")
+        if (!shown) {
+            postPromptNotification(request)
+            runCatching {
+                startActivity(
+                    Intent(this, CallPromptActivity::class.java)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        .putExtra(CallPromptActivity.EXTRA_PROMPT_ID, request.id),
+                )
+            }
         }
         return try {
             val response = withTimeoutOrNull(timeoutMs) { deferred.await() }
@@ -1008,6 +1032,7 @@ class ControlService : Service() {
             // A timeout, a cancelled relay or a stop must release the slot and
             // the single pending-prompt slot; otherwise pending() stays true and the
             // app-allowlist grace timer stays suspended forever.
+            withContext(Dispatchers.Main) { promptOverlay?.hide() }
             prompts.remove(request.id)
             if (ControlBus.pendingPrompt.value?.id == request.id) {
                 ControlBus.pendingPrompt.value = null

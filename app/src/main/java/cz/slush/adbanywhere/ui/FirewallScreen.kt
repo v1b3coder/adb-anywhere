@@ -27,7 +27,9 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import android.provider.Settings
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -36,12 +38,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import cz.slush.adbanywhere.firewall.AppEntry
 import cz.slush.adbanywhere.firewall.AuditEvent
 import cz.slush.adbanywhere.firewall.FirewallConfig
@@ -65,6 +70,7 @@ fun FirewallScreen(
     onToggleRedactAudit: (Boolean) -> Unit,
     onClearAudit: () -> Unit,
     onGrantUsageAccess: () -> Unit,
+    onRequestOverlayAccess: () -> Unit,
     launcherApps: () -> List<AppEntry>,
 ) {
     var ip by remember { mutableStateOf("") }
@@ -238,6 +244,7 @@ fun FirewallScreen(
                         onCheckedChange = onToggleCallPolicy,
                     )
                 }
+                FloatingPromptRow(onRequestOverlayAccess)
                 OutlinedTextField(
                     value = grace,
                     onValueChange = { grace = it.filter(Char::isDigit) },
@@ -392,6 +399,44 @@ private fun AppPickerDialog(
                 }
                 TextButton(onClick = onDismiss) { Text("Cancel") }
             }
+        }
+    }
+}
+
+@Composable
+private fun FloatingPromptRow(onRequestOverlayAccess: () -> Unit) {
+    val context = LocalContext.current
+    var canOverlay by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                canOverlay = Settings.canDrawOverlays(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text("Floating prompt", style = MaterialTheme.typography.labelLarge)
+            Text(
+                if (canOverlay) {
+                    "The approval card floats above the current app. " +
+                        "The notification stays as the fallback."
+                } else {
+                    "Grant Display over other apps to float the approval card. " +
+                        "Without it the prompt uses the notification."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        OutlinedButton(onClick = onRequestOverlayAccess) {
+            Text(if (canOverlay) "Settings" else "Allow display")
         }
     }
 }
