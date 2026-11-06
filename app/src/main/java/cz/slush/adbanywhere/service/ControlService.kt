@@ -326,6 +326,11 @@ class ControlService : Service() {
             }
             val previous = ControlBus.state.value
             AppLog.info("setup", "started; restart=$forceRestart")
+            // A setup is often just a settings re-apply while the relay is already
+            // listening.  Do not reset FirewallState.listening to false in that
+            // case: the Home hero and the Firewall tab would disagree until the
+            // relay is restarted.
+            val relayListening = firewallProxy?.isListening == true
             ControlBus.update {
                 it.copy(
                     phase = Phase.Deploying,
@@ -334,6 +339,11 @@ class ControlService : Service() {
                     steps = initialSteps(),
                     loopbackPort = prefs.loopbackPort,
                     vpnPort = prefs.vpnPort,
+                    firewall = if (relayListening) {
+                        it.firewall.copy(enabled = firewallStore.load().enabled)
+                    } else {
+                        FirewallState(enabled = firewallStore.load().enabled)
+                    },
                 )
             }
             // A failed attempt must undo what it changed: it may have written the
@@ -440,8 +450,13 @@ class ControlService : Service() {
                 // firewall was enabled still holds the VPN port even when the
                 // persisted daemonFirewallMode already reads true.  The port is the
                 // authority: restart the daemon loopback-only before the relay binds.
+                // The relay itself listens on the VPN port when the firewall is on.
+                // Only a listener that is not our relay can be the custom adbd or the
+                // system plain listener; otherwise this check restarts the daemon and
+                // waits for the relay to close a port it is supposed to own.
+                val relayListening = firewallProxy?.isListening == true
                 val vpnPortBusy = firewallConfig.enabled && daemonAlive && vpnIp != null &&
-                    SystemSettings.isPortOpen(vpnIp, prefs.vpnPort)
+                    !relayListening && SystemSettings.isPortOpen(vpnIp, prefs.vpnPort)
                 if (vpnPortBusy) {
                     AppLog.warn(
                         "firewall",
@@ -558,7 +573,9 @@ class ControlService : Service() {
                     )
                     return@withLock
                 }
-                if (firewallConfig.enabled && vpnIp != null) {
+                if (firewallConfig.enabled && vpnIp != null &&
+                    firewallProxy?.isListening != true
+                ) {
                     waitForPortFree(vpnIp, prefs.vpnPort)
                 }
                 if (firewallConfig.enabled && vpnIp != null) {

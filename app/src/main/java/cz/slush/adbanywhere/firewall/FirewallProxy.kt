@@ -49,7 +49,10 @@ class FirewallProxy(
             InetAddress.getByName(vpnIp).isLoopbackAddress
         }.getOrDefault(false)
         val socket = ServerSocket()
-        socket.reuseAddress = false
+        // The relay is restarted on every firewall toggle and settings apply.
+        // The previous server socket can be in TIME_WAIT; reuseAddress lets the
+        // new bind take the port instead of failing for up to a minute.
+        socket.reuseAddress = true
         try {
             socket.bind(InetSocketAddress(vpnIp, port), 8)
         } catch (e: Exception) {
