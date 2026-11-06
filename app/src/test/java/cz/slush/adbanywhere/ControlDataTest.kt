@@ -6,6 +6,9 @@ import cz.slush.adbanywhere.data.Endpoint
 import cz.slush.adbanywhere.data.KeyFiles
 import cz.slush.adbanywhere.data.PairingCode
 import cz.slush.adbanywhere.data.VpnInterface
+import cz.slush.adbanywhere.firewall.FirewallState
+import cz.slush.adbanywhere.service.ControlState
+import cz.slush.adbanywhere.service.Phase
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -22,6 +25,29 @@ class ControlDataTest {
                 .generateKeyPair().public as RSAPublicKey,
         ),
     )!!
+
+    @Test
+    fun firewallDownRequiresEnabledButNotListening() {
+        assertFalse(ControlState().firewallDown)
+        assertFalse(
+            ControlState(firewall = FirewallState(enabled = false, listening = false)).firewallDown,
+        )
+        assertFalse(
+            ControlState(firewall = FirewallState(enabled = true, listening = false)).firewallDown,
+        )
+        assertTrue(
+            ControlState(
+                phase = Phase.Running,
+                firewall = FirewallState(enabled = true, listening = false),
+            ).firewallDown,
+        )
+        assertFalse(
+            ControlState(
+                phase = Phase.Running,
+                firewall = FirewallState(enabled = true, listening = true),
+            ).firewallDown,
+        )
+    }
 
     @Test
     fun pairingCodeParsesCodeAndPort() {

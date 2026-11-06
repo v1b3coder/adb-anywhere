@@ -44,6 +44,14 @@ data class ControlState(
 ) {
     val running: Boolean get() = phase == Phase.Running
     val needsSetup: Boolean get() = phase == Phase.NeedsPairing || phase == Phase.Error
+
+    /**
+     * The custom adb can be healthy while the firewall relay is down: the loopback
+     * channel works, but developer machines cannot reach the VPN endpoint.  The Home
+     * status must not claim the endpoint is reachable in that state.
+     */
+    val firewallDown: Boolean
+        get() = phase == Phase.Running && firewall.enabled && !firewall.listening
 }
 
 object ControlBus {

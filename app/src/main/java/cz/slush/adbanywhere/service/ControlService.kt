@@ -1080,6 +1080,9 @@ class ControlService : Service() {
                 AppLog.warn("watchdog", "firewall relay is down; restarting")
                 runCatching { startFirewall(vpnIp) }.onFailure {
                     AppLog.error("watchdog", "firewall restart failed: ${it.message}")
+                    fail("The firewall relay is not listening: ${it.message}")
+                    scheduleWatchdog()
+                    return
                 }
             }
         } else if (firewallProxy != null) {
@@ -1363,7 +1366,8 @@ class ControlService : Service() {
         // custom adb's key policy. It is a security warning, not a transient
         // status, so it stays in the ongoing notification as well as in the UI.
         val warnings = state.adbStatus?.warnings().orEmpty()
-        val title = if (warnings.isNotEmpty()) {
+        val firewallDown = state.firewallDown
+        val title = if (warnings.isNotEmpty() || firewallDown) {
             "ADB Anywhere needs attention"
         } else {
             when (state.phase) {

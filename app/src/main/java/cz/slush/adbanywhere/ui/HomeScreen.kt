@@ -118,16 +118,19 @@ private fun StatusHero(
     onRestart: () -> Unit,
     onPair: () -> Unit,
 ) {
-    val container = when (state.phase) {
-        Phase.Running -> MaterialTheme.colorScheme.primaryContainer
-        Phase.Error -> MaterialTheme.colorScheme.errorContainer
-        Phase.NeedsPairing -> MaterialTheme.colorScheme.tertiaryContainer
+    val firewallDown = state.firewallDown
+    val container = when {
+        firewallDown -> MaterialTheme.colorScheme.errorContainer
+        state.phase == Phase.Running -> MaterialTheme.colorScheme.primaryContainer
+        state.phase == Phase.Error -> MaterialTheme.colorScheme.errorContainer
+        state.phase == Phase.NeedsPairing -> MaterialTheme.colorScheme.tertiaryContainer
         else -> MaterialTheme.colorScheme.secondaryContainer
     }
-    val onContainer = when (state.phase) {
-        Phase.Running -> MaterialTheme.colorScheme.onPrimaryContainer
-        Phase.Error -> MaterialTheme.colorScheme.onErrorContainer
-        Phase.NeedsPairing -> MaterialTheme.colorScheme.onTertiaryContainer
+    val onContainer = when {
+        firewallDown -> MaterialTheme.colorScheme.onErrorContainer
+        state.phase == Phase.Running -> MaterialTheme.colorScheme.onPrimaryContainer
+        state.phase == Phase.Error -> MaterialTheme.colorScheme.onErrorContainer
+        state.phase == Phase.NeedsPairing -> MaterialTheme.colorScheme.onTertiaryContainer
         else -> MaterialTheme.colorScheme.onSecondaryContainer
     }
     Card(
@@ -148,11 +151,12 @@ private fun StatusHero(
                 ) {
                     Surface(color = onContainer.copy(alpha = 0.14f), shape = CircleShape) {
                         Icon(
-                            when (state.phase) {
-                                Phase.Running -> Icons.Rounded.CheckCircle
-                                Phase.Error -> Icons.Rounded.ErrorOutline
-                                Phase.NeedsPairing -> Icons.Outlined.Link
-                                Phase.Stopped -> Icons.Rounded.Stop
+                            when {
+                                firewallDown -> Icons.Rounded.ErrorOutline
+                                state.phase == Phase.Running -> Icons.Rounded.CheckCircle
+                                state.phase == Phase.Error -> Icons.Rounded.ErrorOutline
+                                state.phase == Phase.NeedsPairing -> Icons.Outlined.Link
+                                state.phase == Phase.Stopped -> Icons.Rounded.Stop
                                 else -> Icons.Rounded.PlayArrow
                             },
                             contentDescription = null,
@@ -162,20 +166,26 @@ private fun StatusHero(
                     }
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(
-                            phaseTitle(state.phase),
+                            if (firewallDown) "Firewall is not listening" else phaseTitle(state.phase),
                             style = MaterialTheme.typography.headlineSmall,
                             fontWeight = FontWeight.SemiBold,
                             color = onContainer,
                         )
                         Text(
-                            state.error.ifBlank { state.message.ifBlank { phaseSubtitle(state.phase) } },
+                            if (firewallDown) {
+                                state.firewall.lastError.ifBlank {
+                                    "The custom adb is running, but the firewall relay is not listening."
+                                }
+                            } else {
+                                state.error.ifBlank { state.message.ifBlank { phaseSubtitle(state.phase) } }
+                            },
                             style = MaterialTheme.typography.bodyMedium,
                             color = onContainer.copy(alpha = 0.86f),
                         )
                     }
                 }
 
-                if (state.phase == Phase.Running && state.endpoint.isNotBlank()) {
+                if (state.phase == Phase.Running && state.endpoint.isNotBlank() && !firewallDown) {
                     Surface(
                         color = onContainer.copy(alpha = 0.10f),
                         shape = RoundedCornerShape(16.dp),
