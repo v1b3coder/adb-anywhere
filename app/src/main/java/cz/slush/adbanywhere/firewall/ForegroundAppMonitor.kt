@@ -55,16 +55,18 @@ class ForegroundAppMonitor(
         tracker.onInteractive(power?.isInteractive ?: true)
         tracker.onLocked(keyguard?.isKeyguardLocked ?: false)
         val now = System.currentTimeMillis()
-        if (tracker.state().foreground != null) {
-            val usage = context.getSystemService(UsageStatsManager::class.java)
-            val events = runCatching { usage?.queryEvents(lastQuery, now) }.getOrNull()
-            if (events != null) {
-                val event = UsageEvents.Event()
-                while (events.hasNextEvent()) {
-                    events.getNextEvent(event)
-                    if (event.eventType == UsageEvents.Event.ACTIVITY_RESUMED) {
-                        tracker.onResumed(event.packageName, event.className)
-                    }
+        // The first sample must query even though no package is known yet:
+        // the guard on the resolved foreground package kept the allowlist from
+        // ever seeing one.
+        val from = if (lastQuery == 0L) now - 3_600_000L else lastQuery
+        val usage = context.getSystemService(UsageStatsManager::class.java)
+        val events = runCatching { usage?.queryEvents(from, now) }.getOrNull()
+        if (events != null) {
+            val event = UsageEvents.Event()
+            while (events.hasNextEvent()) {
+                events.getNextEvent(event)
+                if (event.eventType == UsageEvents.Event.ACTIVITY_RESUMED) {
+                    tracker.onResumed(event.packageName, event.className)
                 }
             }
         }
