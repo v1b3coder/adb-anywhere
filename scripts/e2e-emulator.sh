@@ -57,6 +57,7 @@ adb -s "$serial" shell "am start -n $pkg/.MainActivity --es shellcmd 'id; echo e
 sleep 2
 adb -s "$serial" logcat -d -s AdbAnywhere | grep -q "e2e-daemon-ok"
 adb -s "$serial" shell "cat /data/local/tmp/adb-anywhere/adb_keys" | grep -q "$host_key"
+adb -s "$serial" shell 'cmd statusbar collapse' >/dev/null 2>&1 || true
 adb -s "$serial" shell "uiautomator dump /sdcard/e2e.xml >/dev/null 2>&1"
 adb -s "$serial" shell "cat /sdcard/e2e.xml" | grep -q 'ADB is reachable'
 

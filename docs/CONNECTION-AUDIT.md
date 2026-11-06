@@ -289,10 +289,10 @@ restart.
   `host adb path ok`.
 - `DEBUG_PAIR_REPLY` built a real `RemoteInput` result and called
   `PairReplyReceiver`; the log shows `pairing reply received` and `paired;
-  starting setup`.  The notification action is present in `dumpsys notification`
-  (`actions=1`, "Enter code:port"), but the AOSP shade did not render the
-  button inside the grouped notification; the receiver and the RemoteInput
-  extraction are covered, the button rendering is not.
+  starting setup`.  The pairing notification has its own group, so its
+  "Enter code:port" action renders in the shade; the RemoteInput editor opens
+  from it.  The synthetic Send tap did not submit the typed value in the
+  headless emulator, so the final tap is covered by the debug injection.
 - A boot after an emulator `adb root` left `/data/local/tmp/adb-anywhere` owned by
   root, so the shell adbd could not overwrite `adb_keys`.  `Shell.writeTextFile`
   now removes the target before writing, and the boot flow recovered.  This is an

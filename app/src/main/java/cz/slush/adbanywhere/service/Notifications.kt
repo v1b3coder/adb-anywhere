@@ -10,4 +10,6 @@ object Notifications {
     const val SERVICE_ID = 1001
     const val PAIRING_ID = 1002
     const val PROMPT_ID = 1003
+    const val GROUP_SERVICE = "service"
+    const val GROUP_PAIRING = "pairing"
 }
