@@ -94,6 +94,8 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="cz.slush.adbanywhere.DEBUG_PAIR" />
+                <action android:name="cz.slush.adbanywhere.DEBUG_NOTIFY_PAIR" />
+                <action android:name="cz.slush.adbanywhere.DEBUG_PAIR_REPLY" />
             </intent-filter>
         </receiver>
 

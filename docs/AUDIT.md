@@ -547,11 +547,14 @@ a predictable TCP port.
 
 ### P1-15 — The app key generation is racy
 
-**Status: fixed in the connection-audit follow-up.** `AppKeyStore` now has a single
-`identity` lazy; `keyPair`, `certificate`, `publicKeyB64` and `publicKey` all derive
-from it, and `loadOrCreate()` is synchronized.  On the emulator the old code produced
-`CERTIFICATE_AND_PRIVATE_KEY_MISMATCH` during pairing; after the fix the same dialog
-paired and the app key appeared in `dumpsys adb user_keys`.
+**Status: fixed in the connection-audit follow-up.** `AppKeyStore` now has one
+process-wide `identities` map behind a lock and a synchronized `loadOrCreate()`;
+`keyPair`, `certificate`, `publicKeyB64` and `publicKey` all derive from it.  The
+service and the activity create separate stores, so a per-instance lazy was not enough.
+On the emulator the old code produced `CERTIFICATE_AND_PRIVATE_KEY_MISMATCH` during
+pairing; after the fix the same dialog paired and the app key appeared in
+`dumpsys adb user_keys`.  `AppKeyStoreTest` covers concurrent first use of three
+instances.
 
 `AppKeyStore.keyPair` and `certificate` were separate `by lazy` properties, each calling
 `loadOrCreate()` (`AppKeyStore.kt:31-33`). `loadOrCreate()` was not synchronized. The service

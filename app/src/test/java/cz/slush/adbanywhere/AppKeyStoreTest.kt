@@ -18,10 +18,14 @@ class AppKeyStoreTest {
     @Test
     fun concurrentFirstUseKeepsOneIdentity() {
         val dir = Files.createTempDirectory("appkeystore").toFile()
-        val store = AppKeyStore(dir)
+        // The service and the activity each create their own store.  The
+        // identity must be shared across instances, not only across the lazy
+        // properties of one instance.
+        val stores = listOf(AppKeyStore(dir), AppKeyStore(dir), AppKeyStore(dir))
         val pool = Executors.newFixedThreadPool(8)
         val moduli = (1..24).map { index ->
             pool.submit<BigInteger> {
+                val store = stores[index % stores.size]
                 when (index % 3) {
                     0 -> (store.keyPair.public as RSAPublicKey).modulus
                     1 -> (store.certificate.publicKey as RSAPublicKey).modulus
@@ -32,6 +36,8 @@ class AppKeyStoreTest {
         pool.shutdown()
 
         assertEquals(1, moduli.distinct().size)
+        val first = stores.first().publicKeyB64
+        stores.forEach { assertEquals(first, it.publicKeyB64) }
         val reloaded = AppKeyStore(dir)
         assertEquals(
             (reloaded.keyPair.public as RSAPublicKey).modulus,

@@ -78,6 +78,7 @@ import org.json.JSONObject
 class ControlService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val setupMutex = Mutex()
+    private val lifecycleLock = Any()
     private lateinit var prefs: Prefs
     private lateinit var keys: AppKeyStore
     private lateinit var system: SystemAdb
@@ -148,11 +149,9 @@ class ControlService : Service() {
                 prefs.userWantsRunning = true
                 AppLog.info("service", "user asked to run")
                 // A Stop followed immediately by a Start must not lose the new
-                // start: stopForeground removed the notification and the
-                // collector, so re-promote the service and restart the collector
-                // before the setup runs.
-                ensureNotificationCollector()
-                if (!foregroundStarted) startForeground(ControlBus.state.value)
+                // start.  promoteForeground() and the stop cleanup share
+                // lifecycleLock and the stop checks userWantsRunning under it.
+                promoteForeground()
                 // A fresh process or a failed setup can inherit a daemon from a
                 // previous run. Kill it and start this process's own daemon; a
                 // running daemon is already ours and is only re-checked.
@@ -173,6 +172,7 @@ class ControlService : Service() {
             ACTION_RESTART -> {
                 prefs.userWantsRunning = true
                 AppLog.info("service", "restart requested")
+                promoteForeground()
                 scope.launch { setup(forceRestart = true) }
             }
             // A revocation must terminate sessions that were authenticated with the
@@ -194,10 +194,12 @@ class ControlService : Service() {
                 when {
                     code != null && port != null -> {
                         prefs.userWantsRunning = true
+                        promoteForeground()
                         scope.launch { pair(PairingCode(code, port)) }
                     }
                     combined != null -> {
                         prefs.userWantsRunning = true
+                        promoteForeground()
                         scope.launch { pair(combined) }
                     }
                     else -> {
@@ -225,6 +227,7 @@ class ControlService : Service() {
             ACTION_APPLY_FIREWALL -> {
                 prefs.userWantsRunning = true
                 AppLog.info("firewall", "listener mode changed; restarting the daemon in place")
+                promoteForeground()
                 scope.launch { setup(forceRestart = true) }
             }
             ACTION_CLEAR_AUDIT -> {
@@ -299,6 +302,12 @@ class ControlService : Service() {
 
     private suspend fun setup(forceRestart: Boolean = false) {
         setupMutex.withLock {
+            // The last explicit user intent wins.  A setup that was queued
+            // behind a Stop must not start a daemon after the user stopped.
+            if (!prefs.userWantsRunning) {
+                AppLog.info("setup", "skipped; the user stopped adb")
+                return@withLock
+            }
             val previous = ControlBus.state.value
             AppLog.info("setup", "started; restart=$forceRestart")
             ControlBus.update {
@@ -1145,48 +1154,62 @@ class ControlService : Service() {
                 // The opt-in D5 ownership turns the system adb off on Stop.
                 // Off is the default: Stop leaves Android's paired key and the
                 // USB recovery path alone. Stop never writes ADB_ENABLED unless
-                // the user turned this on.
-                if (prefs.turnSystemAdbOffOnStop) {
-                    AppLog.info("service", "turning the system adb off")
-                    val adb = SystemSettings.setAdbEnabled(this@ControlService, false)
-                    val wifi = SystemSettings.setAdbWifiEnabled(this@ControlService, false)
-                    if (!adb || !wifi) {
-                        AppLog.warn("service", "could not turn the system adb off")
-                    }
-                }
+                // the user turned this on.  A newer Start that arrived while
+                // the stop was running wins: skip the cleanup and let its setup
+                // re-promote the service and the daemon.
                 // The daemon kills itself through its own shell, so the socket can
                 // take a moment to close. Give it the same grace as stop().
                 val stillListening = daemonListening()
-                cancelWatchdog()
-                watchdogJob?.cancel()
-                // The system adb outlives the daemon. The default leaves it
-                // alone, so its paired key and the USB recovery path survive;
-                // only the opt-in ownership turns it off.
-                refreshAdbStatus()
-                // The notification collector must not re-post the stopped state
-                // after the foreground notification is removed below.
-                notificationJob?.cancel()
-                AppLog.info("service", "stopped; adb listening=$stillListening")
-                ControlBus.update {
-                    it.copy(
-                        phase = Phase.Stopped,
-                        endpoint = "",
-                        error = "",
-                        message = if (stillListening) {
-                            "Stopped, but the custom adb still listens on " +
-                                "127.0.0.1:${prefs.loopbackPort}. Turn wireless debugging off " +
-                                "in Settings, or reboot."
-                        } else {
-                            "Stopped"
-                        },
-                    )
+                var superseded = false
+                synchronized(lifecycleLock) {
+                    if (prefs.userWantsRunning) {
+                        superseded = true
+                    } else {
+                        if (prefs.turnSystemAdbOffOnStop) {
+                            AppLog.info("service", "turning the system adb off")
+                            val adb = SystemSettings.setAdbEnabled(this@ControlService, false)
+                            val wifi = SystemSettings.setAdbWifiEnabled(this@ControlService, false)
+                            if (!adb || !wifi) {
+                                AppLog.warn("service", "could not turn the system adb off")
+                            }
+                        }
+                        cancelWatchdog()
+                        watchdogJob?.cancel()
+                        // The notification collector must not re-post the
+                        // stopped state after the foreground notification is
+                        // removed below.
+                        notificationJob?.cancel()
+                        AppLog.info("service", "stopped; adb listening=$stillListening")
+                        ControlBus.update {
+                            it.copy(
+                                phase = Phase.Stopped,
+                                endpoint = "",
+                                error = "",
+                                message = if (stillListening) {
+                                    "Stopped, but the custom adb still listens on " +
+                                        "127.0.0.1:${prefs.loopbackPort}. Turn wireless debugging off " +
+                                        "in Settings, or reboot."
+                                } else {
+                                    "Stopped"
+                                },
+                            )
+                        }
+                        ServiceCompat.stopForeground(
+                            this@ControlService,
+                            ServiceCompat.STOP_FOREGROUND_REMOVE,
+                        )
+                        foregroundStarted = false
+                        // startId scopes the stop to this request: a Start that
+                        // arrived while the stop was running keeps the service
+                        // alive and its setup re-promotes it.
+                        stopSelf(startId)
+                    }
                 }
-                ServiceCompat.stopForeground(this@ControlService, ServiceCompat.STOP_FOREGROUND_REMOVE)
-                foregroundStarted = false
-                // startId scopes the stop to this request: a Start that arrived
-                // while the stop was running keeps the service alive and setup()
-                // then re-promotes it.
-                stopSelf(startId)
+                if (superseded) {
+                    AppLog.info("service", "stop superseded by a newer start")
+                    return@withLock
+                }
+                refreshAdbStatus()
             }
         }
     }
@@ -1261,6 +1284,18 @@ class ControlService : Service() {
             ControlBus.state.collect { state ->
                 updateNotification(state)
             }
+        }
+    }
+
+    /**
+     * Re-promotes the service after a Stop removed its foreground notification.
+     * The stop cleanup takes lifecycleLock and checks userWantsRunning under it,
+     * so a Stop that runs after this start cannot undo the notification.
+     */
+    private fun promoteForeground() {
+        synchronized(lifecycleLock) {
+            ensureNotificationCollector()
+            if (!foregroundStarted) startForeground(ControlBus.state.value)
         }
     }
 

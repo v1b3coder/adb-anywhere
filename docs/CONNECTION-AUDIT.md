@@ -141,13 +141,15 @@ persisted `paired=true` is stale.
 
 ## Fixes in this tree
 
-- App identity: `AppKeyStore` has one `identity` lazy and a synchronized
-  `loadOrCreate()`; `keyPair`, `certificate`, `publicKeyB64` and `publicKey`
-  all derive from it.  This is the pairing root cause: the old three lazies
-  could generate different pairs, which produced
-  `CERTIFICATE_AND_PRIVATE_KEY_MISMATCH` during pairing and a stale
-  `paired=true` after a later regeneration.  `AppKeyStoreTest` covers
-  concurrent first use.
+- App identity: `AppKeyStore` has one process-wide `identities` map behind a
+  lock and a synchronized `loadOrCreate()`; `keyPair`, `certificate`,
+  `publicKeyB64` and `publicKey` all derive from it.  The service and the
+  activity create separate stores, so the identity must be shared across
+  instances, not only across the lazy properties of one instance.  This is the
+  pairing root cause: the old three lazies could generate different pairs,
+  which produced `CERTIFICATE_AND_PRIVATE_KEY_MISMATCH` during pairing and a
+  stale `paired=true` after a later regeneration.  `AppKeyStoreTest` covers
+  concurrent first use of three instances.
 - Bootstrap: `setup()` writes `adb_wifi_enabled=1` unconditionally when
   Wi-Fi is up, writes `adb_allowed_connection_time=0`, waits 900 ms and calls
   `ensureConnected()`.  `awaitSystemWirelessDebugging()` retries mDNS every 5 s
@@ -158,8 +160,11 @@ persisted `paired=true` is stale.
   its paired keys survive.  With the opt-in switch on, Stop also writes
   `ADB_ENABLED=0` and `ADB_WIFI_ENABLED=0`.
 - Start/Stop race: Stop uses `stopSelf(startId)`, resets `foregroundStarted`
-  and Start re-promotes the service and restarts the notification collector,
-  so a Stop followed immediately by Start cannot swallow the new start.
+  and Start re-promotes the service and restarts the notification collector.
+  Both sides share `lifecycleLock`, and the stop cleanup re-checks
+  `userWantsRunning` under that lock, so a Stop cleanup that runs after a
+  later Start skips the notification/foreground teardown.  The quick Stop->Start
+  test leaves the process, the notification and the daemon in place.
 - Stale pairing: `AdbManager.connectTo()` records
   `AdbPairingRequiredException`; setup drops `prefs.paired` and posts the
   pairing notification instead of reporting "wireless debugging is not
@@ -188,9 +193,11 @@ persisted `paired=true` is stale.
   the old key may be in the system list or may never have been paired.  The app
   now detects `ADB pairing is required` and posts the one-reply pairing
   notification instead of reporting "wireless debugging is not reachable".
-- The notification `RemoteInput` wrapper was not separately automated; the
-  debug receiver calls the same `ControlService.startPair` that
-  `PairReplyReceiver` calls.
+- The notification `RemoteInput` wrapper is exercised by a debug-only
+  `DEBUG_PAIR_REPLY` action that builds a real `RemoteInput` result and calls
+  `PairReplyReceiver`.  The notification action itself is present in
+  `dumpsys notification`, but the AOSP notification shade did not render its
+  button in the group; the receiver and the RemoteInput extraction are covered.
 - The AOSP emulator has `ro.adb.secure=0`, so the
   `AdbPairingRequiredException` branch is code-reviewed, not emulator-tested.
   The phone evidence for the stale `paired` flag is in the section above.
@@ -269,12 +276,28 @@ restart.
   connection recovered.
 - A Stop followed immediately by Start was also tested.  The service stayed
   alive, re-promoted its foreground notification, restarted the collector and
-  reached Running with a fresh daemon; `stopSelf(startId)` prevents the Stop from
-  swallowing the later Start.
+  reached Running with a fresh daemon.  The stop cleanup and the start share
+  `lifecycleLock`; the stop re-checks `userWantsRunning` under it, so a stop
+  cleanup that runs after the later start skips the notification/foreground
+  teardown.  `stopSelf(startId)` keeps the service alive for the later start.
+- The E2E script now runs the real host path as well: `adb forward
+  tcp:15037 tcp:15037`, `adb connect 127.0.0.1:15037`,
+  `adb -s 127.0.0.1:15037 shell id` and `adb disconnect`, and it logs
+  `host adb path ok`.
+- `DEBUG_PAIR_REPLY` built a real `RemoteInput` result and called
+  `PairReplyReceiver`; the log shows `pairing reply received` and `paired;
+  starting setup`.  The notification action is present in `dumpsys notification`
+  (`actions=1`, "Enter code:port"), but the AOSP shade did not render the
+  button inside the grouped notification; the receiver and the RemoteInput
+  extraction are covered, the button rendering is not.
 - A boot after an emulator `adb root` left `/data/local/tmp/adb-anywhere` owned by
   root, so the shell adbd could not overwrite `adb_keys`.  `Shell.writeTextFile`
   now removes the target before writing, and the boot flow recovered.  This is an
   emulator-only ownership case; a phone's system adbd is always shell.
+- The E2E script now performs the real host path as well:
+  `adb forward tcp:15037 tcp:15037`, `adb connect 127.0.0.1:15037`,
+  `adb -s 127.0.0.1:15037 shell id` and `adb disconnect`; it logs
+  `host adb path ok` before the sticky-restart and stop/start checks.
 
 ### Start/Stop with the switch on (opt-in)
 

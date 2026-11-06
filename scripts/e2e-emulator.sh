@@ -39,9 +39,19 @@ sleep 6
 adb -s "$serial" shell "am start -n $pkg/.MainActivity --es addkey '$host_key' --es addlabel e2e-laptop" >/dev/null
 sleep 4
 
-# Prove the daemon started and accepts the app key. The shell output is logged
-# by the app, not by the daemon. The host adb client is exercised by
-# adbd/build/out/*/adbd_tests; the phone VPN path is in docs/E2E.md.
+# The real host path: forward the app's loopback port through the system
+# adbd, then connect and run a shell with the developer key that was just
+# added.  This is the same path a developer machine uses on a phone.
+adb -s "$serial" forward --remove tcp:"$host_port" >/dev/null 2>&1 || true
+adb -s "$serial" forward tcp:"$host_port" tcp:"$host_port" >/dev/null
+adb connect 127.0.0.1:"$host_port" >/dev/null
+adb -s 127.0.0.1:"$host_port" shell id | grep -q 'uid='
+adb disconnect 127.0.0.1:"$host_port" >/dev/null
+echo "host adb path ok"
+
+# Prove the daemon started and accepts the app key.  The host adb client is
+# exercised above; the app-side shell is exercised below.  The phone VPN path is
+# in docs/E2E.md.
 adb -s "$serial" shell "cat /data/local/tmp/adb-anywhere/adbd.log" | grep -q "adbd started"
 adb -s "$serial" shell "am start -n $pkg/.MainActivity --es shellcmd 'id; echo e2e-daemon-ok'" >/dev/null
 sleep 2

@@ -25,11 +25,10 @@ import java.util.Date
 class AppKeyStore(private val dir: File) {
     constructor(context: Context) : this(context.createDeviceProtectedStorageContext().filesDir)
 
-    private val privateFile = File(dir, "appkey.pk8")
-    private val certFile = File(dir, "appcert.pem")
-    private val publicFile = File(dir, "appkey.pub")
-
-    private val identity: Pair<KeyPair, X509Certificate> by lazy { loadOrCreate() }
+    // The service and the activity each create an AppKeyStore.  The identity
+    // must be shared across instances, not only across the lazy properties of one
+    // instance, or the two first uses can still generate two different pairs.
+    private val identity: Pair<KeyPair, X509Certificate> by lazy { sharedIdentity(dir) }
 
     // All four properties derive from one identity. Three independent lazies
     // could generate three pairs, and the certificate would then not match the
@@ -43,64 +42,78 @@ class AppKeyStore(private val dir: File) {
         AndroidPubKey.parse(publicKeyB64)!!
     }
 
-    @Synchronized
-    private fun loadOrCreate(): Pair<KeyPair, X509Certificate> {
-        load()?.let { return it }
-        val generated = generate()
-        privateFile.delete()
-        certFile.delete()
-        publicFile.delete()
-        privateFile.writeBytes(generated.first.private.encoded)
-        certFile.writeText(pem(generated.second))
-        publicFile.writeText(AndroidPubKey.encodeLine(generated.first.public as RSAPublicKey, "app"))
-        return generated
-    }
+    private companion object {
+        private val lock = Any()
+        private val identities = mutableMapOf<String, Pair<KeyPair, X509Certificate>>()
 
-    private fun load(): Pair<KeyPair, X509Certificate>? {
-        if (!privateFile.exists() || !certFile.exists()) return null
-        return try {
-            val privateKey = KeyFactory.getInstance("RSA").generatePrivate(
-                PKCS8EncodedKeySpec(privateFile.readBytes()),
-            ) as java.security.interfaces.RSAPrivateCrtKey
-            val certificate = CertificateFactory.getInstance("X.509")
-                .generateCertificate(certFile.inputStream()) as X509Certificate
-            val certificateKey = certificate.publicKey as RSAPublicKey
-            // A certificate and a private key from different generations must never
-            // be combined: the daemon would see a key the private key cannot sign for.
-            if (privateKey.modulus != certificateKey.modulus ||
-                privateKey.publicExponent != certificateKey.publicExponent
-            ) {
-                return null
-            }
-            val publicLine = AndroidPubKey.encodeLine(certificateKey, "app")
-            if (!publicFile.exists() || publicFile.readText().trim() != publicLine.trim()) {
-                publicFile.writeText(publicLine)
-            }
-            KeyPair(certificate.publicKey, privateKey) to certificate
-        } catch (_: Exception) {
-            null
+        private fun sharedIdentity(dir: File): Pair<KeyPair, X509Certificate> = synchronized(lock) {
+            identities.getOrPut(dir.canonicalPath) { loadOrCreate(dir) }
         }
-    }
 
-    private fun generate(): Pair<KeyPair, X509Certificate> {
-        val keyPair = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
-        val subject = X500Name("CN=adb-anywhere")
-        val now = System.currentTimeMillis()
-        val builder = JcaX509v3CertificateBuilder(
-            subject,
-            BigInteger.valueOf(now),
-            Date(now - 86_400_000L),
-            Date(now + 10L * 365 * 86_400_000L),
-            subject,
-            keyPair.public,
-        )
-        val signer = JcaContentSignerBuilder("SHA256withRSA").build(keyPair.private)
-        val certificate = JcaX509CertificateConverter().getCertificate(builder.build(signer))
-        return keyPair to certificate
-    }
+        private fun loadOrCreate(dir: File): Pair<KeyPair, X509Certificate> {
+            load(dir)?.let { return it }
+            val generated = generate()
+            val privateFile = File(dir, "appkey.pk8")
+            val certFile = File(dir, "appcert.pem")
+            val publicFile = File(dir, "appkey.pub")
+            privateFile.delete()
+            certFile.delete()
+            publicFile.delete()
+            privateFile.writeBytes(generated.first.private.encoded)
+            certFile.writeText(pem(generated.second))
+            publicFile.writeText(AndroidPubKey.encodeLine(generated.first.public as RSAPublicKey, "app"))
+            return generated
+        }
 
-    private fun pem(certificate: X509Certificate): String {
-        val encoded = Base64.getEncoder().encodeToString(certificate.encoded)
-        return "-----BEGIN CERTIFICATE-----\n$encoded\n-----END CERTIFICATE-----\n"
+        private fun load(dir: File): Pair<KeyPair, X509Certificate>? {
+            val privateFile = File(dir, "appkey.pk8")
+            val certFile = File(dir, "appcert.pem")
+            val publicFile = File(dir, "appkey.pub")
+            if (!privateFile.exists() || !certFile.exists()) return null
+            return try {
+                val privateKey = KeyFactory.getInstance("RSA").generatePrivate(
+                    PKCS8EncodedKeySpec(privateFile.readBytes()),
+                ) as java.security.interfaces.RSAPrivateCrtKey
+                val certificate = CertificateFactory.getInstance("X.509")
+                    .generateCertificate(certFile.inputStream()) as X509Certificate
+                val certificateKey = certificate.publicKey as RSAPublicKey
+                // A certificate and a private key from different generations must never
+                // be combined: the daemon would see a key the private key cannot sign for.
+                if (privateKey.modulus != certificateKey.modulus ||
+                    privateKey.publicExponent != certificateKey.publicExponent
+                ) {
+                    return null
+                }
+                val publicLine = AndroidPubKey.encodeLine(certificateKey, "app")
+                if (!publicFile.exists() || publicFile.readText().trim() != publicLine.trim()) {
+                    publicFile.writeText(publicLine)
+                }
+                KeyPair(certificate.publicKey, privateKey) to certificate
+            } catch (_: Exception) {
+                null
+            }
+        }
+
+        private fun generate(): Pair<KeyPair, X509Certificate> {
+            val keyPair = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
+            val subject = X500Name("CN=adb-anywhere")
+            val now = System.currentTimeMillis()
+            val builder = JcaX509v3CertificateBuilder(
+                subject,
+                BigInteger.valueOf(now),
+                Date(now - 86_400_000L),
+                Date(now + 10L * 365 * 86_400_000L),
+                subject,
+                keyPair.public,
+            )
+            val signer = JcaContentSignerBuilder("SHA256withRSA").build(keyPair.private)
+            val certificate = JcaX509CertificateConverter().getCertificate(builder.build(signer))
+            return keyPair to certificate
+        }
+
+        private fun pem(certificate: X509Certificate): String {
+            val encoded = Base64.getEncoder().encodeToString(certificate.encoded)
+            return "-----BEGIN CERTIFICATE-----\n$encoded\n-----END CERTIFICATE-----\n"
+        }
     }
 }
