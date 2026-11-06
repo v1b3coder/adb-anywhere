@@ -280,6 +280,9 @@ restart.
   `lifecycleLock`; the stop re-checks `userWantsRunning` under it, so a stop
   cleanup that runs after the later start skips the notification/foreground
   teardown.  `stopSelf(startId)` keeps the service alive for the later start.
+  The log shows `[service] stop superseded by a newer start`; the process, the
+  notification and the daemon were still present after 75 s, so Android did not
+  kill the service as idle.
 - The E2E script now runs the real host path as well: `adb forward
   tcp:15037 tcp:15037`, `adb connect 127.0.0.1:15037`,
   `adb -s 127.0.0.1:15037 shell id` and `adb disconnect`, and it logs
