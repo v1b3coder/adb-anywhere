@@ -20,6 +20,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -151,6 +152,35 @@ class FirewallProxyTest {
             scope.cancel()
             upstream.close()
         }
+    }
+
+    @Test
+    fun reportsOnlyTheAddressItBinds() = runBlocking {
+        val upstream = ServerSocket(0, 8, java.net.InetAddress.getByName("127.0.0.1"))
+        val proxyPort = freePort()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val proxy = FirewallProxy(
+            scope = scope,
+            config = { FirewallConfig(enabled = true) },
+            monitor = null,
+            policy = FakePolicy(),
+            audit = AuditLog(null) { false },
+            onState = {},
+        )
+        assertFalse(proxy.isListeningOn("127.0.0.1", proxyPort, upstream.localPort))
+        proxy.start("127.0.0.1", proxyPort, upstream.localPort)
+        try {
+            // The watchdog reuses a relay that already listens on exactly this
+            // address; any other tuple must start a new one.
+            assertTrue(proxy.isListeningOn("127.0.0.1", proxyPort, upstream.localPort))
+            assertFalse(proxy.isListeningOn("127.0.0.1", proxyPort + 1, upstream.localPort))
+            assertFalse(proxy.isListeningOn("127.0.0.1", proxyPort, upstream.localPort + 1))
+        } finally {
+            proxy.stop()
+            scope.cancel()
+            upstream.close()
+        }
+        assertFalse(proxy.isListeningOn("127.0.0.1", proxyPort, upstream.localPort))
     }
 
     private fun freePort(): Int =

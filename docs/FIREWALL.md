@@ -510,8 +510,9 @@ It does not add:
   app key. The app key stays in app-private storage; the loopback channel is
   unchanged.
 - Protection from a malicious local app that binds the relay address before the
-  relay starts. The relay sets `SO_REUSEADDR=false` and reports a bind failure;
-  it does not fall back to another port.
+  relay starts. The relay sets `SO_REUSEADDR` so a `TIME_WAIT` socket from its own
+  previous instance does not block the bind, but a live listener still does; it reports
+  a bind failure and does not fall back to another port.
 - A VPN that excludes ADB Anywhere from the tunnel: this is an accepted corner
   case, not a supported configuration. The relay's listener is in the app's UID, so
   a per-app VPN that excludes the app does not deliver inbound packets to it. The

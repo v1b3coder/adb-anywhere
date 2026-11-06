@@ -33,12 +33,21 @@ class FirewallProxy(
     private var vpnIp: String? = null
     private var port = 0
     private var loopbackPort = 0
+
+    // Written by start()/stop() and by the accept loop when it fails, read by the
+    // service and the watchdog on other threads. The service uses it to decide whether
+    // the relay must be started or reused, so the read must see the last write.
+    @Volatile
     private var listening = false
     private var localListener = false
     private var lastError = ""
 
     val activeSessions: Int get() = synchronized(lock) { connections.size }
     val isListening: Boolean get() = listening
+
+    /** True when this instance is already the relay the caller wants. */
+    fun isListeningOn(vpnIp: String, port: Int, loopbackPort: Int): Boolean =
+        listening && this.vpnIp == vpnIp && this.port == port && this.loopbackPort == loopbackPort
 
     fun start(vpnIp: String, port: Int, loopbackPort: Int) {
         stop()

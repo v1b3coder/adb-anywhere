@@ -73,12 +73,19 @@ import java.io.IOException
 import java.net.BindException
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.util.concurrent.ConcurrentHashMap
 import org.json.JSONObject
 
 class ControlService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val setupMutex = Mutex()
     private val lifecycleLock = Any()
+
+    // The relay is mutated by setup(), the watchdog and the network callback on
+    // different threads.  Binding a port and publishing the proxy must be one critical
+    // section, or two starts create two listeners and a stop leaves one behind.
+    private val relayLock = Any()
+    private var relayEpoch = 0
     private lateinit var prefs: Prefs
     private lateinit var keys: AppKeyStore
     private lateinit var system: SystemAdb
@@ -87,7 +94,10 @@ class ControlService : Service() {
     private lateinit var auditLog: AuditLog
     private var firewallProxy: FirewallProxy? = null
     private var foregroundMonitor: ForegroundAppMonitor? = null
-    private val prompts = mutableMapOf<String, CompletableDeferred<PromptResponse?>>()
+    // Relay threads and the main thread add, answer and remove prompts, so the map
+    // must be concurrent; the service also iterates it when it stops the relay.
+    private val prompts =
+        ConcurrentHashMap<String, CompletableDeferred<PromptResponse?>>()
     private var notificationJob: Job? = null
     private var watchdogJob: Job? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
@@ -371,7 +381,6 @@ class ControlService : Service() {
                         loopbackPort = prefs.loopbackPort,
                         appFingerprint = appKey.fingerprint,
                         keyCount = developers.size + 1,
-                        firewall = FirewallState(enabled = firewallConfig.enabled),
                     )
                 }
 
@@ -835,48 +844,75 @@ class ControlService : Service() {
     private fun startFirewall(vpnIp: String) {
         val config = firewallStore.load()
         if (!config.enabled) return
-        firewallProxy?.stop()
-        firewallProxy = null
-        foregroundMonitor?.start()
-        val policy = FirewallPolicy(
-            config = { firewallStore.load() },
-            prompt = ::promptForCall,
-            pending = { prompts.isNotEmpty() },
-            saveRule = {
-                firewallStore.addRule(it)
-                ControlBus.firewallConfig.value = firewallStore.load()
-            },
-            audit = { auditLog.record(it) },
-        )
+        val epoch = synchronized(relayLock) { relayEpoch }
         var last: BindException? = null
         repeat(BIND_ATTEMPTS) { attempt ->
-            val proxy = FirewallProxy(
-                scope = scope,
-                config = { firewallStore.load() },
-                monitor = foregroundMonitor,
-                policy = policy,
-                audit = auditLog,
-                onState = { state -> ControlBus.update { it.copy(firewall = state) } },
-            )
-            try {
-                proxy.start(vpnIp, prefs.vpnPort, prefs.loopbackPort)
-                firewallProxy = proxy
+            // The bind and the field assignment are one critical section: a stop or a
+            // newer start must not interleave with them, and two callers must not
+            // both bind the VPN port.
+            val bound = synchronized(relayLock) {
+                // A stop ran while this start was retrying (VPN went down, the
+                // service was destroyed, the firewall was toggled). Do not resurrect
+                // the relay behind its back.
+                if (relayEpoch != epoch) return
+                // The watchdog can ask for a relay that is already up; reuse it
+                // instead of dropping live sessions.
+                if (firewallProxy?.isListeningOn(vpnIp, prefs.vpnPort, prefs.loopbackPort) == true) {
+                    return
+                }
+                firewallProxy?.stop()
+                firewallProxy = null
+                foregroundMonitor?.start()
+                val policy = FirewallPolicy(
+                    config = { firewallStore.load() },
+                    prompt = ::promptForCall,
+                    pending = { prompts.isNotEmpty() },
+                    saveRule = {
+                        firewallStore.addRule(it)
+                        ControlBus.firewallConfig.value = firewallStore.load()
+                    },
+                    audit = { auditLog.record(it) },
+                )
+                val proxy = FirewallProxy(
+                    scope = scope,
+                    config = { firewallStore.load() },
+                    monitor = foregroundMonitor,
+                    policy = policy,
+                    audit = auditLog,
+                    onState = { state -> ControlBus.update { it.copy(firewall = state) } },
+                )
+                try {
+                    proxy.start(vpnIp, prefs.vpnPort, prefs.loopbackPort)
+                    firewallProxy = proxy
+                    true
+                } catch (e: BindException) {
+                    last = e
+                    false
+                }
+            }
+            if (bound) {
                 AppLog.info("firewall", "listening on $vpnIp:${prefs.vpnPort}")
                 return
-            } catch (e: BindException) {
-                last = e
-                AppLog.warn(
-                    "firewall",
-                    "port ${prefs.vpnPort} is busy; retrying (${attempt + 1}/$BIND_ATTEMPTS)",
-                )
-                Thread.sleep(BIND_RETRY_MS)
             }
+            AppLog.warn(
+                "firewall",
+                "port ${prefs.vpnPort} is busy; retrying (${attempt + 1}/$BIND_ATTEMPTS)",
+            )
+            Thread.sleep(BIND_RETRY_MS)
         }
         throw IOException(
             "Port ${prefs.vpnPort} is still in use. Change the firewall port in " +
                 "Settings, or close Android\'s legacy listener with `adb usb`.",
             last,
         )
+    }
+
+    /** Rebinds the relay without letting a concurrent stop or setup interleave. */
+    private fun rebindFirewall(vpnIp: String) {
+        synchronized(relayLock) {
+            val proxy = firewallProxy
+            if (proxy != null) proxy.rebind(vpnIp) else startFirewall(vpnIp)
+        }
     }
 
     private fun isVpnActive(): Boolean {
@@ -896,19 +932,24 @@ class ControlService : Service() {
     }
 
     private fun stopFirewall(reason: String = "") {
-        firewallProxy?.stop()
-        firewallProxy = null
-        foregroundMonitor?.stop()
-        prompts.values.forEach { it.cancel() }
-        prompts.clear()
-        ControlBus.pendingPrompt.value = null
-        ControlBus.update {
-            it.copy(
-                firewall = FirewallState(
-                    enabled = firewallStore.load().enabled,
-                    lastError = reason,
-                ),
-            )
+        synchronized(relayLock) {
+            // Invalidate every in-flight start, so a retry loop that is still
+            // sleeping cannot bind after this stop.
+            relayEpoch++
+            firewallProxy?.stop()
+            firewallProxy = null
+            foregroundMonitor?.stop()
+            prompts.values.forEach { it.cancel() }
+            prompts.clear()
+            ControlBus.pendingPrompt.value = null
+            ControlBus.update {
+                it.copy(
+                    firewall = FirewallState(
+                        enabled = firewallStore.load().enabled,
+                        lastError = reason,
+                    ),
+                )
+            }
         }
     }
 
@@ -948,22 +989,32 @@ class ControlService : Service() {
                     .putExtra(CallPromptActivity.EXTRA_PROMPT_ID, request.id),
             )
         }
-        val response = withTimeoutOrNull(timeoutMs) { deferred.await() }
-        prompts.remove(request.id)
-        ControlBus.pendingPrompt.value = null
-        ControlBus.update { it.copy(firewall = it.firewall.copy(pendingPrompts = prompts.size)) }
-        firewallProxy?.onPromptFinished()
-        if (response == null) {
-            auditLog.record(
-                AuditEvent(
-                    event = "call_timeout",
-                    peer = request.peer,
-                    service = request.call.service,
-                    fields = request.call.fields,
-                ),
-            )
+        return try {
+            val response = withTimeoutOrNull(timeoutMs) { deferred.await() }
+            if (response == null) {
+                auditLog.record(
+                    AuditEvent(
+                        event = "call_timeout",
+                        peer = request.peer,
+                        service = request.call.service,
+                        fields = request.call.fields,
+                    ),
+                )
+            }
+            response
+        } finally {
+            // A timeout, a cancelled relay or a stop must release the slot and
+            // the single pending-prompt slot; otherwise pending() stays true and the
+            // app-allowlist grace timer stays suspended forever.
+            prompts.remove(request.id)
+            if (ControlBus.pendingPrompt.value?.id == request.id) {
+                ControlBus.pendingPrompt.value = null
+            }
+            ControlBus.update {
+                it.copy(firewall = it.firewall.copy(pendingPrompts = prompts.size))
+            }
+            firewallProxy?.onPromptFinished()
         }
-        return response
     }
 
     private fun postPromptNotification(request: PromptRequest) {
@@ -1155,10 +1206,7 @@ class ControlService : Service() {
                     )
                 }
             } else {
-                runCatching {
-                    val proxy = firewallProxy
-                    if (proxy != null) proxy.rebind(vpnIp) else startFirewall(vpnIp)
-                }.onFailure {
+                runCatching { rebindFirewall(vpnIp) }.onFailure {
                     fail(it.message ?: "Firewall rebind failed")
                 }
                 ControlBus.update { it.copy(vpnIp = vpnIp) }
