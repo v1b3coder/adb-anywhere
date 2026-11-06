@@ -96,6 +96,9 @@ class FirewallProxy(
         monitor?.state?.value?.let { onForegroundChanged(it) }
     }
 
+    /** Re-publish the live state after a setup that reused this listener. */
+    fun publishState() = publish()
+
     fun fail(message: String) {
         lastError = message
         audit.record(AuditEvent(event = "proxy_error", detail = message))

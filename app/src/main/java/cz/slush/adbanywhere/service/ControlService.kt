@@ -263,7 +263,12 @@ class ControlService : Service() {
 
     override fun onDestroy() {
         AppLog.info("service", "destroyed")
-        stopFirewall()
+        stopFirewall("The service stopped")
+        if (ControlBus.state.value.phase == Phase.Running) {
+            ControlBus.update {
+                it.copy(phase = Phase.Stopped, endpoint = "", message = "The service stopped.")
+            }
+        }
         notificationJob?.cancel()
         watchdogJob?.cancel()
         scope.cancel()
@@ -496,7 +501,7 @@ class ControlService : Service() {
                 val firewallChanged = firewallConfig.enabled != prefs.daemonFirewallMode
                 if (firewallChanged) {
                     AppLog.info("firewall", "listener mode changed; stopping the relay first")
-                    stopFirewall()
+                    stopFirewall("Firewall mode changed")
                 }
 
                 step(1, StepStatus.Active, "Deploying the custom adb")
@@ -585,6 +590,7 @@ class ControlService : Service() {
                         startFirewall(vpnIp)
                     }
                     verifyFirewall()
+                    firewallProxy?.publishState()
                     step(3, StepStatus.Done, "Firewall relay on $vpnIp:${prefs.vpnPort}")
                 } else if (firewallConfig.enabled) {
                     stopFirewall()
@@ -654,7 +660,7 @@ class ControlService : Service() {
      */
     private suspend fun abortSetup(): String? =
         withContext(Dispatchers.IO + NonCancellable) {
-            runCatching { stopFirewall() }
+            runCatching { stopFirewall("Setup failed") }
             val stopped = runCatching {
                 val shell = runCatching { daemonShell() }.getOrNull() ?: system.shell
                 try {
@@ -886,7 +892,7 @@ class ControlService : Service() {
         AppLog.warn("firewall", "port $port is still in use after $timeoutMs ms")
     }
 
-    private fun stopFirewall() {
+    private fun stopFirewall(reason: String = "") {
         firewallProxy?.stop()
         firewallProxy = null
         foregroundMonitor?.stop()
@@ -894,7 +900,12 @@ class ControlService : Service() {
         prompts.clear()
         ControlBus.pendingPrompt.value = null
         ControlBus.update {
-            it.copy(firewall = FirewallState(enabled = firewallStore.load().enabled))
+            it.copy(
+                firewall = FirewallState(
+                    enabled = firewallStore.load().enabled,
+                    lastError = reason,
+                ),
+            )
         }
     }
 
@@ -1089,7 +1100,7 @@ class ControlService : Service() {
                 VpnDetector.currentVpnAddress(this@ControlService)
             }
             if (vpnIp == null) {
-                if (firewallProxy != null) stopFirewall()
+                if (firewallProxy != null) stopFirewall("VPN is down")
                 ControlBus.update {
                     it.copy(firewall = FirewallState(enabled = true, lastError = "VPN is down"))
                 }
@@ -1133,7 +1144,7 @@ class ControlService : Service() {
                 VpnDetector.currentVpnAddress(this@ControlService)
             }
             if (vpnIp == null) {
-                stopFirewall()
+                stopFirewall("VPN is down")
                 ControlBus.update {
                     it.copy(
                         vpnIp = null,
@@ -1194,7 +1205,7 @@ class ControlService : Service() {
         AppLog.info("service", "stopping adb and the service")
         scope.launch {
             setupMutex.withLock {
-                stopFirewall()
+                stopFirewall("Stopped")
                 withContext(Dispatchers.IO) {
                     runCatching {
                         val shell = daemonShell()
