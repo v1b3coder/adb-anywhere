@@ -19,6 +19,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -53,7 +54,9 @@ import cz.slush.adbanywhere.firewall.AuditEvent
 import cz.slush.adbanywhere.firewall.CallRule
 import cz.slush.adbanywhere.firewall.FirewallConfig
 import cz.slush.adbanywhere.service.ControlState
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 
 @Composable
 fun FirewallScreen(
@@ -83,9 +86,8 @@ fun FirewallScreen(
     var timeout by remember { mutableStateOf((config.promptTimeoutMs / 1000).toString()) }
     var showApps by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<CallRule?>(null) }
-    var apps by remember { mutableStateOf<List<AppEntry>>(emptyList()) }
+    var apps by remember { mutableStateOf<List<AppEntry>?>(null) }
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(Unit) { apps = launcherApps() }
     LaunchedEffect(Unit) {
         while (true) {
             delay(60_000L)
@@ -96,6 +98,12 @@ fun FirewallScreen(
     LaunchedEffect(config.promptTimeoutMs) { timeout = (config.promptTimeoutMs / 1000).toString() }
 
     if (showApps) {
+        // The package manager query and the per-app label loading take long enough
+        // to drop frames, so they run off the main thread while the picker shows a
+        // loader. Loading lazily also keeps the tab cheap when the picker is unused.
+        LaunchedEffect(Unit) {
+            apps = withContext(Dispatchers.IO) { launcherApps() }
+        }
         AppPickerDialog(
             apps = apps,
             selfPackage = LocalContext.current.packageName,
@@ -381,14 +389,14 @@ fun FirewallScreen(
 
 @Composable
 private fun AppPickerDialog(
-    apps: List<AppEntry>,
+    apps: List<AppEntry>?,
     selfPackage: String,
     onDismiss: () -> Unit,
     onAdd: (String) -> Unit,
 ) {
     var query by remember { mutableStateOf("") }
     val filtered = remember(apps, query) {
-        apps.filter {
+        apps.orEmpty().filter {
             query.isBlank() ||
                 it.label.contains(query, ignoreCase = true) ||
                 it.packageName.contains(query, ignoreCase = true)
@@ -421,20 +429,31 @@ private fun AppPickerDialog(
                     label = { Text("Search apps") },
                     singleLine = true,
                 )
-                LazyColumn(Modifier.fillMaxWidth().heightIn(max = 400.dp)) {
-                    items(filtered) { app ->
-                        TextButton(
-                            onClick = { onAdd(app.packageName) },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Column(Modifier.fillMaxWidth()) {
-                                Text(app.label)
-                                Text(
-                                    app.packageName,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontFamily = FontFamily.Monospace,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
+                if (apps == null) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        CircularProgressIndicator(Modifier.padding(16.dp))
+                        Text("Loading apps…", Modifier.padding(start = 12.dp))
+                    }
+                } else {
+                    LazyColumn(Modifier.fillMaxWidth().heightIn(max = 400.dp)) {
+                        items(filtered) { app ->
+                            TextButton(
+                                onClick = { onAdd(app.packageName) },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Column(Modifier.fillMaxWidth()) {
+                                    Text(app.label)
+                                    Text(
+                                        app.packageName,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
                             }
                         }
                     }
