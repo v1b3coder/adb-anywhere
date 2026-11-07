@@ -183,7 +183,6 @@ fun AppRoot(viewModel: AppViewModel) {
                                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                         )
                     },
-                    onSetTlsPort = viewModel::setTlsPort,
                 )
                 Screen.Keys -> KeysScreen(
                     keys = keys,

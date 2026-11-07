@@ -173,18 +173,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (port in 1024..65535) prefs.lastTlsPort = port
     }
 
-    fun setTlsPort(port: Int): String? {
-        if (port !in 1024..65535) return "The port must be between 1024 and 65535."
-        prefs.lastTlsPort = port
-        AppLog.info("settings", "system adb TLS port=$port")
-        if (!prefs.userWantsRunning) return null
-        val intent = android.content.Intent(getApplication(), ControlService::class.java)
-            .setAction(ControlService.ACTION_SET_TLS_PORT)
-            .putExtra(ControlService.EXTRA_PORT, port)
-        androidx.core.content.ContextCompat.startForegroundService(getApplication(), intent)
-        return null
-    }
-
     fun setRemoteDir(path: String) {
         if (path.isBlank() || !path.startsWith("/data/local/tmp/")) return
         prefs.remoteDir = path

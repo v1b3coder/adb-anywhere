@@ -90,9 +90,8 @@ class SystemAdb(
         false
     }
 
-    suspend fun discoverTlsPorts(timeoutMs: Long = 4_000): List<Int> = withContext(Dispatchers.IO) {
-        MdnsDiscovery(context).discoverAll("_adb-tls-connect._tcp", timeoutMs)
-    }
+    suspend fun discoverTlsPorts(timeoutMs: Long = MDNS_TIMEOUT_MS): List<Int> =
+        discoverTlsPorts(context, timeoutMs)
 
     /**
      * Closes the legacy plain `adb tcpip` listener on the system adbd. `usb:`
@@ -141,29 +140,49 @@ class SystemAdb(
             WirelessDebuggingGuard.parseTlsPort(readProp("service.adb.tls.port"))
 
         /**
-         * The system adbd's TLS port, live. Android 11-16 publish it, so the
-         * property answers. AOSP main after Android 16 does not, so the socket
-         * answers instead: every shell-owned listening port is probed with the app
-         * key, and only the system adbd's TLS listener completes the handshake
-         * (or asks to pair). The app's own plain listener rejects it.
+         * The system adbd's TLS port, live. The client path is mDNS, the same
+         * advertisement the host `adb` uses. A release that does not advertise
+         * it is probed on the socket: every shell-owned listening port is probed
+         * with the app key, and only the system adbd's TLS listener completes
+         * the handshake (or asks to pair). The app's own plain listener rejects
+         * it.
          */
         suspend fun detectTlsPort(
             context: Context,
             keys: AppKeyStore,
             prefs: Prefs,
         ): Int? = withContext(Dispatchers.IO) {
-            systemTlsPort()?.let { return@withContext it }
+            // mDNS is the client discovery path, the property is the cheap
+            // candidate a relaxed build still publishes, and the shell-owned
+            // listening ports are the socket fallback. Every candidate is
+            // verified with the TLS handshake, so a stale advertisement or a
+            // plain listener cannot be reported as the system TLS port.
+            val candidates = LinkedHashSet<Int>()
+            candidates += discoverTlsPorts(context, STATUS_MDNS_TIMEOUT_MS)
+            systemTlsPort()?.let(candidates::add)
+            candidates += listeningShellPorts()
+            candidates.remove(prefs.loopbackPort)
+            candidates.remove(prefs.vpnPort)
             val manager = AdbManager(context, keys)
             manager.setTimeout(2, TimeUnit.SECONDS)
-            for (port in listeningShellPorts()) {
-                if (port == prefs.loopbackPort || port == prefs.vpnPort) continue
+            for (port in candidates) {
                 if (manager.connectTo("127.0.0.1", port) || manager.pairingRequired) {
                     manager.disconnectQuietly()
+                    AppLog.info("system", "wireless port $port")
                     return@withContext port
                 }
             }
+            AppLog.info("system", "wireless port not found")
             null
         }
+
+        suspend fun discoverTlsPorts(context: Context, timeoutMs: Long = MDNS_TIMEOUT_MS): List<Int> =
+            withContext(Dispatchers.IO) {
+                MdnsDiscovery(context).discoverAll("_adb-tls-connect._tcp", timeoutMs)
+            }
+
+        private const val MDNS_TIMEOUT_MS = 4_000L
+        private const val STATUS_MDNS_TIMEOUT_MS = 2_000L
 
         private fun listeningShellPorts(): List<Int> {
             val ports = mutableListOf<Int>()

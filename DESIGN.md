@@ -448,8 +448,9 @@ system adbd has no TCP listener, so there is nothing to monitor or turn off.
 - Fallback: the shell-owned listening ports probed with the app key; only the
   system adbd's TLS listener answers the handshake.
 - Last fallback: the port from the last successful bootstrap, which the app
-  connects to before it trusts it.
-- Last resort: the user enters the port shown in Settings.
+  connects to before it trusts it. There is no manual port entry: Android's
+  pairing dialog closes when the user leaves Settings, so the code:port reply
+  in the notification is the only reliable user-supplied input.
 - `getprop service.adb.tls.port` is not app-readable: `adbd_prop` is
   `system_internal_prop`, so only `coredomain` reads it. The property and the
   auth socket are internal to adbd and `system_server`.

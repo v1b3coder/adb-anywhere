@@ -201,8 +201,8 @@ class ControlService : Service() {
                 AppLog.info("service", "key revocation; restarting to close sessions")
                 scope.launch { setup(forceRestart = true) }
             }
-            // One reply carries code:port from the pairing dialog. The in-app
-            // form sends the code and port as separate extras; both paths reach
+            // One reply carries code:port from the pairing dialog. The debug
+            // harness sends the code and port as separate extras; both paths reach
             // the same pair() call.
             ACTION_PAIR -> {
                 val codeText = intent.getStringExtra(EXTRA_CODE)
@@ -232,16 +232,6 @@ class ControlService : Service() {
             ACTION_NOTIFY_PAIR -> {
                 AppLog.info("service", "pairing notification requested")
                 postPairingNotification()
-            }
-            ACTION_SET_TLS_PORT -> {
-                val port = intent.getIntExtra(EXTRA_PORT, 0)
-                if (port in 1024..65535) {
-                    prefs.lastTlsPort = port
-                    AppLog.info("settings", "system adb TLS port=$port")
-                    scope.launch { setup() }
-                } else {
-                    AppLog.warn("settings", "rejected system adb TLS port=$port")
-                }
             }
             ACTION_APPLY_FIREWALL -> {
                 prefs.userWantsRunning = true
@@ -1656,7 +1646,6 @@ class ControlService : Service() {
         const val ACTION_APPLY_KEYS = "cz.slush.adbanywhere.APPLY_KEYS"
         const val ACTION_APPLY_SETTINGS = "cz.slush.adbanywhere.APPLY_SETTINGS"
         const val ACTION_NOTIFY_PAIR = "cz.slush.adbanywhere.NOTIFY_PAIR"
-        const val ACTION_SET_TLS_PORT = "cz.slush.adbanywhere.SET_TLS_PORT"
         const val ACTION_PROMPT_RESPONSE = "cz.slush.adbanywhere.PROMPT_RESPONSE"
         const val ACTION_CLEAR_AUDIT = "cz.slush.adbanywhere.CLEAR_AUDIT"
         const val ACTION_APPLY_FIREWALL = "cz.slush.adbanywhere.APPLY_FIREWALL"
@@ -1670,7 +1659,6 @@ class ControlService : Service() {
         private const val BIND_RETRY_MS = 500L
         const val EXTRA_CODE = "code"
         const val EXTRA_PAIR_PORT = "pair_port"
-        const val EXTRA_PORT = "port"
         const val EXTRA_PROMPT_ID = "prompt_id"
         const val EXTRA_PROMPT_DECISION = "prompt_decision"
         const val EXTRA_PROMPT_RULE = "prompt_rule"

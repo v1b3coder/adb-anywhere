@@ -4,13 +4,16 @@
 package cz.slush.adbanywhere.ui
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.NotificationsActive
 import androidx.compose.material.icons.outlined.OpenInNew
@@ -18,19 +21,13 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import cz.slush.adbanywhere.service.ControlState
 import cz.slush.adbanywhere.service.Phase
@@ -41,10 +38,7 @@ fun SetupScreen(
     onSetup: () -> Unit,
     onNotify: () -> Unit,
     onOpenDeveloperSettings: () -> Unit,
-    onSetTlsPort: (Int) -> String?,
 ) {
-    var tlsPort by rememberSaveable { mutableStateOf("") }
-    var portError by remember { mutableStateOf("") }
     val busy = state.phase == Phase.Pairing || state.phase == Phase.Deploying
 
     LazyColumn(
@@ -59,37 +53,35 @@ fun SetupScreen(
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("1. Open Settings → Developer options → Wireless debugging.", style = MaterialTheme.typography.bodyMedium)
-                    Text("2. Tap “Pair device with pairing code”. Keep that dialog open.", style = MaterialTheme.typography.bodyMedium)
-                    Text(
-                        "3. Reply to the ADB Anywhere notification once, with code:port " +
-                            "(for example 123456:37123). Opening this app closes Android's " +
-                            "pairing dialog, so the notification is the reliable path.",
-                        style = MaterialTheme.typography.bodyMedium,
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    PairingStep("1", "Open Settings → Developer options → Wireless debugging.")
+                    PairingStep("2", "Tap “Pair device with pairing code” and keep that dialog open.")
+                    PairingStep(
+                        "3",
+                        "Pull down the shade and reply to the ADB Anywhere notification.",
                     )
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onNotify) {
-                        Icon(Icons.Outlined.NotificationsActive, contentDescription = null)
-                        Text("Show pairing notification", modifier = Modifier.padding(start = 8.dp))
-                    }
-                    OutlinedButton(onClick = onOpenDeveloperSettings) {
-                        Icon(Icons.Outlined.OpenInNew, contentDescription = null)
-                        Text("Developer settings", modifier = Modifier.padding(start = 8.dp))
-                    }
-                }
+                PairingReply()
                 Text(
                     "Both numbers are in Android's pairing dialog. The notification reply keeps " +
                         "the app in the background, so the dialog stays open while it connects.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (state.phase == Phase.NeedsPairing || state.phase == Phase.Error) {
-                        TextButton(onClick = onSetup) {
-                            Text("Retry connection")
-                        }
+                Button(onClick = onNotify, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Outlined.NotificationsActive, contentDescription = null)
+                    Text("Show pairing notification", modifier = Modifier.padding(start = 8.dp))
+                }
+                OutlinedButton(
+                    onClick = onOpenDeveloperSettings,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(Icons.Outlined.OpenInNew, contentDescription = null)
+                    Text("Open developer settings", modifier = Modifier.padding(start = 8.dp))
+                }
+                if (state.phase == Phase.NeedsPairing || state.phase == Phase.Error) {
+                    TextButton(onClick = onSetup) {
+                        Text("Retry connection")
                     }
                 }
                 if (state.error.isNotEmpty()) {
@@ -99,37 +91,6 @@ fun SetupScreen(
                         color = MaterialTheme.colorScheme.error,
                     )
                 }
-            }
-        }
-
-        item {
-            SectionCard("Can't find the wireless debugging port?") {
-                Text(
-                    "Android usually advertises it over mDNS. If discovery fails, copy the port " +
-                        "from Settings → Wireless debugging → IP address & Port and enter it here.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                OutlinedTextField(
-                    value = tlsPort,
-                    onValueChange = {
-                        tlsPort = it.filter(Char::isDigit)
-                        portError = ""
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Wireless debugging port") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    isError = portError.isNotEmpty(),
-                    supportingText = { if (portError.isNotEmpty()) Text(portError) },
-                )
-                OutlinedButton(
-                    onClick = {
-                        val failure = onSetTlsPort(tlsPort.toIntOrNull() ?: 0)
-                        if (failure != null) portError = failure
-                    },
-                    enabled = tlsPort.isNotBlank(),
-                ) { Text("Use this port") }
             }
         }
 
@@ -169,6 +130,53 @@ fun SetupScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+        }
+    }
+}
+
+/** One numbered step in the pairing instructions. */
+@Composable
+private fun PairingStep(number: String, text: String) {
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Surface(
+            color = MaterialTheme.colorScheme.secondaryContainer,
+            shape = CircleShape,
+            modifier = Modifier.size(24.dp),
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Text(
+                    number,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+            }
+        }
+        Text(text, style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+/** The exact reply the pairing notification expects. */
+@Composable
+private fun PairingReply() {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                "Reply in the notification",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                "123456:37123",
+                style = MaterialTheme.typography.titleMedium,
+                fontFamily = FontFamily.Monospace,
+            )
         }
     }
 }
