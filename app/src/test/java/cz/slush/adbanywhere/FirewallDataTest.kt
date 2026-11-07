@@ -352,6 +352,34 @@ class FirewallDataTest {
         assertTrue(copy.matches(quoted))
     }
 
+    @Test
+    fun ruleKeepsOriginalCallForEditing() {
+        val call = AdbCallParser.parse("shell:run-as cz.slush.adbanywhere id")
+        val rule = CallRule.forCall(call, CallAction.ALLOW)
+        assertEquals(call, rule.original)
+        val copy = CallRule.fromJson(rule.toJson())!!
+        assertEquals(call, copy.original)
+        assertEquals(call, copy.toCall())
+
+        val old = CallRule(
+            id = "old",
+            action = CallAction.ALLOW,
+            service = "shell",
+            predicates = listOf(
+                CallPredicate.Exact("service", "shell"),
+                CallPredicate.Exact("command", "run-as cz.slush.adbanywhere id"),
+                CallPredicate.Exact("metacharacters", "false"),
+            ),
+        )
+        val rebuilt = old.toCall()
+        assertEquals("shell", rebuilt.service)
+        assertEquals("run-as cz.slush.adbanywhere id", rebuilt.fields["command"])
+        assertEquals(
+            listOf("run-as", "cz.slush.adbanywhere", "id"),
+            rebuilt.argv,
+        )
+    }
+
     private fun ip(text: String): Int =
         IpNetwork.parse("$text/32")!!.address
 

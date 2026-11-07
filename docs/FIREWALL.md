@@ -256,7 +256,8 @@ data class CallRule(
     val predicates: List<Predicate>,
     val note: String,
     val createdAt: Long,
-    val rawShell: Boolean,       // prefix capability, matches metacharacters
+    val rawShell: Boolean,       // no-metacharacter prefix capability
+    val original: AdbCall?,       // kept so the editor can reopen the call
 )
 
 sealed interface Predicate {
@@ -364,9 +365,12 @@ ALLOW shell where
   all other fields fixed
 ```
 
-The editor shows a warning when the rule is broad (all fields unlocked, or `service`
-is `*`). A broad rule is allowed but labelled "allows/denies every call of this
-service".
+The rule list has an **Edit** action next to Delete. It reopens the editor with the
+rule's action, fixed fields and prefix; the stored original call supplies the values
+that the rule left unlocked. Rules created before the original was stored reconstruct a
+call from their predicates, so old rules remain editable. The editor shows a warning when
+the rule is broad (all fields unlocked, or `service` is `*`). A broad rule is allowed
+but labelled "allows/denies every call of this service".
 
 ### 7.7 What the call policy cannot enforce
 
@@ -602,6 +606,8 @@ Device/integration:
   then fire `run-as <package> sh -c 'id'` and assert it runs without a prompt; fire
   `run-as <package> id && run-as <package> id` and assert the prompt appears and
   Block denies it.
+- Edit rule: open the rule list, tap Edit, change the action, save, and assert the
+  stored rule changed while its id and original call stay the same.
 - Custom filter footer: open the editor and assert Save rule and Cancel are visible
   without scrolling.
 - Self allowlist: allowlisting ADB Anywhere keeps ADB open in its UI, and a call
@@ -676,7 +682,9 @@ Implemented in the app:
   system plain listener, prompt notification and response.
 - `ui/FirewallScreen.kt`, `ui/CallPromptScreen.kt`, `ui/CallPromptOverlay.kt`,
   `ui/CallPromptActivity.kt`, `ui/RuleEditor.kt`: the tab, the floating prompt,
-  the notification fallback and the custom filter.
+  the notification fallback, the custom filter and the rule edit dialog.
+- `firewall/FirewallModels.kt`: `CallRule.original`/`toCall()` keep the call for
+  editing; old rules reconstruct it from predicates.
 - `ui/SettingsScreen.kt` and `ui/App.kt`: the switch and the conditional tab.
 
 Tests:

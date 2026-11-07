@@ -99,6 +99,43 @@ data class AdbCall(
         direction = direction,
         fields = fields + mapOf("path" to path, "direction" to direction),
     )
+
+    fun toJson(): JSONObject = JSONObject().apply {
+        put("service", service)
+        put("raw", raw)
+        put("fields", JSONObject().apply {
+            fields.forEach { (name, value) -> put(name, value) }
+        })
+        argv?.let { put("argv", JSONArray(it)) }
+        path?.let { put("path", it) }
+        direction?.let { put("direction", it) }
+        port?.let { put("port", it) }
+        put("interactive", interactive)
+        put("metacharacters", metacharacters)
+    }
+
+    companion object {
+        fun fromJson(json: JSONObject): AdbCall {
+            val fields = linkedMapOf<String, String>()
+            json.optJSONObject("fields")?.let { obj ->
+                obj.keys().forEach { key -> fields[key] = obj.optString(key) }
+            }
+            val argv = json.optJSONArray("argv")?.let { array ->
+                (0 until array.length()).map { array.optString(it) }
+            }
+            return AdbCall(
+                service = json.optString("service"),
+                raw = json.optString("raw"),
+                fields = fields,
+                argv = argv,
+                path = json.optString("path").ifBlank { null },
+                direction = json.optString("direction").ifBlank { null },
+                port = json.optInt("port", 0).takeIf { it > 0 },
+                interactive = json.optBoolean("interactive", false),
+                metacharacters = json.optBoolean("metacharacters", false),
+            )
+        }
+    }
 }
 
 data class CallRule(
@@ -110,6 +147,8 @@ data class CallRule(
     val createdAt: Long = System.currentTimeMillis(),
     /** A prefix capability for calls without top-level shell operators. */
     val rawShell: Boolean = false,
+    /** The call this rule was created from, kept so the editor can reopen it. */
+    val original: AdbCall? = null,
 ) {
     fun matches(call: AdbCall): Boolean {
         if (service != "*" && service != call.service) return false
@@ -139,6 +178,36 @@ data class CallRule(
         }
     }
 
+    /** Reconstruct a call for the editor when an old rule has no original. */
+    fun toCall(): AdbCall {
+        original?.let { return it }
+        val fields = linkedMapOf<String, String>()
+        predicates.forEach { predicate ->
+            when (predicate) {
+                is CallPredicate.Exact -> fields[predicate.field] = predicate.value
+                is CallPredicate.Prefix -> fields[predicate.field] = predicate.value
+                is CallPredicate.Glob -> fields[predicate.field] = predicate.pattern
+                is CallPredicate.AnyValue -> Unit
+            }
+        }
+        val command = fields["command"].orEmpty()
+        val argv = command.takeIf { it.isNotBlank() }
+            ?.trim()
+            ?.split(' ')
+            ?.filter { it.isNotBlank() }
+        return AdbCall(
+            service = fields["service"] ?: service,
+            raw = fields["raw"] ?: service,
+            fields = fields,
+            argv = argv,
+            path = fields["path"],
+            direction = fields["direction"],
+            port = fields["port"]?.toIntOrNull(),
+            interactive = fields["interactive"]?.toBoolean() ?: false,
+            metacharacters = fields["metacharacters"]?.toBoolean() ?: false,
+        )
+    }
+
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id)
         put("action", action.name.lowercase())
@@ -146,6 +215,7 @@ data class CallRule(
         put("note", note)
         put("createdAt", createdAt)
         put("rawShell", rawShell)
+        original?.let { put("original", it.toJson()) }
         val array = JSONArray()
         predicates.forEach { array.put(it.toJson()) }
         put("predicates", array)
@@ -174,6 +244,7 @@ data class CallRule(
                 note = json.optString("note"),
                 createdAt = json.optLong("createdAt", System.currentTimeMillis()),
                 rawShell = json.optBoolean("rawShell", false),
+                original = json.optJSONObject("original")?.let { AdbCall.fromJson(it) },
             )
         }
 
@@ -186,6 +257,7 @@ data class CallRule(
                     CallPredicate.Exact(field, value)
                 },
                 note = note,
+                original = call,
             )
     }
 }

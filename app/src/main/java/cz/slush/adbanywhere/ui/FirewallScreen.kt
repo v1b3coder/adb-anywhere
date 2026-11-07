@@ -17,6 +17,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Delete
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -49,6 +50,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import cz.slush.adbanywhere.firewall.AppEntry
 import cz.slush.adbanywhere.firewall.AuditEvent
+import cz.slush.adbanywhere.firewall.CallRule
 import cz.slush.adbanywhere.firewall.FirewallConfig
 import cz.slush.adbanywhere.service.ControlState
 
@@ -64,6 +66,7 @@ fun FirewallScreen(
     onAddApp: (String) -> Unit,
     onRemoveApp: (String) -> Unit,
     onToggleCallPolicy: (Boolean) -> Unit,
+    onSaveRule: (CallRule) -> Unit,
     onRemoveRule: (String) -> Unit,
     onSetAppGrace: (Long) -> Unit,
     onSetPromptTimeout: (Long) -> Unit,
@@ -78,6 +81,7 @@ fun FirewallScreen(
     var grace by remember { mutableStateOf((config.appGraceMs / 1000).toString()) }
     var timeout by remember { mutableStateOf((config.promptTimeoutMs / 1000).toString()) }
     var showApps by remember { mutableStateOf(false) }
+    var editing by remember { mutableStateOf<CallRule?>(null) }
     var apps by remember { mutableStateOf<List<AppEntry>>(emptyList()) }
     LaunchedEffect(Unit) { apps = launcherApps() }
     LaunchedEffect(config.appGraceMs) { grace = (config.appGraceMs / 1000).toString() }
@@ -288,6 +292,9 @@ fun FirewallScreen(
                                 overflow = TextOverflow.Ellipsis,
                             )
                         }
+                        IconButton(onClick = { editing = rule }) {
+                            Icon(Icons.Rounded.Edit, contentDescription = "Edit rule")
+                        }
                         IconButton(onClick = { onRemoveRule(rule.id) }) {
                             Icon(Icons.Rounded.Delete, contentDescription = "Remove rule")
                         }
@@ -335,6 +342,18 @@ fun FirewallScreen(
                 }
             }
         }
+    }
+
+    editing?.let { rule ->
+        RuleEditorDialog(
+            call = rule.original ?: rule.toCall(),
+            rule = rule,
+            onDismiss = { editing = null },
+            onSave = { updated ->
+                onSaveRule(updated)
+                editing = null
+            },
+        )
     }
 }
 

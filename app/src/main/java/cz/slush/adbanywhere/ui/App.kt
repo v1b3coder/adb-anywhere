@@ -215,6 +215,7 @@ fun AppRoot(viewModel: AppViewModel) {
                     onToggleRedactAudit = viewModel::setRedactAudit,
                     onClearAudit = viewModel::clearAudit,
                     onGrantUsageAccess = viewModel::grantUsageAccess,
+                    onSaveRule = viewModel::saveRule,
                     onRequestOverlayAccess = viewModel::requestOverlayAccess,
                     launcherApps = viewModel::launcherApps,
                 )

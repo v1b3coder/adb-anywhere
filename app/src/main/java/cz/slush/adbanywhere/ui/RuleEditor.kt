@@ -46,6 +46,7 @@ fun RuleEditorDialog(
     call: AdbCall,
     onDismiss: () -> Unit,
     onSave: (CallRule) -> Unit,
+    rule: CallRule? = null,
 ) {
     Dialog(
         onDismissRequest = onDismiss,
@@ -56,7 +57,12 @@ fun RuleEditorDialog(
             shape = RoundedCornerShape(24.dp),
             tonalElevation = 6.dp,
         ) {
-            RuleEditorContent(call = call, onDismiss = onDismiss, onSave = onSave)
+            RuleEditorContent(
+                call = call,
+                rule = rule,
+                onDismiss = onDismiss,
+                onSave = onSave,
+            )
         }
     }
 }
@@ -67,18 +73,34 @@ fun RuleEditorContent(
     onDismiss: () -> Unit,
     onSave: (CallRule) -> Unit,
     modifier: Modifier = Modifier,
+    rule: CallRule? = null,
 ) {
-    var action by remember { mutableStateOf(CallAction.ALLOW) }
-    var fixed by remember { mutableStateOf(call.fields.keys - "service") }
-    var pathGlob by remember { mutableStateOf(false) }
-    var prefixMode by remember { mutableStateOf(false) }
-    var prefixLength by remember(call) {
-        mutableStateOf(minOf(2, call.argv.orEmpty().size))
+    val source = rule?.original ?: call
+    var action by remember(rule) { mutableStateOf(rule?.action ?: CallAction.ALLOW) }
+    var fixed by remember(rule, source) {
+        mutableStateOf(
+            if (rule != null) {
+                rule.predicates.mapNotNull { it.field }.toSet() - "service"
+            } else {
+                source.fields.keys - "service"
+            },
+        )
     }
-    val argv = remember(call) { call.argv.orEmpty() }
+    var pathGlob by remember(rule) {
+        mutableStateOf(
+            rule?.predicates?.any { it is CallPredicate.Glob && it.field == "path" } == true,
+        )
+    }
+    var prefixMode by remember(rule) { mutableStateOf(rule?.rawShell == true) }
+    var prefixLength by remember(rule, source) {
+        mutableStateOf(
+            rule?.prefixLength(source) ?: minOf(2, source.argv.orEmpty().size),
+        )
+    }
+    val argv = remember(source) { source.argv.orEmpty() }
     val derived = remember { setOf("command", "raw", "interactive", "metacharacters") }
-    val fields = remember(call) {
-        call.fields.filterKeys { it != "service" }
+    val fields = remember(source) {
+        source.fields.filterKeys { it != "service" }
             .toList()
             .sortedWith(compareBy({ fieldOrder(it.first) }, { it.first }))
     }
@@ -90,8 +112,8 @@ fun RuleEditorContent(
                 if (prefixLength < argv.size) " " else ""
         }
     }
-    val prefixAvailable = call.service in setOf("shell", "exec") &&
-        !call.metacharacters && argv.isNotEmpty()
+    val prefixAvailable = source.service in setOf("shell", "exec") &&
+        !source.metacharacters && argv.isNotEmpty()
     Column(modifier.fillMaxWidth()) {
         LazyColumn(
             modifier = Modifier.fillMaxWidth().heightIn(max = 480.dp),
@@ -100,19 +122,19 @@ fun RuleEditorContent(
         ) {
             item {
                 Text(
-                    "Custom filter",
+                    if (rule == null) "Custom filter" else "Edit filter",
                     style = MaterialTheme.typography.titleLarge,
                 )
             }
             item {
                 Text(
-                    "Service: ${call.service} (always fixed)",
+                    "Service: ${source.service} (always fixed)",
                     style = MaterialTheme.typography.labelLarge,
                 )
             }
             item {
                 Text(
-                    call.raw,
+                    source.raw,
                     fontFamily = FontFamily.Monospace,
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 4,
@@ -145,7 +167,7 @@ fun RuleEditorContent(
                     }
                 } else {
                     Text(
-                        if (call.metacharacters) {
+                        if (source.metacharacters) {
                             "Top-level shell operators: only an exact rule is available."
                         } else {
                             "Prefix capability is available for shell and exec calls."
@@ -194,7 +216,7 @@ fun RuleEditorContent(
                     ) {
                         Checkbox(
                             checked = name in fixed,
-                            enabled = !call.metacharacters,
+                            enabled = !source.metacharacters,
                             onCheckedChange = { checked ->
                                 fixed = if (checked) fixed + name else fixed - name
                             },
@@ -211,7 +233,7 @@ fun RuleEditorContent(
                         }
                     }
                 }
-                if ("path" in call.fields) {
+                if ("path" in source.fields) {
                     item {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -242,7 +264,7 @@ fun RuleEditorContent(
             if (!prefixMode && fixed.isEmpty()) {
                 item {
                     Text(
-                        "This rule matches every call of ${call.service}.",
+                        "This rule matches every call of ${source.service}.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.error,
                     )
@@ -250,7 +272,7 @@ fun RuleEditorContent(
             }
             item {
                 Text(
-                    preview(call, action, fixed, pathGlob, prefixMode, prefix),
+                    preview(source, action, fixed, pathGlob, prefixMode, prefix),
                     fontFamily = FontFamily.Monospace,
                     style = MaterialTheme.typography.bodySmall,
                 )
@@ -290,13 +312,13 @@ fun RuleEditorContent(
                 onClick = {
                     val predicates = if (prefixMode) {
                         listOf(
-                            CallPredicate.Exact("service", call.service),
+                            CallPredicate.Exact("service", source.service),
                             CallPredicate.Prefix("command", prefix),
                         )
                     } else {
-                        listOf(CallPredicate.Exact("service", call.service)) +
+                        listOf(CallPredicate.Exact("service", source.service)) +
                             fixed.mapNotNull { name ->
-                                val value = call.fields[name] ?: return@mapNotNull null
+                                val value = source.fields[name] ?: return@mapNotNull null
                                 if (name == "path" && pathGlob) {
                                     CallPredicate.Glob(name, value)
                                 } else {
@@ -306,20 +328,32 @@ fun RuleEditorContent(
                     }
                     onSave(
                         CallRule(
-                            id = java.util.UUID.randomUUID().toString(),
+                            id = rule?.id ?: java.util.UUID.randomUUID().toString(),
                             action = action,
-                            service = call.service,
+                            service = source.service,
                             predicates = predicates,
+                            note = rule?.note ?: "",
+                            createdAt = rule?.createdAt ?: System.currentTimeMillis(),
                             rawShell = prefixMode,
+                            original = source,
                         ),
                     )
                 },
-            ) { Text("Save rule") }
+            ) { Text(if (rule == null) "Save rule" else "Save changes") }
         }
     }
 }
 
-/** Call order: service (hidden), argv, path/port/specs, derived fields last. */
+private fun CallRule.prefixLength(call: AdbCall): Int {
+    val prefix = predicates.filterIsInstance<CallPredicate.Prefix>()
+        .firstOrNull { it.field == "command" || it.field == "raw" }
+        ?.value
+        ?: return minOf(2, call.argv.orEmpty().size)
+    val count = prefix.trim().split(' ').count { it.isNotBlank() }
+    return count.coerceIn(1, call.argv.orEmpty().size.coerceAtLeast(1))
+}
+
+/** Call order: argv, path/port/specs, then derived fields last. */
 private fun fieldOrder(name: String): Int = when {
     name.startsWith("argv[") -> name.removePrefix("argv[").removeSuffix("]").toIntOrNull() ?: 1000
     name == "path" -> 2000

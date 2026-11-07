@@ -51,9 +51,15 @@ ui_center() {
 import re, sys
 xml = sys.stdin.read()
 want = sys.argv[1]
-for m in re.finditer(r"text=\"([^\"]*)\"[^>]*bounds=\"\[(\d+),(\d+)\]\[(\d+),(\d+)\]\"", xml):
-    if m.group(1) == want:
-        x1, y1, x2, y2 = map(int, m.groups()[1:])
+for m in re.finditer(r"<node\b[^>]*>", xml):
+    node = m.group(0)
+    text = re.search(r"text=\"([^\"]*)\"", node)
+    desc = re.search(r"content-desc=\"([^\"]*)\"", node)
+    bounds = re.search(r"bounds=\"\[(\d+),(\d+)\]\[(\d+),(\d+)\]\"", node)
+    if bounds is None:
+        continue
+    if (text and text.group(1) == want) or (desc and desc.group(1) == want):
+        x1, y1, x2, y2 = map(int, bounds.groups())
         print((x1 + x2) // 2, (y1 + y2) // 2)
         break
 ' "$1"
@@ -105,6 +111,36 @@ tap_checkable() {
     xy=$(ui_prefix_checkbox)
     [ -n "$xy" ] || return 1
     adb -s "$serial" shell input tap "$xy"
+}
+
+ui_centers() {
+    ui_dump | python3 -c '
+import re, sys
+xml = sys.stdin.read()
+want = sys.argv[1]
+for m in re.finditer(r"<node\b[^>]*>", xml):
+    node = m.group(0)
+    text = re.search(r"text=\"([^\"]*)\"", node)
+    desc = re.search(r"content-desc=\"([^\"]*)\"", node)
+    bounds = re.search(r"bounds=\"\[(\d+),(\d+)\]\[(\d+),(\d+)\]\"", node)
+    if bounds is None:
+        continue
+    if (text and text.group(1) == want) or (desc and desc.group(1) == want):
+        x1, y1, x2, y2 = map(int, bounds.groups())
+        print((x1 + x2) // 2, (y1 + y2) // 2)
+' "$1"
+}
+
+tap_last_text() {
+    local xy
+    xy=$(ui_centers "$1" | tail -1)
+    [ -n "$xy" ] || return 1
+    adb -s "$serial" shell input tap "$xy"
+}
+
+scroll_down() {
+    adb -s "$serial" shell input swipe 540 1800 540 800 250
+    sleep 1
 }
 
 relay_connect() {
@@ -287,6 +323,33 @@ if prompt_call "chained run-as" shell 'run-as cz.slush.adbanywhere id && run-as 
     prompt_tap "Block"
     wait "$CALL_PID" 2>/dev/null || true
     audit_has call_denied && ok "chained run-as denied" || bad "chained run-as denied"
+fi
+
+say "edit rule"
+xy=$(ui_center "Firewall")
+[ -n "$xy" ] && adb -s "$serial" shell input tap "$xy" || bad "firewall tab"
+sleep 2
+i=0
+xy=""
+while [ "$i" -lt 6 ]; do
+    xy=$(ui_centers "Edit rule" | tail -1)
+    [ -n "$xy" ] && break
+    scroll_down
+    i=$((i + 1))
+done
+if [ -n "$xy" ]; then
+    adb -s "$serial" shell input tap "$xy"
+    if wait_for_text "Edit filter"; then
+        ok "edit dialog"
+        prompt_tap "Deny"
+        prompt_tap "Save changes"
+        sleep 1
+        prefs | grep -q '&quot;action&quot;:&quot;deny&quot;' && ok "edit saved" || bad "edit saved"
+    else
+        bad "edit dialog"
+    fi
+else
+    bad "edit rule button"
 fi
 
 say "floating prompt"

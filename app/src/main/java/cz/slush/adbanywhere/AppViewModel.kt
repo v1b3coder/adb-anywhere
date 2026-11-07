@@ -18,6 +18,7 @@ import cz.slush.adbanywhere.data.PairingCode
 import cz.slush.adbanywhere.data.Prefs
 import cz.slush.adbanywhere.firewall.AppCatalog
 import cz.slush.adbanywhere.firewall.AppEntry
+import cz.slush.adbanywhere.firewall.CallRule
 import cz.slush.adbanywhere.firewall.FirewallConfig
 import cz.slush.adbanywhere.firewall.FirewallConfigStore
 import cz.slush.adbanywhere.firewall.IpNetwork
@@ -318,6 +319,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun setCallPolicyEnabled(enabled: Boolean) {
         AppLog.info("firewall", "call policy=$enabled")
         updateFirewall { it.copy(callPolicyEnabled = enabled) }
+    }
+
+    fun saveRule(rule: CallRule) {
+        AppLog.info("firewall", "save rule ${rule.id}")
+        updateFirewall { config ->
+            config.copy(
+                callRules = config.callRules.map { existing ->
+                    if (existing.id == rule.id) rule else existing
+                },
+            )
+        }
     }
 
     fun removeRule(id: String) {
