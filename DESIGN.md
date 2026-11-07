@@ -80,9 +80,12 @@ These are facts from AOSP `main`, not assumptions.
    `service.adb.tls.port` is `adbd_prop` and `getprop` returns it to an
    unprivileged process (`adb_wifi.cpp:149-187`). AOSP `main` after Android 16
    stops setting it and delivers the port to the framework over the auth socket
-   instead. The app reads the property when it is present and otherwise uses the
-   mDNS advertisement and the port from the last successful bootstrap. A
-   remembered port is a hint: the app connects to it before it trusts it.
+   instead. The app reads the property when it is present and otherwise finds the
+   port live from the socket: it probes the shell-owned listening ports with the
+   app key, and only the system adbd's TLS listener answers the handshake (the
+   app's own plain listener rejects it). The mDNS advertisement and the port from
+   the last successful bootstrap are the fallback. A remembered port is a hint: the
+   app connects to it before it trusts it.
 10. **`adb_enabled=0` stops adbd.**
     `AdbService.setAdbEnabled(false, USB)` calls `stopAdbd()`, and
     `UsbDeviceManager` removes ADB from the USB functions and calls
@@ -438,9 +441,11 @@ system adbd has no TCP listener, so there is nothing to monitor or turn off.
 ### Port discovery
 
 - Primary: `getprop service.adb.tls.port` (Android 11-16, `adbd_prop`, readable).
-- Then: the port from the last successful bootstrap, which the app connects to
-  before it trusts it.
+- Live: the shell-owned listening ports probed with the app key; only the system
+  adbd's TLS listener answers the handshake (AOSP `main` after Android 16).
 - Fallback: `NsdManager` discovery of `_adb-tls-connect._tcp`.
+- Last fallback: the port from the last successful bootstrap, which the app
+  connects to before it trusts it.
 - Last resort: the user enters the port shown in Settings.
 - The plain target port is chosen by the app and set with `tcpip:<port>`;
   it is stored in prefs and re-applied after boot.

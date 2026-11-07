@@ -1,6 +1,8 @@
 /*
  * SystemAdb - connects to the system adbd for bootstrap. Tries the published
  * TLS port, the last known port, listening shell sockets, plain 5555 and mDNS.
+ * The Settings status finds the TLS port live from the socket when the release
+ * does not publish it.
  */
 package cz.slush.adbanywhere.adb
 
@@ -13,6 +15,7 @@ import cz.slush.adbanywhere.service.AppLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.TimeUnit
 
 class SystemAdb(
     private val context: Context,
@@ -128,22 +131,6 @@ class SystemAdb(
         return true
     }
 
-    private fun listeningShellPorts(): List<Int> {
-        val ports = mutableListOf<Int>()
-        for (file in listOf("/proc/net/tcp6", "/proc/net/tcp")) {
-            val lines = runCatching { File(file).readLines() }.getOrNull() ?: continue
-            for (line in lines.drop(1)) {
-                val parts = line.trim().split(Regex("\\s+"))
-                if (parts.size < 10 || parts[3] != "0A") continue
-                val port = parts[1].substringAfterLast(':').toIntOrNull(16) ?: continue
-                val uid = parts[7].toIntOrNull() ?: continue
-                if (uid != 2000) continue
-                if (port in 1024..65535) ports += port
-            }
-        }
-        return ports.distinct()
-    }
-
     companion object {
         /**
          * The system wireless debugging TLS port, read from the property adbd
@@ -152,6 +139,47 @@ class SystemAdb(
          */
         fun systemTlsPort(): Int? =
             WirelessDebuggingGuard.parseTlsPort(readProp("service.adb.tls.port"))
+
+        /**
+         * The system adbd's TLS port, live. Android 11-16 publish it, so the
+         * property answers. AOSP main after Android 16 does not, so the socket
+         * answers instead: every shell-owned listening port is probed with the app
+         * key, and only the system adbd's TLS listener completes the handshake
+         * (or asks to pair). The app's own plain listener rejects it.
+         */
+        suspend fun detectTlsPort(
+            context: Context,
+            keys: AppKeyStore,
+            prefs: Prefs,
+        ): Int? = withContext(Dispatchers.IO) {
+            systemTlsPort()?.let { return@withContext it }
+            val manager = AdbManager(context, keys)
+            manager.setTimeout(2, TimeUnit.SECONDS)
+            for (port in listeningShellPorts()) {
+                if (port == prefs.loopbackPort || port == prefs.vpnPort) continue
+                if (manager.connectTo("127.0.0.1", port) || manager.pairingRequired) {
+                    manager.disconnectQuietly()
+                    return@withContext port
+                }
+            }
+            null
+        }
+
+        private fun listeningShellPorts(): List<Int> {
+            val ports = mutableListOf<Int>()
+            for (file in listOf("/proc/net/tcp6", "/proc/net/tcp")) {
+                val lines = runCatching { File(file).readLines() }.getOrNull() ?: continue
+                for (line in lines.drop(1)) {
+                    val parts = line.trim().split(Regex("\\s+"))
+                    if (parts.size < 10 || parts[3] != "0A") continue
+                    val port = parts[1].substringAfterLast(':').toIntOrNull(16) ?: continue
+                    val uid = parts[7].toIntOrNull() ?: continue
+                    if (uid != 2000) continue
+                    if (port in 1024..65535) ports += port
+                }
+            }
+            return ports.distinct()
+        }
 
         private fun readProp(name: String): String? {
             val fromBinary = runCatching {

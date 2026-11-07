@@ -13,6 +13,7 @@ import android.net.NetworkCapabilities
 import android.provider.Settings
 import cz.slush.adbanywhere.adb.SystemAdb
 import cz.slush.adbanywhere.data.AdbStatus
+import cz.slush.adbanywhere.data.AppKeyStore
 import cz.slush.adbanywhere.data.Prefs
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -58,25 +59,27 @@ object SystemSettings {
     }
 
     /** D11: the state the Settings screen reports, read from the platform. */
-    fun status(context: Context): AdbStatus {
+    suspend fun status(context: Context): AdbStatus {
         val prefs = Prefs(context)
         return AdbStatus(
             adbEnabled = adbEnabled(context),
             adbWifiEnabled = adbWifiEnabled(context),
             port5555Open = isLocalPortOpen(Prefs.PLAIN_ADB_PORT),
-            wirelessPort = systemWirelessPort(prefs),
+            wirelessPort = systemWirelessPort(context, prefs),
         )
     }
 
     /**
      * The system adbd's wireless-debugging port while it listens. Android 11-16
-     * publish service.adb.tls.port; AOSP main after Android 16 delivers it to the
-     * framework over the auth socket instead, so the port remembered from the last
-     * bootstrap is the fallback. A port that belongs to the custom adb is never
-     * reported: it is our listener, not the system one.
+     * publish service.adb.tls.port. AOSP main after Android 16 stopped
+     * publishing it, so the port is found live from the socket: only the system
+     * adbd's TLS listener answers the app key. The port remembered from the last
+     * bootstrap is the last fallback. A port that belongs to the custom adb is
+     * never reported: it is our listener, not the system one.
      */
-    private fun systemWirelessPort(prefs: Prefs): Int {
-        val port = SystemAdb.systemTlsPort() ?: prefs.lastTlsPort
+    private suspend fun systemWirelessPort(context: Context, prefs: Prefs): Int {
+        val port = SystemAdb.detectTlsPort(context, AppKeyStore(context), prefs)
+            ?: prefs.lastTlsPort
         if (port <= 0 || port == prefs.loopbackPort || port == prefs.vpnPort) return 0
         return if (isLocalPortOpen(port)) port else 0
     }
