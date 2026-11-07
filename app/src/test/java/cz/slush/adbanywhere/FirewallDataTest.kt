@@ -313,7 +313,7 @@ class FirewallDataTest {
     }
 
     @Test
-    fun rawShellPrefixMatchesMetacharacterCalls() {
+    fun rawShellPrefixOnlyMatchesWithoutMetacharacters() {
         val rule = CallRule(
             id = "raw",
             action = CallAction.ALLOW,
@@ -324,14 +324,32 @@ class FirewallDataTest {
             ),
             rawShell = true,
         )
-        val call = AdbCallParser.parse("shell:run-as cz.slush.adbanywhere sh -c id 2>&1")
-        assertTrue(call.metacharacters)
-        assertTrue(rule.matches(call))
-        assertFalse(rule.copy(rawShell = false).matches(call))
-        assertFalse(rule.matches(AdbCallParser.parse("shell:run-as com.example id")))
+        val quoted = AdbCallParser.parse(
+            "shell:run-as cz.slush.adbanywhere sh -c 'id && uname'",
+        )
+        assertFalse(quoted.metacharacters)
+        assertTrue(rule.matches(quoted))
+
+        val chained = AdbCallParser.parse(
+            "shell:run-as cz.slush.adbanywhere id && run-as evil",
+        )
+        assertTrue(chained.metacharacters)
+        assertFalse(rule.matches(chained))
+        assertFalse(rule.matches(AdbCallParser.parse("shell:run-as evil id")))
+
+        val exact = CallRule(
+            id = "exact",
+            action = CallAction.ALLOW,
+            service = "shell",
+            predicates = chained.fields.map { (field, value) ->
+                CallPredicate.Exact(field, value)
+            },
+        )
+        assertTrue(exact.matches(chained))
+
         val copy = CallRule.fromJson(rule.toJson())!!
         assertTrue(copy.rawShell)
-        assertTrue(copy.matches(call))
+        assertTrue(copy.matches(quoted))
     }
 
     private fun ip(text: String): Int =

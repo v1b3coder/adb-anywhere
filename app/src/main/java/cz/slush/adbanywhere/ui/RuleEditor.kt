@@ -1,7 +1,9 @@
 /*
  * RuleEditor - the custom filter editor. It starts with every field fixed and
- * lets the user unlock the fields that may vary. A broad rule is labelled.
- * The Save/Cancel footer is outside the scrolling field list so it stays visible.
+ * lets the user unlock the fields that may vary. The service is always fixed, the
+ * call arguments are shown in call order, and the derived fields (command, raw,
+ * interactive, metacharacters) are read-only. The Save/Cancel footer is outside the
+ * scrolling field list so it stays visible.
  */
 package cz.slush.adbanywhere.ui
 
@@ -19,7 +21,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -68,13 +69,29 @@ fun RuleEditorContent(
     modifier: Modifier = Modifier,
 ) {
     var action by remember { mutableStateOf(CallAction.ALLOW) }
-    var fixed by remember { mutableStateOf(call.fields.keys.toSet()) }
+    var fixed by remember { mutableStateOf(call.fields.keys - "service") }
     var pathGlob by remember { mutableStateOf(false) }
     var prefixMode by remember { mutableStateOf(false) }
-    var prefix by remember(call) { mutableStateOf(defaultPrefix(call)) }
-    val fields = remember(call) {
-        call.fields.toList().sortedBy { it.first }
+    var prefixLength by remember(call) {
+        mutableStateOf(minOf(2, call.argv.orEmpty().size))
     }
+    val argv = remember(call) { call.argv.orEmpty() }
+    val derived = remember { setOf("command", "raw", "interactive", "metacharacters") }
+    val fields = remember(call) {
+        call.fields.filterKeys { it != "service" }
+            .toList()
+            .sortedWith(compareBy({ fieldOrder(it.first) }, { it.first }))
+    }
+    val prefix = remember(argv, prefixLength) {
+        if (argv.isEmpty()) {
+            ""
+        } else {
+            argv.take(prefixLength).joinToString(" ") +
+                if (prefixLength < argv.size) " " else ""
+        }
+    }
+    val prefixAvailable = call.service in setOf("shell", "exec") &&
+        !call.metacharacters && argv.isNotEmpty()
     Column(modifier.fillMaxWidth()) {
         LazyColumn(
             modifier = Modifier.fillMaxWidth().heightIn(max = 480.dp),
@@ -89,6 +106,12 @@ fun RuleEditorContent(
             }
             item {
                 Text(
+                    "Service: ${call.service} (always fixed)",
+                    style = MaterialTheme.typography.labelLarge,
+                )
+            }
+            item {
+                Text(
                     call.raw,
                     fontFamily = FontFamily.Monospace,
                     style = MaterialTheme.typography.bodySmall,
@@ -97,30 +120,74 @@ fun RuleEditorContent(
                 )
             }
             item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Checkbox(
-                        checked = prefixMode,
-                        onCheckedChange = { prefixMode = it },
-                    )
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            "Prefix capability",
-                            style = MaterialTheme.typography.labelLarge,
+                if (prefixAvailable) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Checkbox(
+                            checked = prefixMode,
+                            onCheckedChange = { prefixMode = it },
                         )
-                        Text(
-                            "Any remaining args run as the app's UID, including " +
-                                "shell operators. This is a capability, not a sandbox.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error,
-                        )
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "Prefix capability",
+                                style = MaterialTheme.typography.labelLarge,
+                            )
+                            Text(
+                                "Pins the first argv tokens. Top-level shell operators " +
+                                    "are rejected; quoted sh -c '...' is allowed and runs " +
+                                    "as the app's UID.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
+                } else {
+                    Text(
+                        if (call.metacharacters) {
+                            "Top-level shell operators: only an exact rule is available."
+                        } else {
+                            "Prefix capability is available for shell and exec calls."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
-            if (!prefixMode) {
-                items(fields) { (name, value) ->
+            if (prefixMode) {
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        OutlinedButton(
+                            enabled = prefixLength > 1,
+                            onClick = { prefixLength = (prefixLength - 1).coerceAtLeast(1) },
+                        ) { Text("−") }
+                        Text(
+                            "First $prefixLength token(s)",
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        OutlinedButton(
+                            enabled = prefixLength < argv.size,
+                            onClick = {
+                                prefixLength = (prefixLength + 1).coerceAtMost(argv.size)
+                            },
+                        ) { Text("+") }
+                    }
+                }
+                item {
+                    Text(
+                        "Prefix: \"$prefix\"",
+                        fontFamily = FontFamily.Monospace,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            } else {
+                items(fields.filter { it.first !in derived }) { (name, value) ->
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
@@ -159,24 +226,6 @@ fun RuleEditorContent(
                     }
                 }
             }
-            if (prefixMode) {
-                item {
-                    OutlinedTextField(
-                        value = prefix,
-                        onValueChange = { prefix = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text("Command prefix") },
-                        singleLine = true,
-                    )
-                }
-                item {
-                    Text(
-                        "Include the trailing space to pin the token boundary.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
             item {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -206,6 +255,28 @@ fun RuleEditorContent(
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
+            if (!prefixMode) {
+                items(fields.filter { it.first in derived }) { (name, value) ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "$name (derived)",
+                                style = MaterialTheme.typography.labelMedium,
+                            )
+                            Text(
+                                value,
+                                fontFamily = FontFamily.Monospace,
+                                style = MaterialTheme.typography.bodySmall,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+            }
         }
         Row(
             modifier = Modifier.fillMaxWidth()
@@ -223,14 +294,15 @@ fun RuleEditorContent(
                             CallPredicate.Prefix("command", prefix),
                         )
                     } else {
-                        fixed.mapNotNull { name ->
-                            val value = call.fields[name] ?: return@mapNotNull null
-                            if (name == "path" && pathGlob) {
-                                CallPredicate.Glob(name, value)
-                            } else {
-                                CallPredicate.Exact(name, value)
+                        listOf(CallPredicate.Exact("service", call.service)) +
+                            fixed.mapNotNull { name ->
+                                val value = call.fields[name] ?: return@mapNotNull null
+                                if (name == "path" && pathGlob) {
+                                    CallPredicate.Glob(name, value)
+                                } else {
+                                    CallPredicate.Exact(name, value)
+                                }
                             }
-                        }
                     }
                     onSave(
                         CallRule(
@@ -247,11 +319,19 @@ fun RuleEditorContent(
     }
 }
 
-private fun defaultPrefix(call: AdbCall): String {
-    val tokens = call.argv.orEmpty()
-    if (tokens.isEmpty()) return call.fields["command"].orEmpty()
-    val count = minOf(2, tokens.size)
-    return tokens.take(count).joinToString(" ") + if (tokens.size > count) " " else ""
+/** Call order: service (hidden), argv, path/port/specs, derived fields last. */
+private fun fieldOrder(name: String): Int = when {
+    name.startsWith("argv[") -> name.removePrefix("argv[").removeSuffix("]").toIntOrNull() ?: 1000
+    name == "path" -> 2000
+    name == "direction" -> 2001
+    name == "port" -> 2002
+    name == "remote" -> 2003
+    name == "local" -> 2004
+    name == "interactive" -> 3000
+    name == "metacharacters" -> 3001
+    name == "command" -> 3002
+    name == "raw" -> 3003
+    else -> 2500
 }
 
 private fun preview(

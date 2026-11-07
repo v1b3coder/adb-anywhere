@@ -108,12 +108,15 @@ data class CallRule(
     val predicates: List<CallPredicate>,
     val note: String = "",
     val createdAt: Long = System.currentTimeMillis(),
-    /** A prefix capability that also matches shell operators after the prefix. */
+    /** A prefix capability for calls without top-level shell operators. */
     val rawShell: Boolean = false,
 ) {
     fun matches(call: AdbCall): Boolean {
         if (service != "*" && service != call.service) return false
-        val prefixCapability = rawShell && predicates.any {
+        // A prefix capability is only sound when the call has no top-level shell
+        // operators. Quoted `sh -c '...'` has metacharacters=false and still
+        // matches; `id && run-as evil` does not.
+        val prefixCapability = rawShell && !call.metacharacters && predicates.any {
             it is CallPredicate.Prefix && (it.field == "command" || it.field == "raw")
         }
         if (call.metacharacters && !prefixCapability && predicates.none {

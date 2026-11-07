@@ -268,9 +268,12 @@ sealed interface Predicate {
 ```
 
 A rule with `rawShell = true` and a `Prefix` predicate on `command` (or `raw`)
-is a raw-shell capability: it is the only rule shape that matches a call with shell
-metacharacters. The prefix is the authority; the remaining argv tokens are not
-predicates. A normal rule still never matches a metacharacter call.
+is a no-metacharacter prefix capability. It matches only when the call has no
+top-level shell operators; the prefix is the authority and the remaining argv
+tokens are not predicates. A call with `&&`, `;`, `|`, `$()` or redirections is
+matched only by an exact rule (every field fixed, including
+`metacharacters = true`). Quoted `sh -c '...'` has no top-level operators, so the
+prefix capability still matches it and the quoted script runs as the app's UID.
 
 Evaluation is first match wins. A rule with fewer predicates is broader; a rule
 with no predicates matches every call of its service. The editor warns before
@@ -341,15 +344,15 @@ views of the same data. If the call has shell metacharacters, the editor does no
 allow unlocking the command or any argv token; it offers only an exact raw-shell rule
 with an explicit "raw shell" warning.
 
-A shell call also offers a **Prefix capability** toggle, available even when the call
-has metacharacters. It reveals an editable command prefix, prefilled with the first two
-argv tokens plus a trailing space (`run-as <package> `). Saving it creates a rule with
-`rawShell = true` and `Prefix("command", prefix)`; the preview reads
-`command starts with "..."`. The warning says the remaining args run as the app's UID,
-including shell operators, and that the prefix must include the trailing space to pin the
-token boundary. For an interactive `shell:` call, the editor offers a single "full
-shell, not filtered" capability with an explicit confirmation; there are no fields to
-pin.
+A shell or exec call also offers a **Prefix capability** toggle. It is available only
+when the call has no top-level shell operators, and it is disabled for sync, tcp and
+reverse calls. It shows a read-only prefix built from the first N argv tokens (N is
+adjustable, default two, so `run-as <package> `); the remaining args are unlocked.
+Saving it creates a rule with `rawShell = true` and `Prefix("command", prefix)`; the
+preview reads `command starts with "..."`. The warning says top-level `&&`, `;`, `|`,
+`$()` and redirections are rejected; quoted `sh -c '...'` is allowed and runs as the
+app's UID. For an interactive `shell:` call, the editor offers a single "full shell,
+not filtered" capability with an explicit confirmation; there are no fields to pin.
 
 The action selector is `Allow` or `Deny`. The preview shows the normalized rule in
 the same notation as the prompt, for example:
@@ -373,10 +376,11 @@ sandbox:
 - `shell:sh -c '...'` and `shell:toybox ...` reach the same commands as a direct
   call. The parser can pin `sh` and its arguments, but cannot prove what the script
   does.
-- A raw-shell prefix rule (`rawShell = true` with `Prefix("command", ...)`) is a
-  capability, not an argv rule: every command after the prefix, including `sh -c`,
-  `;`, pipes and redirections, runs as the app's UID. Pin the package token in the
-  prefix.
+- A prefix capability (`rawShell = true` with `Prefix("command", ...)`) only
+  matches calls without top-level shell operators. `run-as <package> sh -c '...'` is
+  allowed and runs as the app's UID; `run-as <package> id && run-as evil` has a
+  top-level `&&` and is rejected unless an exact rule pins the whole command. The
+  prefix should pin the package token.
 - `;`, `|`, `&&`, `$(...)`, backticks and redirection change the command. They are
   a `metacharacters` field; a normal argv rule never matches them.
 - Interactive `shell:` is arbitrary after the first approval. It prompts by default
@@ -574,9 +578,10 @@ JVM unit tests:
   including the grace timer and a return before it expires.
 - Audit ring, rotation and redaction.
 - Relay with in-memory sockets: allow, deny, hold, timeout, close, oversized frame.
-- Raw-shell prefix: a `rawShell` rule with `Prefix("command", ...)` matches a
-  metacharacter `run-as` call; the same rule with `rawShell=false` does not; a
-  different package does not match.
+- Prefix capability: a `rawShell` rule with `Prefix("command", ...)` matches a
+  quoted `run-as <package> sh -c 'id && uname'`; it does not match
+  `run-as <package> id && run-as evil`; a different package does not match; an
+  exact rule still matches the top-level `&&` call.
 
 Device/integration:
 
@@ -594,7 +599,9 @@ Device/integration:
   assert the card is visible above the launcher, answer it, and assert the call
   proceeds without a notification tap.
 - Prefix capability: create a `run-as <package>` prefix rule through the editor,
-  then fire `run-as <package> sh -c id 2>&1` and assert it runs without a prompt.
+  then fire `run-as <package> sh -c 'id'` and assert it runs without a prompt; fire
+  `run-as <package> id && run-as <package> id` and assert the prompt appears and
+  Block denies it.
 - Custom filter footer: open the editor and assert Save rule and Cancel are visible
   without scrolling.
 - Self allowlist: allowlisting ADB Anywhere keeps ADB open in its UI, and a call

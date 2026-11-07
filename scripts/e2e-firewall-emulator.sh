@@ -272,7 +272,7 @@ if prompt_call "custom filter" shell 'ls /sdcard'; then
 fi
 
 say "prefix capability"
-if prompt_call "prefix" shell 'run-as cz.slush.adbanywhere id 2>&1'; then
+if prompt_call "prefix" shell "run-as cz.slush.adbanywhere sh -c 'id'"; then
     prompt_tap "Custom filter"
     wait_for_text "Prefix capability" && ok "prefix editor" || bad "prefix editor"
     tap_checkable && ok "prefix toggle" || bad "prefix toggle"
@@ -281,7 +281,13 @@ if prompt_call "prefix" shell 'run-as cz.slush.adbanywhere id 2>&1'; then
     finish_call
     prefs | grep -q 'rawShell&quot;:true' && ok "raw shell rule" || bad "raw shell rule"
 fi
-run_ok "raw prefix rule" shell 'run-as cz.slush.adbanywhere sh -c id 2>&1'
+run_ok "raw prefix rule" shell "run-as cz.slush.adbanywhere sh -c 'id'"
+
+if prompt_call "chained run-as" shell 'run-as cz.slush.adbanywhere id && run-as cz.slush.adbanywhere id'; then
+    prompt_tap "Block"
+    wait "$CALL_PID" 2>/dev/null || true
+    audit_has call_denied && ok "chained run-as denied" || bad "chained run-as denied"
+fi
 
 say "floating prompt"
 adb -s "$serial" shell input keyevent 3
