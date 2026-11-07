@@ -9,17 +9,39 @@ enum class PromptDecision { BLOCK, ALLOW_ONCE, ALWAYS_ALLOW, CUSTOM }
 data class PromptResponse(
     val decision: PromptDecision,
     val rule: CallRule? = null,
-)
+) {
+    /**
+     * The effective verdict. A custom filter follows its rule's action, so a
+     * `Deny` filter denies the call instead of allowing it.
+     */
+    val allowsCall: Boolean
+        get() = when (decision) {
+            PromptDecision.ALLOW_ONCE, PromptDecision.ALWAYS_ALLOW -> true
+            PromptDecision.CUSTOM -> rule?.action == CallAction.ALLOW
+            PromptDecision.BLOCK -> false
+        }
+}
 
 data class PromptRequest(
     val id: String,
     val call: AdbCall,
     val peer: String,
+    /** The key the transport authenticated with, when the relay saw one. */
+    val fingerprint: String = "",
+    /** The developer key label for [fingerprint], resolved by the service. */
+    val label: String = "",
+    /** Absolute time the prompt is denied, so the card can show a countdown. */
+    val deadline: Long = System.currentTimeMillis() + 30_000L,
 )
 
 interface RelayPolicy {
     fun evaluate(call: AdbCall): CallVerdict
-    suspend fun prompt(call: AdbCall, peer: String, timeoutMs: Long): PromptResponse?
+    suspend fun prompt(
+        call: AdbCall,
+        peer: String,
+        fingerprint: String,
+        timeoutMs: Long,
+    ): PromptResponse?
     fun onRule(rule: CallRule)
     fun promptPending(): Boolean
 }
@@ -44,17 +66,21 @@ class FirewallPolicy(
     override suspend fun prompt(
         call: AdbCall,
         peer: String,
+        fingerprint: String,
         timeoutMs: Long,
     ): PromptResponse? {
         val request = PromptRequest(
             id = java.util.UUID.randomUUID().toString(),
             call = call,
             peer = peer,
+            fingerprint = fingerprint,
+            deadline = System.currentTimeMillis() + timeoutMs,
         )
         audit(
             AuditEvent(
                 event = "call_prompted",
                 peer = peer,
+                fingerprint = fingerprint,
                 service = call.service,
                 fields = call.fields,
             ),
@@ -62,8 +88,12 @@ class FirewallPolicy(
         val response = prompt(request, timeoutMs)
         val now = System.currentTimeMillis()
         when (response?.decision) {
+            // A truncated call cannot be pinned exactly, so "Always allow" only
+            // allows this call instead of persisting a rule that would match more.
             PromptDecision.ALWAYS_ALLOW ->
-                saveRule(CallRule.forCall(call, CallAction.ALLOW).copy(lastUsed = now))
+                if (!call.truncated) {
+                    saveRule(CallRule.forCall(call, CallAction.ALLOW).copy(lastUsed = now))
+                }
             PromptDecision.CUSTOM -> response.rule?.let { saveRule(it.copy(lastUsed = now)) }
             else -> Unit
         }

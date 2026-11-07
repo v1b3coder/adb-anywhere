@@ -14,6 +14,7 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.util.concurrent.atomic.AtomicBoolean
 
 class FirewallProxy(
     private val scope: CoroutineScope,
@@ -23,6 +24,7 @@ class FirewallProxy(
     private val audit: AuditLog,
     private val onIpUsed: (String) -> Unit = {},
     private val onAppUsed: (String) -> Unit = {},
+    private val pendingPrompts: () -> Int = { 0 },
     private val onState: (FirewallState) -> Unit,
 ) {
     private val lock = Any()
@@ -182,6 +184,10 @@ class FirewallProxy(
                 runCatching { client.close() }
                 continue
             }
+            // An unauthenticated peer must not hold a slot forever: the socket
+            // read times out until the server's A_CNXN proves the transport is
+            // authenticated, then the timeout is cleared for the session.
+            runCatching { client.soTimeout = PRE_AUTH_TIMEOUT_MS }
             val connection = try {
                 Connection(client, peer)
             } catch (e: Exception) {
@@ -234,7 +240,11 @@ class FirewallProxy(
     }
 
     private fun appAllowed(): Boolean {
-        val foreground = monitor?.state?.value?.foreground ?: return false
+        val state = monitor?.state?.value ?: return false
+        // A revoked UsageStats appop must fail closed: without a foreground
+        // signal the last known app is not evidence that an allowed app is open.
+        if (!state.usageAvailable) return false
+        val foreground = state.foreground ?: return false
         return foreground in config().appAllowlist
     }
 
@@ -258,7 +268,7 @@ class FirewallProxy(
                 listening = listening,
                 listenAddress = if (listening) "${vpnIp ?: ""}:$port" else "",
                 activeSessions = activeSessions,
-                pendingPrompts = if (policy.promptPending()) 1 else 0,
+                pendingPrompts = pendingPrompts(),
                 lastError = lastError,
             ),
         )
@@ -270,7 +280,7 @@ class FirewallProxy(
     ) {
         private val upstream = Socket()
         private val relay: AdbRelay
-        private var closed = false
+        private val closed = AtomicBoolean(false)
 
         init {
             runCatching { upstream.tcpNoDelay = true }
@@ -284,7 +294,9 @@ class FirewallProxy(
                 audit,
                 peer.hostAddress ?: "",
                 { !config().appAllowlistEnabled || appAllowed() },
-            ) { close() }
+                { runCatching { client.soTimeout = 0 } },
+                { close() },
+            )
         }
 
         fun start() {
@@ -293,8 +305,7 @@ class FirewallProxy(
         }
 
         fun close() {
-            if (closed) return
-            closed = true
+            if (!closed.compareAndSet(false, true)) return
             relay.close()
             runCatching { client.close() }
             runCatching { upstream.close() }
@@ -314,5 +325,6 @@ class FirewallProxy(
     companion object {
         private const val MAX_CONNECTIONS = 8
         private const val MAX_PER_PEER = 2
+        private const val PRE_AUTH_TIMEOUT_MS = 10_000
     }
 }

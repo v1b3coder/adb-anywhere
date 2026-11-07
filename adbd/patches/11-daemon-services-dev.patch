@@ -1,0 +1,29 @@
+--- a/daemon/services.cpp
++++ b/daemon/services.cpp
+@@ -230,25 +230,6 @@
+ #endif
+ 
+-    if (android::base::ConsumePrefix(&name, "dev:")) {
+-        return unique_fd{unix_open(name, O_RDWR | O_CLOEXEC)};
+-    } else if (android::base::ConsumePrefix(&name, "dev-raw:")) {
+-        android::base::unique_fd fd(unix_open(name, O_RDWR | O_CLOEXEC));
+-        termios tattr;
+-
+-        if (fd == -1) {
+-            return unique_fd{};
+-        }
+-
+-        if (tcgetattr(fd.get(), &tattr) == -1) {
+-            return unique_fd{};
+-        }
+-        cfmakeraw(&tattr);
+-        if (tcsetattr(fd.get(), TCSADRAIN, &tattr) == -1) {
+-            return unique_fd{};
+-        }
+-
+-        return fd;
+-    } else if (android::base::ConsumePrefix(&name, "shell")) {
++    if (android::base::ConsumePrefix(&name, "shell")) {
+         return ShellService(name, transport);
+     } else if (android::base::ConsumePrefix(&name, "exec:")) {
+         return StartSubprocess(std::string(name), nullptr, SubprocessType::kRaw,

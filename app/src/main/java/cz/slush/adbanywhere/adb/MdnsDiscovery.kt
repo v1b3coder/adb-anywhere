@@ -30,7 +30,9 @@ class MdnsDiscovery(private val context: Context) {
             }
             val type = if (serviceType.endsWith(".")) serviceType else "$serviceType."
             val finished = AtomicBoolean(false)
-            val ports = LinkedHashSet<Int>()
+            // The resolver callback runs on a binder thread while the timeout and
+            // the cancellation run on the main thread, so the set must be concurrent.
+            val ports = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
             var listener: NsdManager.DiscoveryListener? = null
 
             fun finish() {

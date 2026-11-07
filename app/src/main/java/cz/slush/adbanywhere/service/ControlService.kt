@@ -84,6 +84,11 @@ class ControlService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val setupMutex = Mutex()
     private val lifecycleLock = Any()
+    // One prompt is shown at a time: a second unmatched call waits for the
+    // first to be answered or denied instead of silently replacing its card.
+    private val promptMutex = Mutex()
+    @Volatile
+    private var watchdogBackoffMs = 0L
 
     // The relay is mutated by setup(), the watchdog and the network callback on
     // different threads.  Binding a port and publishing the proxy must be one critical
@@ -358,6 +363,11 @@ class ControlService : Service() {
             // bootstrap settings or reached a shell on the device.
             var cleanupRequired = false
             val firewallConfig = firewallStore.load()
+            // What the setup is allowed to change, so a failed attempt can put
+            // the platform back instead of leaving the system TLS listener on.
+            val adbStateBefore = withContext(Dispatchers.IO) {
+                SystemSettings.state(this@ControlService)
+            }
             try {
                 val vpnIp = VpnDetector.currentVpnAddress(this)
                 val exposeVpn = !firewallConfig.enabled
@@ -642,7 +652,7 @@ class ControlService : Service() {
                 fail(e.message ?: "Setup failed")
             } finally {
                 if (cleanupRequired && ControlBus.state.value.phase != Phase.Running) {
-                    abortSetup()?.let { warning ->
+                    abortSetup(adbStateBefore)?.let { warning ->
                         val error = ControlBus.state.value.error
                         fail(if (error.isEmpty()) warning else "$error $warning")
                     }
@@ -655,12 +665,12 @@ class ControlService : Service() {
     }
 
     /**
-     * Undoes a failed setup attempt: stops the patched daemon. It deliberately
-     * leaves the system wireless debugging alone: setup did not reach the point
-     * where the patched daemon is verified, and turning it off here would cut the
-     * very connection the retry needs.
+     * Undoes a failed setup attempt: stops the patched daemon and the relay, and
+     * puts the system wireless debugging back the way the setup found it. The
+     * setup may have opened it for the bootstrap; leaving it on would expose the
+     * system TLS listener on every interface while the custom adb is down.
      */
-    private suspend fun abortSetup(): String? =
+    private suspend fun abortSetup(adbStateBefore: SystemSettings.AdbState?): String? =
         withContext(Dispatchers.IO + NonCancellable) {
             runCatching { stopFirewall("Setup failed") }
             val stopped = runCatching {
@@ -673,6 +683,37 @@ class ControlService : Service() {
             }.onFailure {
                 AppLog.warn("setup", "cleanup cannot stop adb: ${it.message}")
             }.isSuccess
+            val warnings = mutableListOf<String>()
+            // Restore the bootstrap only when the setup changed it. When it was
+            // already on before the setup, the fallback stays as it was.
+            val wifiBefore = adbStateBefore?.adbWifiEnabled
+            if (wifiBefore == null || wifiBefore == 0) {
+                val closed = runCatching {
+                    WirelessDebuggingGuard(
+                        readSetting = { SystemSettings.adbWifiEnabled(this@ControlService) },
+                        writeDisabled = {
+                            SystemSettings.setAdbWifiEnabled(this@ControlService, false)
+                        },
+                        readTlsPort = { SystemAdb.systemTlsPort() },
+                        isPortOpen = { port ->
+                            runCatching {
+                                Socket().use { it.connect(InetSocketAddress("127.0.0.1", port), 300) }
+                                true
+                            }.getOrDefault(false)
+                        },
+                        pause = { Thread.sleep(WirelessDebuggingGuard.RETRY_DELAY_MS) },
+                    ).ensureOff()
+                }.onFailure {
+                    AppLog.warn(
+                        "setup",
+                        "cleanup cannot close wireless debugging: ${it.message}",
+                    )
+                    warnings += "Turn wireless debugging off in Settings, or reboot."
+                }
+                if (closed.isSuccess) {
+                    AppLog.info("setup", "cleanup closed system wireless debugging")
+                }
+            }
             // The shell may be gone because the daemon already died; the port
             // is the authority on whether anything still runs.
             val daemonListening = runCatching {
@@ -684,12 +725,11 @@ class ControlService : Service() {
                 "cleanup stopped=$stopped listening=$daemonListening",
             )
             if (daemonListening) {
-                "Cleanup incomplete: the custom adb still listens on " +
+                warnings += "Cleanup incomplete: the custom adb still listens on " +
                     "127.0.0.1:${prefs.loopbackPort}. Turn wireless debugging off in " +
                     "Settings, or reboot."
-            } else {
-                null
             }
+            warnings.joinToString(" ").ifEmpty { null }
         }
 
     /**
@@ -775,7 +815,17 @@ class ControlService : Service() {
         val manager = AdbManager(this@ControlService, keys)
         val ok = manager.connectTo("127.0.0.1", prefs.loopbackPort)
         manager.disconnectQuietly()
-        ok
+        if (!ok) return@withContext false
+        // The app's own channel must be the daemon this app started, not a
+        // malicious local app that bound the port first.
+        runCatching {
+            val shell = daemonShell()
+            try {
+                daemon.identity(shell)
+            } finally {
+                shell.close()
+            }
+        }.getOrDefault(false)
     }
 
     private suspend fun verifyDaemon(vpnIp: String?, exposeVpn: Boolean) = withContext(Dispatchers.IO) {
@@ -790,6 +840,12 @@ class ControlService : Service() {
             val identity = shell.exec("id")
             if (!identity.stdout.contains("uid=2000") && !identity.stdout.contains("uid=0")) {
                 throw IOException("The custom adb returned an unexpected identity: ${identity.stdout.trim()}")
+            }
+            if (!daemon.identity(shell)) {
+                throw IOException(
+                    "The custom adb did not prove it is the app's daemon on " +
+                        "127.0.0.1:${prefs.loopbackPort}.",
+                )
             }
         } finally {
             loopback.disconnectQuietly()
@@ -879,6 +935,7 @@ class ControlService : Service() {
                     onAppUsed = { packageName ->
                         ControlBus.firewallConfig.value = firewallStore.markAppUsed(packageName)
                     },
+                    pendingPrompts = { prompts.size },
                     onState = { state -> ControlBus.update { it.copy(firewall = state) } },
                 )
                 try {
@@ -973,7 +1030,18 @@ class ControlService : Service() {
         request: PromptRequest,
         timeoutMs: Long,
     ): PromptResponse? {
-        if (prompts.size >= MAX_PROMPTS) return null
+        if (prompts.size >= MAX_PROMPTS) {
+            auditLog.record(
+                AuditEvent(
+                    event = "call_denied",
+                    peer = request.peer,
+                    service = request.call.service,
+                    fields = request.call.fields,
+                    rule = "prompt-cap",
+                ),
+            )
+            return null
+        }
         val foreground = foregroundMonitor?.state?.value
         if (foreground != null && (!foreground.interactive || foreground.locked)) {
             auditLog.record(
@@ -987,8 +1055,43 @@ class ControlService : Service() {
             )
             return null
         }
+        // The prompt shows the key the transport authenticated with, so the
+        // user can tell a paired machine from an unauthenticated peer.
+        val label = DeveloperKey.list(prefs.developerKeysJson)
+            .firstOrNull { it.fingerprint == request.fingerprint }
+            ?.label
+            ?: ""
         val deferred = CompletableDeferred<PromptResponse?>()
         prompts[request.id] = deferred
+        try {
+            // One card at a time: a second unmatched call waits for the first
+            // to be answered instead of silently replacing it.
+            return promptMutex.withLock {
+                showAndAwait(request.copy(label = label), timeoutMs, deferred)
+            }
+        } finally {
+            // A timeout, a cancelled relay or a stop must release the slot and
+            // the single pending-prompt slot. Nothing here may suspend: a
+            // cancelled coroutine would throw before the cleanup and leave
+            // pending() true, which suspends the app-allowlist grace timer.
+            prompts.remove(request.id)
+            if (ControlBus.pendingPrompt.value?.id == request.id) {
+                ControlBus.pendingPrompt.value = null
+            }
+            ControlBus.update {
+                it.copy(firewall = it.firewall.copy(pendingPrompts = prompts.size))
+            }
+            hidePromptOverlay()
+            NotificationManagerCompat.from(this).cancel(Notifications.PROMPT_ID)
+            firewallProxy?.onPromptFinished()
+        }
+    }
+
+    private suspend fun showAndAwait(
+        request: PromptRequest,
+        timeoutMs: Long,
+        deferred: CompletableDeferred<PromptResponse?>,
+    ): PromptResponse? {
         ControlBus.pendingPrompt.value = request
         ControlBus.update { it.copy(firewall = it.firewall.copy(pendingPrompts = prompts.size)) }
         // The overlay is the primary prompt: it floats above the current app
@@ -1008,33 +1111,18 @@ class ControlService : Service() {
                 )
             }
         }
-        return try {
-            val response = withTimeoutOrNull(timeoutMs) { deferred.await() }
-            if (response == null) {
-                auditLog.record(
-                    AuditEvent(
-                        event = "call_timeout",
-                        peer = request.peer,
-                        service = request.call.service,
-                        fields = request.call.fields,
-                    ),
-                )
-            }
-            response
-        } finally {
-            // A timeout, a cancelled relay or a stop must release the slot and
-            // the single pending-prompt slot; otherwise pending() stays true and the
-            // app-allowlist grace timer stays suspended forever.
-            withContext(Dispatchers.Main) { promptOverlay?.hide() }
-            prompts.remove(request.id)
-            if (ControlBus.pendingPrompt.value?.id == request.id) {
-                ControlBus.pendingPrompt.value = null
-            }
-            ControlBus.update {
-                it.copy(firewall = it.firewall.copy(pendingPrompts = prompts.size))
-            }
-            firewallProxy?.onPromptFinished()
+        val response = withTimeoutOrNull(timeoutMs) { deferred.await() }
+        if (response == null) {
+            auditLog.record(
+                AuditEvent(
+                    event = "call_timeout",
+                    peer = request.peer,
+                    service = request.call.service,
+                    fields = request.call.fields,
+                ),
+            )
         }
+        return response
     }
 
     private fun postPromptNotification(request: PromptRequest) {
@@ -1123,7 +1211,8 @@ class ControlService : Service() {
         AppLog.info("watchdog", "loop started")
         watchdogJob = scope.launch {
             while (true) {
-                delay(60_000)
+                // A repeated failure backs off instead of retrying every minute.
+                delay(if (watchdogBackoffMs > 0L) watchdogBackoffMs else 60_000L)
                 when (ControlBus.state.value.phase) {
                     Phase.Running -> watchdog()
                     Phase.Error -> if (prefs.setupComplete) scope.launch { setup() }
@@ -1134,6 +1223,9 @@ class ControlService : Service() {
     }
 
     private suspend fun watchdog() {
+        // Re-arm before every early return: a failed setup or a restart must not
+        // lose the 15-minute wakeup that survives the process.
+        scheduleWatchdog()
         val state = ControlBus.state.value
         if (state.phase != Phase.Running) return
         val alive = withContext(Dispatchers.IO) {
@@ -1162,8 +1254,8 @@ class ControlService : Service() {
             ensureWifiDebuggingOff()
         } catch (e: IOException) {
             AppLog.error("watchdog", "wireless debugging guard failed: ${e.message}")
+            nextBackoff()
             fail(e.message ?: "System wireless debugging is still on.")
-            scheduleWatchdog()
             return
         }
         if (!SystemSettings.ensureNoAdbConnectionTimeout(this)) {
@@ -1183,17 +1275,30 @@ class ControlService : Service() {
                 AppLog.warn("watchdog", "firewall relay is down; restarting")
                 runCatching { startFirewall(vpnIp) }.onFailure {
                     AppLog.error("watchdog", "firewall restart failed: ${it.message}")
+                    nextBackoff()
                     fail("The firewall relay is not listening: ${it.message}")
-                    scheduleWatchdog()
                     return
                 }
             }
         } else if (firewallProxy != null) {
             stopFirewall()
         }
+        resetBackoff()
         refreshAdbStatus()
         AppLog.info("watchdog", "ok")
-        scheduleWatchdog()
+    }
+
+    /** A repeated failure backs off exponentially, capped at 15 minutes. */
+    private fun nextBackoff() {
+        watchdogBackoffMs = if (watchdogBackoffMs <= 0L) {
+            60_000L
+        } else {
+            minOf(watchdogBackoffMs * 2, MAX_BACKOFF_MS)
+        }
+    }
+
+    private fun resetBackoff() {
+        watchdogBackoffMs = 0L
     }
 
     /**
@@ -1372,6 +1477,9 @@ class ControlService : Service() {
     private fun fail(message: String) {
         AppLog.error("setup", message)
         prefs.lastError = message
+        // A failure must not lose the 15-minute wakeup: the watchdog loop may
+        // be gone with the process, and an Error phase returns early.
+        scheduleWatchdog()
         ControlBus.update {
             it.copy(
                 phase = Phase.Error,
@@ -1657,6 +1765,7 @@ class ControlService : Service() {
         private const val MAX_PROMPTS = 8
         private const val BIND_ATTEMPTS = 10
         private const val BIND_RETRY_MS = 500L
+        private const val MAX_BACKOFF_MS = 15 * 60 * 1000L
         const val EXTRA_CODE = "code"
         const val EXTRA_PAIR_PORT = "pair_port"
         const val EXTRA_PROMPT_ID = "prompt_id"

@@ -31,7 +31,12 @@ import java.net.Socket
 class FirewallProxyTest {
     private class FakePolicy : RelayPolicy {
         override fun evaluate(call: AdbCall) = CallVerdict(CallDecision.ALLOW)
-        override suspend fun prompt(call: AdbCall, peer: String, timeoutMs: Long): PromptResponse? = null
+        override suspend fun prompt(
+            call: AdbCall,
+            peer: String,
+            fingerprint: String,
+            timeoutMs: Long,
+        ): PromptResponse? = null
         override fun onRule(rule: CallRule) = Unit
         override fun promptPending() = false
     }
@@ -57,12 +62,20 @@ class FirewallProxyTest {
         proxy.start("127.0.0.1", proxyPort, upstream.localPort)
         try {
             Socket("127.0.0.1", proxyPort).use { client ->
+                val server = withTimeout(3_000) { accepted.await() }
+                // The server sends A_CNXN only after the ADB handshake; the relay
+                // then accepts the client's A_OPEN.
+                val cnxn = ByteArrayOutputStream()
+                AdbFrameCodec.write(cnxn, AdbFrameCodec.A_CNXN, 0, 0, ByteArray(0))
+                server.getOutputStream().write(cnxn.toByteArray())
+                server.getOutputStream().flush()
+                assertNotNull(withTimeout(3_000) { AdbFrameCodec.read(client.getInputStream()) })
+
                 val output = ByteArrayOutputStream()
                 AdbFrameCodec.write(output, AdbFrameCodec.A_OPEN, 7, 0, "shell:ls".toByteArray())
                 client.getOutputStream().write(output.toByteArray())
                 client.getOutputStream().flush()
 
-                val server = withTimeout(3_000) { accepted.await() }
                 val open = withTimeout(3_000) { AdbFrameCodec.read(server.getInputStream()) }
                 assertNotNull(open)
                 assertEquals("shell:ls", AdbFrameCodec.service(open!!))

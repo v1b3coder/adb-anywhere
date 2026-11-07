@@ -12,6 +12,8 @@ import java.io.InputStream
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.nio.charset.StandardCharsets
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 data class ShellResult(
     val stdout: String,
@@ -39,12 +41,19 @@ class Shell(private val manager: AdbManager) {
 
     private fun execV2(command: String, timeoutMs: Long): ShellResult {
         val stream = manager.openStream("shell,v2,raw:$command")
+        // A hung read must not hold the IO coroutine and the setup mutex: the
+        // timeout closes the stream, and the blocking read then returns.
+        val timer = Executors.newSingleThreadScheduledExecutor()
+        val deadline = timer.schedule(
+            { runCatching { stream.close() } },
+            timeoutMs,
+            TimeUnit.MILLISECONDS,
+        )
         val stdout = ByteArrayOutputStream()
         val stderr = ByteArrayOutputStream()
         var exit = -1
         try {
             val input = BufferedInputStream(stream.openInputStream())
-            val deadline = System.currentTimeMillis() + timeoutMs
             while (true) {
                 val header = readFully(input, 5) ?: break
                 val id = header[0].toInt() and 0xff
@@ -62,11 +71,10 @@ class Shell(private val manager: AdbManager) {
                         break
                     }
                 }
-                if (System.currentTimeMillis() > deadline) {
-                    throw IOException("shell command timed out: $command")
-                }
             }
         } finally {
+            deadline.cancel(false)
+            timer.shutdownNow()
             runCatching { stream.close() }
         }
         return ShellResult(
@@ -79,18 +87,24 @@ class Shell(private val manager: AdbManager) {
     private fun execRaw(command: String, timeoutMs: Long): ShellResult {
         val marker = "__ADB_ANYWHERE_RC__"
         val stream = manager.openStream("shell:$command; echo $marker$?")
+        val timer = Executors.newSingleThreadScheduledExecutor()
+        val deadline = timer.schedule(
+            { runCatching { stream.close() } },
+            timeoutMs,
+            TimeUnit.MILLISECONDS,
+        )
         val output = ByteArrayOutputStream()
         try {
             val input = BufferedInputStream(stream.openInputStream())
-            val deadline = System.currentTimeMillis() + timeoutMs
             val buffer = ByteArray(8192)
             while (true) {
                 val read = input.read(buffer)
                 if (read < 0) break
                 output.write(buffer, 0, read)
-                if (System.currentTimeMillis() > deadline) throw IOException("shell command timed out")
             }
         } finally {
+            deadline.cancel(false)
+            timer.shutdownNow()
             runCatching { stream.close() }
         }
         val text = output.toString(StandardCharsets.UTF_8.name())

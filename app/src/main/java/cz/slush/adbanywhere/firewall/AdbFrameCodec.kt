@@ -22,6 +22,13 @@ object AdbFrameCodec {
     const val HEADER = 24
     const val MAX_PAYLOAD = 1 shl 20
 
+    /**
+     * Before the server's A_CNXN the transport is unauthenticated, so a peer
+     * can only send the small handshake frames. The 4 KiB cap keeps an
+     * unauthenticated peer from forcing a 1 MiB allocation per connection.
+     */
+    const val PRE_AUTH_MAX_PAYLOAD = 4 * 1024
+
     const val A_SYNC = 0x434e5953
     const val A_CNXN = 0x4e584e43
     const val A_OPEN = 0x4e45504f
@@ -31,7 +38,12 @@ object AdbFrameCodec {
     const val A_AUTH = 0x48545541
     const val A_STLS = 0x534c5453
 
-    fun read(input: InputStream): AdbFrame? {
+    /** A_AUTH types, little-endian in the first payload word. */
+    const val ADB_AUTH_TOKEN = 1
+    const val ADB_AUTH_SIGNATURE = 2
+    const val ADB_AUTH_RSAPUBLICKEY = 3
+
+    fun read(input: InputStream, maxPayload: Int = MAX_PAYLOAD): AdbFrame? {
         val header = readFully(input, HEADER) ?: return null
         val command = le32(header, 0)
         val arg0 = le32(header, 4)
@@ -39,7 +51,7 @@ object AdbFrameCodec {
         val length = le32(header, 12)
         val magic = le32(header, 20)
         if (magic != command.inv()) throw IOException("bad ADB magic")
-        if (length < 0 || length > MAX_PAYLOAD) throw IOException("bad ADB payload length $length")
+        if (length < 0 || length > maxPayload) throw IOException("bad ADB payload length $length")
         val payload = readFully(input, length) ?: throw EOFException("truncated ADB payload")
         return AdbFrame(command, arg0, arg1, header + payload)
     }
@@ -69,6 +81,18 @@ object AdbFrameCodec {
 
     fun service(frame: AdbFrame): String =
         String(frame.payload, Charsets.UTF_8).trimEnd('\u0000')
+
+    /** The A_AUTH type in the first payload word, or 0 when absent. */
+    fun authType(frame: AdbFrame): Int {
+        val payload = frame.payload
+        return if (payload.size < 4) 0 else le32(payload, 0)
+    }
+
+    /** The A_AUTH public key that follows the type word. */
+    fun authKey(frame: AdbFrame): ByteArray {
+        val payload = frame.payload
+        return if (payload.size <= 4) ByteArray(0) else payload.copyOfRange(4, payload.size)
+    }
 
     private fun readFully(input: InputStream, size: Int): ByteArray? {
         if (size == 0) return ByteArray(0)

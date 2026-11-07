@@ -18,6 +18,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -30,6 +31,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import cz.slush.adbanywhere.firewall.CallRule
 import cz.slush.adbanywhere.firewall.PromptRequest
+import kotlinx.coroutines.delay
 
 @Composable
 fun CallPrompt(
@@ -38,6 +40,20 @@ fun CallPrompt(
     inline: Boolean = false,
 ) {
     var custom by remember { mutableStateOf(false) }
+    // The card shows how long the call is still held, and the relay denies it
+    // when the countdown reaches zero.
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(request.deadline) {
+        while (System.currentTimeMillis() < request.deadline) {
+            now = System.currentTimeMillis()
+            delay(1_000L)
+        }
+        now = System.currentTimeMillis()
+    }
+    val remaining = ((request.deadline - now) / 1000L).coerceAtLeast(0L)
+    // A truncated service string cannot be pinned exactly, so "Always allow"
+    // would create a rule that matches more calls than the one shown.
+    val canSaveRule = !request.call.truncated
     if (custom) {
         if (inline) {
             Surface(
@@ -90,6 +106,21 @@ fun CallPrompt(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                Text(
+                    if (request.label.isNotBlank()) {
+                        "Key: ${request.label} (${request.fingerprint.take(16)})"
+                    } else if (request.fingerprint.isNotBlank()) {
+                        "Key: ${request.fingerprint.take(16)} (not paired)"
+                    } else {
+                        "No key offered yet: this peer has not authenticated."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    "Denies in ${remaining}s",
+                    style = MaterialTheme.typography.labelLarge,
+                )
                 Button(
                     onClick = { onDecision("once", null) },
                     modifier = Modifier.fillMaxWidth(),
@@ -97,10 +128,12 @@ fun CallPrompt(
                 Button(
                     onClick = { onDecision("always", null) },
                     modifier = Modifier.fillMaxWidth(),
+                    enabled = canSaveRule,
                 ) { Text("Always allow this exact call") }
                 OutlinedButton(
                     onClick = { custom = true },
                     modifier = Modifier.fillMaxWidth(),
+                    enabled = canSaveRule,
                 ) { Text("Custom filter") }
                 OutlinedButton(
                     onClick = { onDecision("block", null) },

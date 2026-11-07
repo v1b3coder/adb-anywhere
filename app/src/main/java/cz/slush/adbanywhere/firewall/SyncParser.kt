@@ -11,6 +11,7 @@ data class SyncRequest(
 )
 
 object SyncParser {
+    private const val ID_DONE = 0x454e4f44 // DONE
     private const val ID_STAT = 0x54415453 // STAT
     private const val ID_LSTAT = 0x4154534c // LSTAT
     private const val ID_LIST = 0x5453494c // LIST
@@ -39,6 +40,10 @@ object SyncParser {
         }
         return SyncRequest(id, path, direction)
     }
+
+    /** A DATA frame carries file bytes, so it is never parsed as a command. */
+    fun isDone(payload: ByteArray): Boolean =
+        payload.size >= 4 && le32(payload, 0) == ID_DONE
 
     private fun le32(bytes: ByteArray, offset: Int): Int =
         (bytes[offset].toInt() and 0xff) or

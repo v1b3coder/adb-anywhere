@@ -94,8 +94,9 @@ instead.
   outside the list is closed at once; there is no prompt and no ADB error text.
   The audit log records `ip_denied` with the peer address.
 - The allowlist is only active when its own switch is on. When it is on and the
-  list is empty, all external connections are denied. The UI prevents enabling it
-  with an empty list, or shows a persistent warning if it is already enabled.
+  list is empty, all external connections are denied. The UI disables the switch
+  while the list is empty and shows a warning if an older config is enabled with
+  no addresses.
 - Each entry records the last time it accepted a connection. Overlapping ranges all
   record the same connection. The UI shows the age as `2 hours ago` or `never`.
 - The peer address is the VPN source address. A NAT or a VPN that rewrites source
@@ -121,9 +122,10 @@ instead.
   `PACKAGE_USAGE_STATS` is an appop, not a runtime permission; the manifest
   declares it and the app grants it with
   `appops set <package> GET_USAGE_STATS allow` through its own shell, or sends the
-  user to Settings → Special app access → Usage access. If it is missing, the
-  module cannot be enabled and the UI says why. Work-profile apps are out of
-  scope for the first version.
+  user to Settings → Special app access → Usage access. The UI disables the
+  switch while the appop is missing and says why; the monitor also clears the
+  foreground when the appop is revoked, so the module fails closed. Work-profile
+  apps are out of scope for the first version.
 - ADB Anywhere itself appears in the picker and can be allowlisted like any other
   app, so external ADB keeps working while its own UI is in the foreground. Picking
   it opens a confirmation that this is the weakest choice, because it covers every
@@ -316,9 +318,12 @@ policy is off, every parsed call is allowed; the IP and app allowlists still app
    is off or locked, the call is denied without a prompt. The screen-off rule is separate from the app allowlist: an
    `A_OPEN` that arrived while the target app was foreground is still decided by
    the prompt, even if the screen turns off while the prompt is open.
-4. The prompt shows the source IP, the key label if the fingerprint was matched,
-   the service, the parsed fields, and the raw service string. Values are monospace
-   and truncated to 512 characters per field.
+4. The prompt shows the source IP, the key label or fingerprint when the relay
+   saw the key, the service, the parsed fields, and the raw service string. Values
+   are monospace and truncated to 512 characters per field. A call that arrives
+   before the server's `A_CNXN` is denied without a prompt, and the audit log
+   records `auth_unknown` for the offered key and `auth_ok` once the server
+   accepts it.
 5. The custom filter editor keeps its Save/Cancel footer outside the scrolling
    field list, so the action is always visible.
 6. The user chooses:
@@ -327,10 +332,13 @@ policy is off, every parsed call is allowed; the IP and app allowlists still app
    - **Always allow**: create an `ALLOW` rule with every field fixed, then allow.
    - **Custom filter**: open the editor; apply its rule, then allow or deny.
 7. Timeout is 30 s and defaults to deny. A closed prompt, a dismissed overlay, or a
-   lost connection also denies. The ADB client has
-   no application-level timeout for an `A_OPEN`, so the prompt timeout is the
-   bound; the prompt shows a countdown.
-8. Pending prompts are capped at 8; excess calls are denied and audited.
+   lost connection also denies, and the cleanup runs without suspending so a
+   cancelled relay cannot leak the prompt slot. The ADB client has no
+   application-level timeout for an `A_OPEN`, so the prompt timeout is the
+   bound; the prompt shows a countdown. One card is shown at a time; a second
+   unmatched call waits for the first to be answered.
+8. Pending prompts are capped at 8; excess calls are denied and audited as
+   `call_denied` with `rule=prompt-cap`.
 9. A `once` grant is bound to the connection and stream id, not to "the next
    call". It cannot be replayed by another connection.
 
@@ -422,7 +430,7 @@ Every event is a JSON line:
 | `connection_open` | TCP accepted |
 | `ip_denied` | Peer outside the allowlist |
 | `app_denied` | Target app not foreground, or screen off |
-| `auth_ok` / `auth_unknown` | Signature matched a developer key, or did not |
+| `auth_ok` / `auth_unknown` | The server accepted the transport (`auth_ok`) or the client offered a key (`auth_unknown`) |
 | `call_open` | `A_OPEN` parsed |
 | `call_allowed` / `call_denied` / `call_prompted` / `call_timeout` | Decision |
 | `stream_closed` | Both sides closed; bytes and duration |
@@ -534,7 +542,7 @@ calls `adb tcpip` and never moves to another port silently.
 | Overlay add rejected by the OEM | Notification fallback; diagnostic log |
 | Prompt not answered | 30 s timeout, deny, audit |
 | Notifications denied | Prompt cannot be shown; deny after timeout, audit |
-| Prompt queue full | Deny excess, audit |
+| Prompt queue full | Deny excess, audit `prompt-cap` |
 | Too many connections | Cap at 8, close excess, audit |
 | Malformed ADB frame | Close the connection, audit, never crash the service |
 | `adbd` dies | Watchdog restarts it; relay sessions drop |
@@ -559,6 +567,12 @@ It does not add:
 - A sandbox for `shell`. A shell is a shell.
 - Protection from a compromised VPN peer that is on the IP allowlist and has a
   paired key. That peer has the same access as before, minus the call policy.
+- Protection from a malicious overlay that covers the approval card and forwards a
+  tap. The card sets `filterTouchesWhenObscured`, so an obscured touch does not
+  approve the call.
+- A second factor for an unauthenticated peer. The relay refuses an `A_OPEN`
+  before the server's `A_CNXN`, and the prompt shows the key when one was
+  offered; ADB key auth is still the only authentication.
 - Protection from a local app that can reach `127.0.0.1:<loopback>` and has the
   app key. The app key stays in app-private storage; the loopback channel is
   unchanged.
@@ -573,8 +587,11 @@ It does not add:
   to another port or to the direct VPN listener.
 
 The relay caps connections at 8 total and 2 per peer, caps a pre-`A_CNXN` payload
-at 4 KiB and any payload at 1 MiB, and closes a connection on a malformed frame.
-That is DoS resistance for the app's own listener, not a general network firewall.
+at 4 KiB and any payload at 1 MiB, times out a pre-auth read after 10 s, and
+closes a connection on a malformed frame. The parsed service string is capped at
+32 fields and 512 characters per field, so the audit ring and a saved rule stay
+bounded. That is DoS resistance for the app's own listener, not a general network
+firewall.
 
 The relay is a policy enforcement point, not a security boundary against a
 determined shell user. The UI and this document say so.
@@ -719,5 +736,4 @@ Deferred:
 - Per-key default actions and rule sets.
 - Sync `DATA` contents and shell output inspection.
 - Work-profile apps in the picker.
-- Key fingerprint in the prompt and `auth_ok`/`auth_unknown` audit events.
 - A dedicated "block once" action; Block denies this call only.

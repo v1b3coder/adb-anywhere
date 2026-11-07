@@ -124,8 +124,8 @@ fun SetupScreen(
                 KeyValueRow("App key", state.appFingerprint.ifBlank { "generating…" }, mono = true)
                 Text(
                     "If setup cannot reach Android's wireless debugging, connect to Wi-Fi once or " +
-                        "run adb tcpip:${state.loopbackPort} over USB. The app never falls back " +
-                        "to a proxy or a random port.",
+                        "run adb tcpip 5555 over USB. The app never falls back to a proxy or a " +
+                        "random port.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

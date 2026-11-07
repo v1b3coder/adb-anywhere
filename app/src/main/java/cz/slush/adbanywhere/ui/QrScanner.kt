@@ -47,6 +47,8 @@ import com.google.zxing.DecodeHintType
 import com.google.zxing.MultiFormatReader
 import com.google.zxing.PlanarYUVLuminanceSource
 import com.google.zxing.common.HybridBinarizer
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -91,16 +93,26 @@ fun QrScanner(
     val lifecycleOwner = LocalLifecycleOwner.current
     val executor = remember { Executors.newSingleThreadExecutor() }
     val found = remember { AtomicBoolean(false) }
+    val providerRef = remember { mutableStateOf<ProcessCameraProvider?>(null) }
     val previewView = remember {
         PreviewView(context).apply { scaleType = PreviewView.ScaleType.FILL_CENTER }
     }
 
+    // A dismissed dialog must not leave the camera bound to the activity.
     DisposableEffect(Unit) {
-        onDispose { executor.shutdown() }
+        onDispose {
+            runCatching { providerRef.value?.unbindAll() }
+            executor.shutdown()
+        }
     }
 
     LaunchedEffect(Unit) {
-        val provider = ProcessCameraProvider.getInstance(context).get()
+        // The provider future is blocking; only the bind and the preview touch
+        // the main thread.
+        val provider = withContext(Dispatchers.IO) {
+            ProcessCameraProvider.getInstance(context).get()
+        }
+        providerRef.value = provider
         val preview = Preview.Builder().build().also {
             it.setSurfaceProvider(previewView.surfaceProvider)
         }

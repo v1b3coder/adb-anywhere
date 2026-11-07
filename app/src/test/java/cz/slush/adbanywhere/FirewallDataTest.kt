@@ -9,8 +9,11 @@ import cz.slush.adbanywhere.firewall.CallRule
 import cz.slush.adbanywhere.firewall.CallRules
 import cz.slush.adbanywhere.firewall.FirewallConfig
 import cz.slush.adbanywhere.firewall.ForegroundTracker
+import cz.slush.adbanywhere.firewall.PromptDecision
+import cz.slush.adbanywhere.firewall.PromptResponse
 import cz.slush.adbanywhere.firewall.IpAllowlist
 import cz.slush.adbanywhere.firewall.IpNetwork
+import cz.slush.adbanywhere.firewall.moved
 import cz.slush.adbanywhere.firewall.ShellLexer
 import cz.slush.adbanywhere.firewall.SyncParser
 import org.junit.Assert.assertEquals
@@ -396,6 +399,80 @@ class FirewallDataTest {
             listOf("run-as", "cz.slush.adbanywhere", "id"),
             rebuilt.argv,
         )
+    }
+
+    @Test
+    fun customDenyResponseDoesNotAllowTheCall() {
+        val deny = CallRule(
+            id = "deny",
+            action = CallAction.DENY,
+            service = "shell",
+            predicates = emptyList(),
+        )
+        val allow = CallRule(
+            id = "allow",
+            action = CallAction.ALLOW,
+            service = "shell",
+            predicates = emptyList(),
+        )
+        assertFalse(PromptResponse(PromptDecision.CUSTOM, deny).allowsCall)
+        assertTrue(PromptResponse(PromptDecision.CUSTOM, allow).allowsCall)
+        assertTrue(PromptResponse(PromptDecision.ALLOW_ONCE).allowsCall)
+        assertTrue(PromptResponse(PromptDecision.ALWAYS_ALLOW).allowsCall)
+        assertFalse(PromptResponse(PromptDecision.BLOCK).allowsCall)
+        assertFalse(PromptResponse(PromptDecision.CUSTOM, null).allowsCall)
+    }
+
+    @Test
+    fun movedReordersRulesAndKeepsTheirOrder() {
+        val first = CallRule("a", CallAction.ALLOW, "shell", emptyList())
+        val second = CallRule("b", CallAction.DENY, "shell", emptyList())
+        val third = CallRule("c", CallAction.ALLOW, "shell", emptyList())
+        val rules = listOf(first, second, third)
+        assertEquals(listOf("b", "a", "c"), rules.moved("b", -1).map { it.id })
+        assertEquals(listOf("a", "c", "b"), rules.moved("b", 1).map { it.id })
+        assertEquals(listOf("a", "b", "c"), rules.moved("a", -1).map { it.id })
+        assertEquals(listOf("a", "b", "c"), rules.moved("c", 1).map { it.id })
+        assertEquals(listOf("a", "b", "c"), rules.moved("missing", 1).map { it.id })
+    }
+
+    @Test
+    fun parserCapsFieldsAndFlagsTruncation() {
+        val long = "shell:" + (1..40).joinToString(" ") { "arg$it" }
+        val call = AdbCallParser.parse(long)
+        assertTrue(call.truncated)
+        assertEquals(AdbCallParser.MAX_FIELDS, call.fields.size)
+        assertNull(call.fields["argv[40]"])
+        assertEquals("arg1", call.fields["argv[0]"])
+
+        val huge = "shell:" + "x".repeat(AdbCallParser.MAX_RAW + 1)
+        val hugeCall = AdbCallParser.parse(huge)
+        assertTrue(hugeCall.truncated)
+        assertEquals(AdbCallParser.MAX_RAW, hugeCall.raw.length)
+
+        val small = AdbCallParser.parse("shell:ls")
+        assertFalse(small.truncated)
+    }
+
+    @Test
+    fun foregroundTrackerClearsWhenUsageIsUnavailable() {
+        val tracker = ForegroundTracker()
+        tracker.onResumed("com.example.app")
+        assertEquals("com.example.app", tracker.state().foreground)
+        tracker.onUsageAvailable(false)
+        assertNull(tracker.state().foreground)
+        assertNull(tracker.state().packageName)
+        tracker.onUsageAvailable(true)
+        assertNull(tracker.state().foreground)
+        tracker.onResumed("com.example.app")
+        assertEquals("com.example.app", tracker.state().foreground)
+    }
+
+    @Test
+    fun syncParserRecognizesTheDoneFrame() {
+        assertTrue(SyncParser.isDone(syncPayload(0x454e4f44, "")))
+        assertFalse(SyncParser.isDone(syncPayload(0x444e4553, "/sdcard/a")))
+        assertFalse(SyncParser.isDone(ByteArray(4)))
     }
 
     private fun ip(text: String): Int =

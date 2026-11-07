@@ -1,14 +1,16 @@
 --- a/daemon/main.cpp
 +++ b/daemon/main.cpp
-@@ -24,7 +24,6 @@
+@@ -24,7 +24,8 @@
  #include <signal.h>
  #include <stdio.h>
  #include <stdlib.h>
 -#include <sys/capability.h>
  #include <sys/prctl.h>
++#include <sys/stat.h>
++#include <unistd.h>
  
  #include <memory>
-@@ -36,172 +35,43 @@
+@@ -36,172 +37,49 @@
  #include <android-base/stringprintf.h>
  #include <android-base/strings.h>
  
@@ -73,6 +75,12 @@
 +
 +static void redirect_log(const std::string& path) {
 +    if (path.empty()) return;
++    // Rotate at startup: the app trims the files while the daemon is
++    // stopped, and this bounds a predecessor's log that was not trimmed.
++    struct stat st;
++    if (stat(path.c_str(), &st) == 0 && st.st_size > (1 << 20)) {
++        rename(path.c_str(), (path + ".1").c_str());
++    }
 +    FILE* fp = fopen(path.c_str(), "ae");
 +    if (fp == nullptr) {
 +        PLOG(ERROR) << "cannot open log " << path;
@@ -202,7 +210,7 @@
      for (const auto& addr : addrs) {
          LOG(INFO) << "adbd listening on " << addr;
          init_transport_socket_server(addr);
-@@ -217,21 +87,11 @@
+@@ -217,21 +95,11 @@
      // descriptor will always be open.
      adbd_cloexec_auth_socket();
  
@@ -228,7 +236,7 @@
  
      // Our external storage path may be different than apps, since
      // we aren't able to bind mount after dropping root.
-@@ -243,72 +103,41 @@
+@@ -243,72 +111,41 @@
            " unchanged.\n");
      }
  
@@ -312,7 +320,7 @@
      D("Event loop starting");
      fdevent_loop();
  
-@@ -326,6 +155,10 @@
+@@ -326,6 +163,10 @@
                  {"root_seclabel", required_argument, nullptr, 's'},
                  {"tim_seclabel", required_argument, nullptr, 't'},
                  {"device_banner", required_argument, nullptr, 'b'},
@@ -323,7 +331,7 @@
                  {"version", no_argument, nullptr, 'v'},
                  {"logpostfsdata", no_argument, nullptr, 'l'},
                  {nullptr, no_argument, nullptr, 0},
-@@ -338,17 +171,21 @@
+@@ -338,17 +179,21 @@
          }
  
          switch (c) {

@@ -93,6 +93,8 @@ data class AdbCall(
     val port: Int? = null,
     val interactive: Boolean = false,
     val metacharacters: Boolean = false,
+    /** The service string exceeded the parser's caps; only an exact call is safe. */
+    val truncated: Boolean = false,
 ) {
     fun withSync(path: String, direction: String): AdbCall = copy(
         path = path,
@@ -112,6 +114,7 @@ data class AdbCall(
         port?.let { put("port", it) }
         put("interactive", interactive)
         put("metacharacters", metacharacters)
+        if (truncated) put("truncated", true)
     }
 
     companion object {
@@ -133,6 +136,7 @@ data class AdbCall(
                 port = json.optInt("port", 0).takeIf { it > 0 },
                 interactive = json.optBoolean("interactive", false),
                 metacharacters = json.optBoolean("metacharacters", false),
+                truncated = json.optBoolean("truncated", false),
             )
         }
     }
@@ -264,6 +268,20 @@ data class CallRule(
                 original = call,
             )
     }
+}
+
+/**
+ * Move a rule [delta] positions in the ordered rule list. First match wins, so
+ * the order is the user's only way to put a narrow rule above a broad one.
+ */
+fun List<CallRule>.moved(id: String, delta: Int): List<CallRule> {
+    val index = indexOfFirst { it.id == id }
+    if (index < 0) return this
+    val target = (index + delta).coerceIn(0, lastIndex)
+    if (target == index) return this
+    val rules = toMutableList()
+    rules.add(target, rules.removeAt(index))
+    return rules
 }
 
 private object Glob {

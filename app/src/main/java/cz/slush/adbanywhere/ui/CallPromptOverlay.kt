@@ -47,6 +47,10 @@ class CallPromptOverlay(private val context: Context) {
         AppLog.info("firewall", "overlay canShow=$allowed")
         if (!allowed) return false
         val compose = ComposeView(context).apply {
+            // A malicious overlay could cover the card and let a tap fall
+            // through to the real Allow buttons. The framework then refuses a
+            // touch that arrived through an obscured window.
+            setFilterTouchesWhenObscured(true)
             attachLifecycleOwner(this)
             setContent {
                 AdbAnywhereTheme {

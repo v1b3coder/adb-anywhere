@@ -104,12 +104,17 @@ path rules are lexical and advisory. The full design and its limits are in
 ## Security
 
 - The patched daemon binds only `127.0.0.1:<loopback>` and
-  `<vpn-ip>:<vpn-port>`. Wildcard binds are refused.
+  `<vpn-ip>:<vpn-port>`. Wildcard binds are refused, and `dev:`, `local*:` and
+  `vsock:` services are not built.
 - Only keys in `/data/local/tmp/adb-anywhere/adb_keys` are accepted. Keys offered
   by clients are never auto-accepted.
 - Removing a key removes it from the key file and restarts the daemon, so the
   sessions that the key authenticated end. Per-key policy and filtering are not
   implemented yet: every key in the file may open every supported service.
+- The firewall relay refuses an `A_OPEN` before the server's `A_CNXN`, so a peer
+  without a key cannot prompt or reach the call policy. The approval card sets
+  `filterTouchesWhenObscured`, so a malicious overlay cannot forward a tap to
+  *Allow once*.
 - Start enables the system adbd when `ADB_ENABLED` is 0 (safe: it does not delete
   the paired key), then tries its existing TCP listeners.  On Wi-Fi it falls back to
   wireless debugging; on mobile data it needs the plain 5555 listener or root.
@@ -119,7 +124,9 @@ path rules are lexical and advisory. The full design and its limits are in
   where init kills the adbd cgroup, that would also stop the patched adbd.  The
   security benefit is at Stop, not during a run.
 - If the system adbd is reachable over the network anyway, the app shows the
-  warning in the UI and in its persistent foreground notification.
+  warning in the UI and in its persistent foreground notification. A failed setup
+  after the Wi-Fi bootstrap restores the pre-setup `adb_wifi_enabled` value and
+  verifies that the TLS port is closed.
 - No root, no custom ROM, no proxy fallback and no random-port redirect.
 
 ## Build and tests

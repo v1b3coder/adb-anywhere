@@ -1,0 +1,13 @@
+--- a/services.cpp
++++ b/services.cpp
+@@ -77,6 +77,10 @@
+     unique_fd ret;
+ 
+     if (is_socket_spec(name)) {
++        // Only tcp: is a kept service; local*, vsock and acceptfd are not.
++        if (!name.starts_with("tcp:")) {
++            return unique_fd{};
++        }
+         std::string error;
+         if (!socket_spec_connect(&ret, name, nullptr, nullptr, &error)) {
+             LOG(ERROR) << "failed to connect to socket '" << name << "': " << error;

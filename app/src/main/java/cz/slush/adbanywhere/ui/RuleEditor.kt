@@ -80,7 +80,10 @@ fun RuleEditorContent(
     var fixed by remember(rule, source) {
         mutableStateOf(
             if (rule != null) {
-                rule.predicates.mapNotNull { it.field }.toSet() - "service"
+                // An unlocked field (AnyValue) must stay unlocked when the rule
+                // is edited, or the rule silently narrows.
+                rule.predicates.filterNot { it is CallPredicate.AnyValue }
+                    .mapNotNull { it.field }.toSet() - "service"
             } else {
                 source.fields.keys - "service"
             },

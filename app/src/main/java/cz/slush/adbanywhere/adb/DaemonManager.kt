@@ -77,6 +77,7 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
         writeBinary(shell)
         writeKeys(shell, appKey, developers)
         stop(shell)
+        trimLogs(shell)
         val command = startCommand(shell, vpnIp, loopbackPort, vpnPort, exposeVpn)
         AppLog.info("adb", "starting ${Endpoint.listenSpec(loopbackPort, vpnIp, vpnPort, exposeVpn)}")
         val result = shell.exec(command, 10_000)
@@ -110,6 +111,7 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
         awaitRestartScripts(shell)
         writeBinary(shell)
         writeKeys(shell, appKey, developers)
+        trimLogs(shell)
         Thread.sleep(200)
         val start = startCommand(shell, vpnIp, loopbackPort, vpnPort, exposeVpn)
         AppLog.info(
@@ -188,6 +190,39 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
             waitForPids(shell, pids)
         }
         shell.exec("rm -f ${shell.quote(pidPath)}")
+    }
+
+    /**
+     * Proves that the process on the loopback port is the daemon this app
+     * started. The pid file and the key file are shell-owned, and a malicious
+     * local app cannot run as the shell uid or bind the port the real daemon
+     * already holds, so the pid, the uid and the command line identify it.
+     */
+    fun identity(shell: Shell): Boolean {
+        val pid = shell.exec("cat ${shell.quote(pidPath)} 2>/dev/null")
+            .stdout.trim().toIntOrNull() ?: return false
+        val status = shell.exec("cat /proc/$pid/status 2>/dev/null").stdout
+        val uid = Regex("^Uid:\\s+(\\d+)", RegexOption.MULTILINE)
+            .find(status)?.groupValues?.get(1)?.toIntOrNull()
+        if (uid != SHELL_UID) return false
+        val cmdline = shell.exec("tr '\\0' ' ' < /proc/$pid/cmdline 2>/dev/null").stdout
+        return cmdline.contains("--listen") && cmdline.contains(binaryPath)
+    }
+
+    /**
+     * Bounds the daemon's log and stderr files before the daemon opens them.
+     * The daemon appends through one descriptor, so the trim only works while
+     * it is stopped; the daemon also rotates the log at startup.
+     */
+    fun trimLogs(shell: Shell) {
+        for (path in listOf(logPath, "$remoteDir/adbd.stderr")) {
+            val quoted = shell.quote(path)
+            shell.exec(
+                "test -f $quoted && [ \$(wc -c < $quoted) -gt $MAX_LOG_BYTES ] && " +
+                    "tail -c $MAX_LOG_BYTES $quoted > $quoted.tmp && " +
+                    "mv -f $quoted.tmp $quoted || true",
+            )
+        }
     }
 
     /**
@@ -288,4 +323,9 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
 
     private fun sha256(bytes: ByteArray): String =
         MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+
+    private companion object {
+        const val SHELL_UID = 2000
+        const val MAX_LOG_BYTES = 256 * 1024
+    }
 }

@@ -95,12 +95,14 @@ class ControlDataTest {
 
     @Test
     fun endpointChoosesVpnAddress() {
+        // The caller passes only VPN interfaces; the interface name is not a
+        // reliable signal (a VPN may use vpn0 or a branded name).
         val interfaces = listOf(
-            VpnInterface("wlan0", listOf("192.168.1.5/24")),
-            VpnInterface("tun1", listOf("100.64.0.10/32", "fe80::1/64")),
+            VpnInterface("vpn0", listOf("100.64.0.10/32", "fe80::1/64")),
         )
         assertEquals("100.64.0.10", Endpoint.chooseVpnAddress(interfaces))
-        assertNull(Endpoint.chooseVpnAddress(listOf(VpnInterface("wlan0", listOf("192.168.1.5/24")))))
+        assertNull(Endpoint.chooseVpnAddress(listOf(VpnInterface("vpn0", listOf("fe80::1/64")))))
+        assertNull(Endpoint.chooseVpnAddress(emptyList()))
     }
 
     @Test
@@ -111,6 +113,8 @@ class ControlDataTest {
         assertFalse(Endpoint.isUsableIpv4("0.0.0.0"))
         assertFalse(Endpoint.isUsableIpv4("255.255.255.255"))
         assertFalse(Endpoint.isUsableIpv4("fe80::1"))
+        assertFalse(Endpoint.isUsableIpv4("169.254.1.1"))
+        assertFalse(Endpoint.isUsableIpv4("224.0.0.1"))
         assertFalse(Endpoint.isUsableIpv4("10.0.0"))
     }
 

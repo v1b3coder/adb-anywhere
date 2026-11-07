@@ -19,6 +19,9 @@ import java.net.InetSocketAddress
 import java.net.Socket
 
 object SystemSettings {
+    /** The two platform settings a setup attempt is allowed to change. */
+    data class AdbState(val adbEnabled: Int, val adbWifiEnabled: Int)
+
     fun adbEnabled(context: Context): Int =
         Settings.Global.getInt(context.contentResolver, Settings.Global.ADB_ENABLED, 1)
 
@@ -32,6 +35,10 @@ object SystemSettings {
             if (enabled) 1 else 0,
         )
     }.getOrDefault(false)
+
+    /** The platform state a failed setup restores. */
+    fun state(context: Context): AdbState =
+        AdbState(adbEnabled(context), adbWifiEnabled(context))
 
     /** Only the opt-in D5 ownership writes ADB_ENABLED; the default never does. */
     fun setAdbEnabled(context: Context, enabled: Boolean): Boolean = runCatching {

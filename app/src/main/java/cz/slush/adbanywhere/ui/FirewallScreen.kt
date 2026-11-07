@@ -18,6 +18,8 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -53,6 +55,7 @@ import cz.slush.adbanywhere.firewall.AppEntry
 import cz.slush.adbanywhere.firewall.AuditEvent
 import cz.slush.adbanywhere.firewall.CallRule
 import cz.slush.adbanywhere.firewall.FirewallConfig
+import cz.slush.adbanywhere.firewall.UsageAccess
 import cz.slush.adbanywhere.service.ControlState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -72,10 +75,12 @@ fun FirewallScreen(
     onToggleCallPolicy: (Boolean) -> Unit,
     onSaveRule: (CallRule) -> Unit,
     onRemoveRule: (String) -> Unit,
+    onMoveRule: (String, Int) -> Unit,
     onSetAppGrace: (Long) -> Unit,
     onSetPromptTimeout: (Long) -> Unit,
     onToggleRedactAudit: (Boolean) -> Unit,
     onClearAudit: () -> Unit,
+    onCopyAudit: (String) -> Unit,
     onGrantUsageAccess: () -> Unit,
     onRequestOverlayAccess: () -> Unit,
     launcherApps: () -> List<AppEntry>,
@@ -88,6 +93,18 @@ fun FirewallScreen(
     var editing by remember { mutableStateOf<CallRule?>(null) }
     var apps by remember { mutableStateOf<List<AppEntry>?>(null) }
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    // The app allowlist needs the UsageStats appop, so the switch is only
+    // available when it is granted; a revoked appop fails closed.
+    val context = LocalContext.current
+    var usageAccess by remember { mutableStateOf(UsageAccess.granted(context)) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) usageAccess = UsageAccess.granted(context)
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     LaunchedEffect(Unit) {
         while (true) {
             delay(60_000L)
@@ -143,9 +160,17 @@ fun FirewallScreen(
                 SwitchRow(
                     checked = config.ipAllowlistEnabled,
                     onCheckedChange = onToggleIpAllowlist,
+                    enabled = config.ipAllowlist.isNotEmpty(),
                     description = "Only listed IPv4 addresses and CIDR ranges may connect. " +
                         "An empty list denies every peer.",
                 )
+                if (config.ipAllowlistEnabled && config.ipAllowlist.isEmpty()) {
+                    Text(
+                        "The allowlist is enabled with no addresses, so every peer is denied.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
                 OutlinedTextField(
                     value = ip,
                     onValueChange = {
@@ -203,10 +228,25 @@ fun FirewallScreen(
                 SwitchRow(
                     checked = config.appAllowlistEnabled,
                     onCheckedChange = onToggleAppAllowlist,
+                    enabled = config.appAllowlist.isNotEmpty() && usageAccess,
                     description = "External ADB is available only while one of the selected " +
                         "apps is in the foreground. A ${config.appGraceMs / 1000}s grace " +
                         "period covers a short switch.",
                 )
+                if (!usageAccess) {
+                    Text(
+                        "Grant Usage access: without it the app allowlist cannot be enabled.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                if (config.appAllowlistEnabled && config.appAllowlist.isEmpty()) {
+                    Text(
+                        "The app allowlist is enabled with no apps, so every peer is denied.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -269,7 +309,7 @@ fun FirewallScreen(
                         onSetPromptTimeout((timeout.toLongOrNull() ?: 30) * 1000)
                     },
                 ) { Text("Save timers") }
-                config.callRules.forEach { rule ->
+                config.callRules.forEachIndexed { index, rule ->
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
@@ -301,6 +341,24 @@ fun FirewallScreen(
                                 overflow = TextOverflow.Ellipsis,
                             )
                         }
+                        IconButton(
+                            onClick = { onMoveRule(rule.id, -1) },
+                            enabled = index > 0,
+                        ) {
+                            Icon(
+                                Icons.Rounded.KeyboardArrowUp,
+                                contentDescription = "Move ${rule.id} up",
+                            )
+                        }
+                        IconButton(
+                            onClick = { onMoveRule(rule.id, 1) },
+                            enabled = index < config.callRules.lastIndex,
+                        ) {
+                            Icon(
+                                Icons.Rounded.KeyboardArrowDown,
+                                contentDescription = "Move ${rule.id} down",
+                            )
+                        }
                         IconButton(onClick = { editing = rule }) {
                             Icon(Icons.Rounded.Edit, contentDescription = "Edit rule")
                         }
@@ -326,6 +384,15 @@ fun FirewallScreen(
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    TextButton(
+                        onClick = {
+                            onCopyAudit(
+                                audit.takeLast(30).joinToString("\n") { event ->
+                                    "${event.event} ${event.service} ${event.peer}".trim()
+                                },
+                            )
+                        },
+                    ) { Text("Copy") }
                     TextButton(onClick = onClearAudit) { Text("Clear") }
                 }
                 SwitchRow(

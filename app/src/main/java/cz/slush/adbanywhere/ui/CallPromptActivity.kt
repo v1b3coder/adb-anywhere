@@ -19,6 +19,9 @@ class CallPromptActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setShowWhenLocked(false)
+        // A malicious overlay must not be able to forward a tap to the Allow
+        // buttons through an obscured window.
+        window?.decorView?.setFilterTouchesWhenObscured(true)
         setContent {
             AdbAnywhereTheme {
                 PromptHost()

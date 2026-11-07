@@ -79,7 +79,8 @@ adbd --listen tcp:127.0.0.1:15037[,tcp:<vpn-ip>:15038] \
 
 Transports: TCP only. Services: `shell:` (v1 and v2), `exec:`, `abb_exec:`
 (streaming install), `sync:` (v1 and v2, zstd), `tcp:` (forward), `reverse:` (the
-device listens and forwards to the host) and `framebuffer:`.
+device listens and forwards to the host) and `framebuffer:`. `dev:`, `dev-raw:`,
+`local*:`, `vsock:` and `acceptfd:` are not services.
 
 `framebuffer:` is included for screenshots. It shells out to `screencap`, so the
 device needs the platform `screencap` binary. The app's own screenshot path uses
@@ -91,7 +92,7 @@ These are the patches, all in `patches/`:
 
 | Patch | Purpose |
 |---|---|
-| `01-daemon-main.cpp` | TCP-only: no USB, vsock, mDNS, watchdog, jdwp, trade-in, privilege dropping. Adds `--listen`, `--keys`, `--log`, `--pid-file`. |
+| `01-daemon-main.cpp` | TCP-only: no USB, vsock, mDNS, watchdog, jdwp, trade-in, privilege dropping. Adds `--listen`, `--keys`, `--log`, `--pid-file`. Rotates the log at startup. |
 | `02-daemon-auth.cpp` | No TLS or pairing; keeps the RSA key-file verification. Skips the init control socket. |
 | `03-daemon-services.cpp` | Keeps `shell:`, `exec:`, `abb_exec:`, `sync:`, `tcp:`, `reverse:` and `framebuffer:`; rejects `abb:`, `jdwp:`, `root:`, `remount:`, `reboot:`, `usb:`, `tcpip:` and the test socket services. |
 | `04-transport.cpp` | `DoTlsHandshake` returns false; TLS is not built. |
@@ -99,13 +100,16 @@ These are the patches, all in `patches/`:
 | `06-adb_auth.h` | Drops the TLS declarations from the shared header. |
 | `07-adb.cpp` | Rejects `A_STLS` on the daemon side instead of starting a TLS handshake. |
 | `08-adb_trace.cpp` | Substitutes a tag for `LOG()` without `LOG_TAG`, instead of passing null to the logd splitter. |
-| `09-socket_spec.cpp` | Binds any explicit address, loopback or VPN; AOSP only accepts `localhost`, `::1` or every interface. |
+| `09-socket_spec.cpp` | Binds any explicit address, loopback or VPN; AOSP only accepts `localhost`, `::1` or every interface. Wildcard binds are refused. |
 | `10-transport.cpp` | Advertises only the features the daemon implements: `apex`, `abb_exec`, `sendrecv_v2_zstd` and `devraw` stay, `abb`, Brotli/LZ4, mDNS, `track-app`, `remount_shell`, `app_info` and `devicetracker_proto_format` go. Advertising the missing ones made `adb install` and large `adb push` fail with a closed service or `remote decompress failed`. |
+| `11-daemon-services-dev.cpp` | Removes `dev:` and `dev-raw:`; a developer machine must not open arbitrary device nodes. |
+| `12-services-socket-spec.cpp` | Only `tcp:` is a socket spec; `local*:`, `vsock:` and `acceptfd:` are refused. |
 
 Not implemented: USB, vsock, TLS, pairing, mDNS advertisement, `jdwp:`,
 `track-jdwp`, `track-app`, `abb:` (the shell-protocol variant), `framebuffer:`
 over USB, `root:`, `remount:`, `reboot:`, `restore:`, `disable-verity:`,
-`enable-verity:`, `spin`, `reconnect`, and the adb client.
+`enable-verity:`, `spin`, `reconnect`, `dev:`, `dev-raw:`, `local*:`, `vsock:`,
+`acceptfd:` and the adb client.
 
 ## Tests
 

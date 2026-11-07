@@ -2,7 +2,8 @@
  * ForegroundAppMonitor - samples the resumed package with UsageStatsManager. It
  * polls faster while the relay has an external session or a prompt, and slower
  * otherwise. The module is advisory; screen off and keyguard clear the foreground,
- * and the app's own approval dialog does not replace it.
+ * the app's own approval dialog does not replace it, and a missing or revoked
+ * PACKAGE_USAGE_STATS appop clears it so the allowlist fails closed.
  */
 package cz.slush.adbanywhere.firewall
 
@@ -54,6 +55,12 @@ class ForegroundAppMonitor(
         val keyguard = context.getSystemService(KeyguardManager::class.java)
         tracker.onInteractive(power?.isInteractive ?: true)
         tracker.onLocked(keyguard?.isKeyguardLocked ?: false)
+        val usageAvailable = UsageAccess.granted(context)
+        tracker.onUsageAvailable(usageAvailable)
+        if (!usageAvailable) {
+            _state.value = tracker.state()
+            return
+        }
         val now = System.currentTimeMillis()
         // The first sample must query even though no package is known yet:
         // the guard on the resolved foreground package kept the allowlist from
@@ -69,6 +76,10 @@ class ForegroundAppMonitor(
                     tracker.onResumed(event.packageName, event.className)
                 }
             }
+        } else {
+            // A failed query is not evidence that the last package is still
+            // open, so fail closed instead of keeping it.
+            tracker.onUsageAvailable(false)
         }
         lastQuery = now - 1_000L
         _state.value = tracker.state()

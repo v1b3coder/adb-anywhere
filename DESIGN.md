@@ -110,7 +110,7 @@ These are facts from AOSP `main`, not assumptions.
 | D3 | App key | Ephemeral RSA keypair generated on first run; private key in app-private storage; public key in the patched adbd key file |
 | D4 | Developer machine pairing | QR or pasted public key from the developer machine; app confirms the fingerprint; user labels the machine; no pairing listener on the phone |
 | D5 | System adbd lifecycle | Start writes `ADB_ENABLED=1` when it reads 0, then tries the system adbd's existing TCP listeners; on Wi-Fi it falls back to `ADB_WIFI_ENABLED=1` even when it already reads 1. Stop stops only the patched adbd; the opt-in Settings switch "Turn system adb off on Stop" makes Stop write `ADB_ENABLED=0` |
-| D6 | Watchdog | Keeps `ADB_WIFI_ENABLED=0`; probes 5555 on every tick and reports the open listener as the §8 residual warning; restarts the patched adbd through the system adbd when reachable; never writes `ADB_ENABLED` (only Start does, and only when it reads 0) |
+| D6 | Watchdog | Keeps `ADB_WIFI_ENABLED=0`; probes 5555 on every tick and reports the open listener as the §8 residual warning; restarts the patched adbd through the system adbd when reachable; re-arms its alarm on every tick and backs off after a failure; never writes `ADB_ENABLED` (only Start does, and only when it reads 0) |
 | D7 | Policy | The app enforces policy, not the daemon. The optional relay parses `A_OPEN` and applies the IP allowlist, the foreground-app allowlist and call rules. The patched `adbd` stays policy-free; the VPN ACL is the outer boundary |
 | D8 | UI stack | Kotlin, Jetpack Compose, Material 3; package `cz.slush.adbanywhere` |
 | D9 | Bootstrap pairing | One `RemoteInput` notification: reply with `code:port` from the open dialog |
@@ -123,7 +123,7 @@ These are facts from AOSP `main`, not assumptions.
 | D16 | Port range | The loopback and VPN ports are below 32768, outside Android's ephemeral range, and never 5555, the system adbd's plain listener |
 | D17 | State publication | `ControlState` is the only UI source of truth. Each listener publishes its own state, `setup()` never resets a live listener's state, and `firewallDown` is derived |
 | D18 | Restart coordination | One daemon identity (`--listen` in `ps`, `/proc` fallback), one restart-script naming scheme, a PID marker, and a wait for the predecessor |
-| D19 | Ownership | Every value has one owner. The UI shows only the state its component publishes: the System adb card reads the system adbd's state, the Ports card reads the app's ports, and a probe names the owner it found. A persisted config has one writer and one read-modify-write entry point. A platform read runs off the UI thread, and the UI shows an explicit loading state. The app's own tooling is not exempt from the call policy |
+| D19 | Ownership | Every value has one owner. The UI shows only the state its component publishes: the System adb card reads the system adbd's state, the Ports card reads the app's ports, and a probe names the owner it found. A persisted config has one writer and one read-modify-write entry point. A platform read runs off the UI thread, and the UI shows an explicit loading state. The UsageStats appop is checked before the app allowlist is enabled, and a revoked appop clears the foreground so the module fails closed. The app's own tooling is not exempt from the call policy |
 
 ## 6. Architecture
 
@@ -394,7 +394,8 @@ system adbd has no TCP listener, so there is nothing to monitor or turn off.
   reachable, otherwise show an explicit error with recovery steps.
 - Register `UsbManager.ACTION_USB_STATE` (sticky) and
   `ConnectivityManager.NetworkCallback`.
-- Backoff and hysteresis; never fight an explicit user "off".
+- Backoff and hysteresis; never fight an explicit user "off". A guard failure backs off
+  exponentially to 15 minutes and re-arms the alarm before it returns.
 - The watchdog never writes `ADB_ENABLED`; only Start does, and only when it
   reads 0. If the system adbd is off and the app cannot write it, bootstrap fails
   with explicit recovery steps and no random-port redirect.
@@ -549,9 +550,11 @@ system adbd has no TCP listener, so there is nothing to monitor or turn off.
 | VPN down | Remove VPN listener; app still controls via loopback |
 | Relay bind fails | Setup waits for the port, closes Android's legacy plain listener with `usb:` when it owns the port, and retries; if the port stays busy, fail with the port and the recovery step |
 | Relay dies | Watchdog restarts it and reports Error if it cannot; active sessions drop |
+| Setup fails after the Wi-Fi bootstrap | The pre-setup `adb_wifi_enabled` is restored and the TLS port is verified closed; a failure to close is reported with the manual step |
 | VPN excludes the app | Setup fails with an instruction to include ADB Anywhere in the VPN; no fallback listener |
 | App process is killed | Service restart starts the relay again; prompts are lost and denied |
-| Prompt not answered | 30 s timeout, deny, audit |
+| Prompt not answered | 30 s timeout, deny, audit; a cancelled prompt releases its slot without suspending |
+| Prompt is covered by a malicious overlay | `filterTouchesWhenObscured` refuses the obscured touch; the prompt cannot be approved through it |
 | Malformed ADB frame | Close the connection, audit, never crash the service |
 | `UsageStats` missing | App allowlist cannot be enabled; the UI shows the grant action |
 | App key lost | Re-pair via notification; regenerate key; rewrite key file |

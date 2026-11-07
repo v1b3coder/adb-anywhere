@@ -85,6 +85,7 @@ fun SwitchRow(
     description: String,
     modifier: Modifier = Modifier,
     title: String? = null,
+    enabled: Boolean = true,
 ) {
     Row(
         modifier = modifier.fillMaxWidth(),
@@ -105,7 +106,7 @@ fun SwitchRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
+        Switch(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
     }
 }
 

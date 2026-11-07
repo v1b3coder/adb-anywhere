@@ -22,6 +22,8 @@ import cz.slush.adbanywhere.firewall.CallRule
 import cz.slush.adbanywhere.firewall.FirewallConfig
 import cz.slush.adbanywhere.firewall.FirewallConfigStore
 import cz.slush.adbanywhere.firewall.IpNetwork
+import cz.slush.adbanywhere.firewall.UsageAccess
+import cz.slush.adbanywhere.firewall.moved
 import cz.slush.adbanywhere.service.AppLog
 import cz.slush.adbanywhere.service.ControlBus
 import cz.slush.adbanywhere.service.ControlService
@@ -284,6 +286,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setAppAllowlistEnabled(enabled: Boolean) {
+        if (enabled && !UsageAccess.granted(getApplication())) {
+            AppLog.warn("firewall", "app allowlist needs UsageStats access")
+            return
+        }
         AppLog.info("firewall", "app allowlist=$enabled")
         updateFirewall { it.copy(appAllowlistEnabled = enabled) }
     }
@@ -326,6 +332,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun removeRule(id: String) {
         AppLog.info("firewall", "remove rule $id")
         updateFirewall { it.copy(callRules = it.callRules.filterNot { rule -> rule.id == id }) }
+    }
+
+    fun moveRule(id: String, delta: Int) {
+        AppLog.info("firewall", "move rule $id by $delta")
+        updateFirewall { it.copy(callRules = it.callRules.moved(id, delta)) }
     }
 
     fun setPromptTimeoutMs(ms: Long) {

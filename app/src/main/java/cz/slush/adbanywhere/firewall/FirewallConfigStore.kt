@@ -23,6 +23,10 @@ class FirewallConfigStore(private val prefs: Prefs) {
 
     fun addRule(rule: CallRule) = update { it.copy(callRules = it.callRules + rule) }
 
+    fun moveRule(id: String, delta: Int) = update {
+        it.copy(callRules = it.callRules.moved(id, delta))
+    }
+
     fun removeRule(id: String) = update {
         it.copy(callRules = it.callRules.filterNot { rule -> rule.id == id })
     }

@@ -22,14 +22,18 @@
  }
  
  bool is_socket_spec(std::string_view spec) {
-@@ -336,6 +340,47 @@
+@@ -336,6 +340,51 @@
      return false;
  }
  
 +// AOSP's socket_spec_listen only binds loopback or every interface. The
 +// standalone daemon is given an explicit VPN address by the app, so bind the
-+// address it names.
++// address it names. A wildcard is refused: the app never asks for one.
 +static int listen_on_host(std::string_view hostname, int port, int type, std::string* error) {
++    if (hostname.empty() || hostname == "0.0.0.0" || hostname == "::" || hostname == "*") {
++        *error = "wildcard binds are refused";
++        return -1;
++    }
 +    addrinfo hints = {};
 +    hints.ai_family = AF_UNSPEC;
 +    hints.ai_socktype = type;
@@ -70,7 +74,7 @@
  int socket_spec_listen(std::string_view spec, std::string* error, int* resolved_port) {
      if (spec.starts_with("tcp:")) {
          std::string hostname;
-@@ -356,9 +401,7 @@
+@@ -356,9 +405,7 @@
          } else if (hostname == "::1") {
              result = network_loopback_server(port, SOCK_STREAM, error, false);
          } else {
