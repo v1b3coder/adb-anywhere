@@ -12,6 +12,7 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.provider.Settings
 import cz.slush.adbanywhere.data.AdbStatus
+import cz.slush.adbanywhere.data.Prefs
 import java.net.InetSocketAddress
 import java.net.Socket
 
@@ -56,11 +57,27 @@ object SystemSettings {
     }
 
     /** D11: the state the Settings screen reports, read from the platform. */
-    fun status(context: Context): AdbStatus = AdbStatus(
-        adbEnabled = adbEnabled(context),
-        adbWifiEnabled = adbWifiEnabled(context),
-        port5555Open = isLocalPortOpen(5555),
-    )
+    fun status(context: Context): AdbStatus {
+        val prefs = Prefs(context)
+        return AdbStatus(
+            adbEnabled = adbEnabled(context),
+            adbWifiEnabled = adbWifiEnabled(context),
+            port5555Open = isLocalPortOpen(Prefs.PLAIN_ADB_PORT),
+            wirelessPort = systemWirelessPort(prefs),
+        )
+    }
+
+    /**
+     * The system adbd's wireless-debugging port while it listens. Android 13+ no
+     * longer publishes service.adb.tls.port, so the port remembered from the last
+     * bootstrap is the only candidate. A port that belongs to the custom adb is
+     * never reported: it is our listener, not the system one.
+     */
+    private fun systemWirelessPort(prefs: Prefs): Int {
+        val port = prefs.lastTlsPort
+        if (port <= 0 || port == prefs.loopbackPort || port == prefs.vpnPort) return 0
+        return if (isLocalPortOpen(port)) port else 0
+    }
 
     /** A connect is enough: adbd listens on 5555 and never answers a probe. */
     fun isLocalPortOpen(port: Int): Boolean = isPortOpen("127.0.0.1", port)

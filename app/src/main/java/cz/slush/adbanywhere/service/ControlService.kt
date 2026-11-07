@@ -334,19 +334,12 @@ class ControlService : Service() {
                 return@withLock
             }
             // A stored port from an older build can sit in the ephemeral range
-            // that Android's wireless debugging uses for its random TLS port.
-            // Fail with a clear instruction instead of connecting to the wrong
-            // listener and reporting "pairing required".
-            if (prefs.loopbackPort >= Prefs.EPHEMERAL_PORT_START ||
-                prefs.vpnPort >= Prefs.EPHEMERAL_PORT_START
-            ) {
-                fail(
-                    "The loopback or VPN port is in Android's ephemeral range. " +
-                        "Change it in Settings to a port below " +
-                        "${Prefs.EPHEMERAL_PORT_START} (for example " +
-                        "${Prefs.DEFAULT_LOOPBACK_PORT}/${Prefs.DEFAULT_VPN_PORT}), " +
-                        "then press Start again.",
-                )
+            // that Android's wireless debugging uses for its random TLS port, or on
+            // the system adbd's plain 5555 listener. Fail with a clear
+            // instruction instead of connecting to the wrong listener and
+            // reporting "pairing required".
+            Prefs.validatePorts(prefs.loopbackPort, prefs.vpnPort)?.let { failure ->
+                fail("$failure Press Start again after saving the ports.")
                 return@withLock
             }
             val previous = ControlBus.state.value
@@ -1119,7 +1112,8 @@ class ControlService : Service() {
             AppLog.info(
                 "state",
                 "adb_enabled=${status.adbEnabled} adb_wifi_enabled=${status.adbWifiEnabled} " +
-                    "port5555=${if (status.port5555Open) "open" else "closed"}",
+                    "port5555=${if (status.port5555Open) "open" else "closed"}" +
+                    " wireless=${status.wirelessPort}",
             )
         }
         ControlBus.update { it.copy(adbStatus = status) }

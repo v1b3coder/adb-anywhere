@@ -121,6 +121,11 @@ fun SettingsScreen(
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                KeyValueRow(
+                    "App adb channel",
+                    "127.0.0.1:${state.loopbackPort}",
+                    mono = true,
+                )
                 OutlinedTextField(
                     value = loopback,
                     onValueChange = {
@@ -171,11 +176,6 @@ fun SettingsScreen(
                     }
                 },
             ) {
-                KeyValueRow(
-                    "App adb channel",
-                    "127.0.0.1:${state.loopbackPort}",
-                    mono = true,
-                )
                 val current = status
                 if (current == null) {
                     Text(
@@ -195,6 +195,11 @@ fun SettingsScreen(
                         mono = true,
                     )
                     KeyValueRow(
+                        "Wireless port",
+                        if (current.wirelessPort == 0) "not listening" else "${current.wirelessPort}",
+                        mono = true,
+                    )
+                    KeyValueRow(
                         "Port 5555",
                         if (current.port5555Open) "open" else "closed",
                         mono = true,
@@ -208,7 +213,8 @@ fun SettingsScreen(
                     }
                 }
                 Text(
-                    "Wireless debugging is always turned off after the custom adb is verified. " +
+                    "The system adb uses its own random port, never the loopback port. " +
+                        "Wireless debugging is always turned off after the custom adb is verified. " +
                         "The switch below also lets Stop turn ADB itself off; it is off by " +
                         "default so Android keeps the paired key and the USB recovery path.",
                     style = MaterialTheme.typography.bodySmall,

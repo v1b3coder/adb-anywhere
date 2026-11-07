@@ -145,6 +145,9 @@ class Prefs(context: Context) {
         const val DEFAULT_LOOPBACK_PORT = 15037
         const val DEFAULT_VPN_PORT = 15038
 
+        /** The legacy plain `adb tcpip` listener that the system adbd binds. */
+        const val PLAIN_ADB_PORT = 5555
+
         /**
          * Android's wireless-debugging TLS server binds port 0, so the kernel
          * picks from the ephemeral range.  A custom loopback or VPN port at or
@@ -152,5 +155,27 @@ class Prefs(context: Context) {
          * below it.
          */
         const val EPHEMERAL_PORT_START = 32768
+
+        /**
+         * The one policy for the two ports the custom adb binds. The plain 5555 is
+         * refused: the system adbd can hold it, so the custom adb would fail to
+         * bind while the 5555 probe reported the system listener as ours.
+         */
+        fun validatePorts(loopback: Int, vpn: Int): String? {
+            if (loopback !in 1024..65535) return "The loopback port must be between 1024 and 65535."
+            if (vpn !in 1024..65535) return "The VPN port must be between 1024 and 65535."
+            if (loopback == vpn) return "The two ports must be different."
+            if (loopback == PLAIN_ADB_PORT || vpn == PLAIN_ADB_PORT) {
+                return "Port $PLAIN_ADB_PORT belongs to the system adb's plain listener. " +
+                    "Use another port so the app can never reach the system adb by mistake."
+            }
+            if (loopback >= EPHEMERAL_PORT_START || vpn >= EPHEMERAL_PORT_START) {
+                return "Use ports below $EPHEMERAL_PORT_START (for example " +
+                    "$DEFAULT_LOOPBACK_PORT/$DEFAULT_VPN_PORT): Android's wireless " +
+                    "debugging picks its port from the ephemeral range, so a higher port " +
+                    "can collide with it."
+            }
+            return null
+        }
     }
 }

@@ -8,6 +8,12 @@ data class AdbStatus(
     val adbEnabled: Int,
     val adbWifiEnabled: Int,
     val port5555Open: Boolean,
+    /**
+     * The system adbd's wireless-debugging port while it listens, else 0. It is
+     * never one of the app's own ports: the Settings card must not present the
+     * custom adb's listener as the system one.
+     */
+    val wirelessPort: Int = 0,
 ) {
     /** The warnings the settings UI shows next to the state. */
     fun warnings(): List<String> = buildList {

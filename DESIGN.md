@@ -108,7 +108,7 @@ These are facts from AOSP `main`, not assumptions.
 | D13 | Firewall placement | App-side Kotlin relay in `ControlService`; byte-transparent; ADB key auth stays end-to-end between the developer machine and `adbd` |
 | D14 | Listener ownership | Exactly one component owns `<vpn-ip>:<portB>`: the patched `adbd` when the firewall is off, the app relay when it is on. The open port, not a pref, decides which |
 | D15 | Listener mode persistence | `firewallEnabled` is the intent; `daemonFirewallMode` is the mode the running daemon was started with. A mismatch restarts the daemon and the relay |
-| D16 | Port range | The loopback and VPN ports are below 32768, outside Android's ephemeral range |
+| D16 | Port range | The loopback and VPN ports are below 32768, outside Android's ephemeral range, and never 5555, the system adbd's plain listener |
 | D17 | State publication | `ControlState` is the only UI source of truth. Each listener publishes its own state, `setup()` never resets a live listener's state, and `firewallDown` is derived |
 | D18 | Restart coordination | One daemon identity (`--listen` in `ps`, `/proc` fallback), one restart-script naming scheme, a PID marker, and a wait for the predecessor |
 
@@ -336,7 +336,7 @@ behavior is still correct.
 | I7 | One identity per process. The service and the activity share one `AppKeyStore` identity; pairing uses one atomic `code:port` reply. | `CERTIFICATE_AND_PRIVATE_KEY_MISMATCH`; a code from one dialog paired with a port from another | `77191da`, `83b5fb9` |
 | I8 | One daemon identity and one restart path. The daemon is found by `--listen` in `ps` (`/proc` fallback); the restart script has a unique name and a PID marker; a new start waits for the predecessor. | A fixed script path truncated a running restart; a start verified the daemon that was about to die; the `/proc` scan took 40 s | `44a4ca9`, `68d48b7`, `d5a6706`, `2c76489` |
 | I9 | No silent fallback. A failure is an explicit error with the recovery step; never another port, never another listener, never a proxy. | An occupied port silently moved the endpoint; the app connected to Android's TLS listener instead | `21e2280`, `0803d46` |
-| I10 | Custom ports stay out of the ephemeral range. Both ports are below 32768 and `setup()` rejects an older pref above it. | The phone used 43935 for both wireless debugging and the app endpoint | `21e2280` |
+| I10 | Custom ports stay out of the ephemeral range and off the system adbd's 5555. Both ports are below 32768 and not 5555, and `setup()` rejects an older pref that violates either. | The phone used 43935 for both wireless debugging and the app endpoint | `21e2280` |
 | I11 | Listener and prompt lifecycle are serialized. `startFirewall()`, `stopFirewall()` and the relay rebind share `relayLock`; a stop bumps an epoch that invalidates an in-flight start; the prompt map is concurrent and every prompt path releases its slot. | Two starts bound the VPN port at once; a retrying start bound after a stop; a cancelled prompt left `pending()` true and suspended the app-allowlist grace timer | `74bb129` |
 | I12 | The watchdog never writes `ADB_ENABLED`. Hardening is bound to the running daemon, not to the app process; a stop leaves wireless debugging alone. | Stop wrote `ADB_ENABLED=0` and dropped the paired key | `4b5596d` |
 
