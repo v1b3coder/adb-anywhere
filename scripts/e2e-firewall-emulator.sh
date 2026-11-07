@@ -81,6 +81,32 @@ tap_text() {
     adb -s "$serial" shell input tap "$xy"
 }
 
+ui_prefix_checkbox() {
+    ui_dump | python3 -c '
+import re, sys
+xml = sys.stdin.read()
+text = None
+for m in re.finditer(r"text=\"Prefix capability\"[^>]*bounds=\"\[(\d+),(\d+)\]\[(\d+),(\d+)\]\"", xml):
+    text = tuple(map(int, m.groups()))
+    break
+if text is None:
+    sys.exit(1)
+tx1, ty1, tx2, ty2 = text
+for m in re.finditer(r"checkable=\"true\"[^>]*bounds=\"\[(\d+),(\d+)\]\[(\d+),(\d+)\]\"", xml):
+    x1, y1, x2, y2 = map(int, m.groups())
+    if abs((y1 + y2) // 2 - (ty1 + ty2) // 2) <= 100 and x2 <= tx1 + 10:
+        print((x1 + x2) // 2, (y1 + y2) // 2)
+        break
+'
+}
+
+tap_checkable() {
+    local xy
+    xy=$(ui_prefix_checkbox)
+    [ -n "$xy" ] || return 1
+    adb -s "$serial" shell input tap "$xy"
+}
+
 relay_connect() {
     # The app restarts the system adbd when it takes the VPN port, which drops
     # the host forward; recreate it before every relay connection.
@@ -244,6 +270,18 @@ if prompt_call "custom filter" shell 'ls /sdcard'; then
     finish_call
     audit_has call_allowed && ok "custom filter audit" || bad "custom filter audit"
 fi
+
+say "prefix capability"
+if prompt_call "prefix" shell 'run-as cz.slush.adbanywhere id 2>&1'; then
+    prompt_tap "Custom filter"
+    wait_for_text "Prefix capability" && ok "prefix editor" || bad "prefix editor"
+    tap_checkable && ok "prefix toggle" || bad "prefix toggle"
+    sleep 1
+    prompt_tap "Save rule"
+    finish_call
+    prefs | grep -q 'rawShell&quot;:true' && ok "raw shell rule" || bad "raw shell rule"
+fi
+run_ok "raw prefix rule" shell 'run-as cz.slush.adbanywhere sh -c id 2>&1'
 
 say "floating prompt"
 adb -s "$serial" shell input keyevent 3

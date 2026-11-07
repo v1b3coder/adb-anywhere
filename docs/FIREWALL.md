@@ -256,6 +256,7 @@ data class CallRule(
     val predicates: List<Predicate>,
     val note: String,
     val createdAt: Long,
+    val rawShell: Boolean,       // prefix capability, matches metacharacters
 )
 
 sealed interface Predicate {
@@ -265,6 +266,11 @@ sealed interface Predicate {
     data class AnyValue(val field: String) : Predicate
 }
 ```
+
+A rule with `rawShell = true` and a `Prefix` predicate on `command` (or `raw`)
+is a raw-shell capability: it is the only rule shape that matches a call with shell
+metacharacters. The prefix is the authority; the remaining argv tokens are not
+predicates. A normal rule still never matches a metacharacter call.
 
 Evaluation is first match wins. A rule with fewer predicates is broader; a rule
 with no predicates matches every call of its service. The editor warns before
@@ -333,9 +339,17 @@ For paths the editor offers exact or glob. For shell commands it shows the token
 `argv[]` and hides the raw command, because the raw command and the argv are two
 views of the same data. If the call has shell metacharacters, the editor does not
 allow unlocking the command or any argv token; it offers only an exact raw-shell rule
-with an explicit "raw shell" warning. For an interactive `shell:` call, the editor
-offers a single "full shell, not filtered" capability with an explicit confirmation;
-there are no fields to pin.
+with an explicit "raw shell" warning.
+
+A shell call also offers a **Prefix capability** toggle, available even when the call
+has metacharacters. It reveals an editable command prefix, prefilled with the first two
+argv tokens plus a trailing space (`run-as <package> `). Saving it creates a rule with
+`rawShell = true` and `Prefix("command", prefix)`; the preview reads
+`command starts with "..."`. The warning says the remaining args run as the app's UID,
+including shell operators, and that the prefix must include the trailing space to pin the
+token boundary. For an interactive `shell:` call, the editor offers a single "full
+shell, not filtered" capability with an explicit confirmation; there are no fields to
+pin.
 
 The action selector is `Allow` or `Deny`. The preview shows the normalized rule in
 the same notation as the prompt, for example:
@@ -359,6 +373,10 @@ sandbox:
 - `shell:sh -c '...'` and `shell:toybox ...` reach the same commands as a direct
   call. The parser can pin `sh` and its arguments, but cannot prove what the script
   does.
+- A raw-shell prefix rule (`rawShell = true` with `Prefix("command", ...)`) is a
+  capability, not an argv rule: every command after the prefix, including `sh -c`,
+  `;`, pipes and redirections, runs as the app's UID. Pin the package token in the
+  prefix.
 - `;`, `|`, `&&`, `$(...)`, backticks and redirection change the command. They are
   a `metacharacters` field; a normal argv rule never matches them.
 - Interactive `shell:` is arbitrary after the first approval. It prompts by default
@@ -556,6 +574,9 @@ JVM unit tests:
   including the grace timer and a return before it expires.
 - Audit ring, rotation and redaction.
 - Relay with in-memory sockets: allow, deny, hold, timeout, close, oversized frame.
+- Raw-shell prefix: a `rawShell` rule with `Prefix("command", ...)` matches a
+  metacharacter `run-as` call; the same rule with `rawShell=false` does not; a
+  different package does not match.
 
 Device/integration:
 
@@ -572,6 +593,8 @@ Device/integration:
 - Floating prompt: with `SYSTEM_ALERT_WINDOW`, background the app, fire a call,
   assert the card is visible above the launcher, answer it, and assert the call
   proceeds without a notification tap.
+- Prefix capability: create a `run-as <package>` prefix rule through the editor,
+  then fire `run-as <package> sh -c id 2>&1` and assert it runs without a prompt.
 - Custom filter footer: open the editor and assert Save rule and Cancel are visible
   without scrolling.
 - Self allowlist: allowlisting ADB Anywhere keeps ADB open in its UI, and a call
@@ -628,8 +651,8 @@ Implemented in the app:
   `reverse`, `framebuffer`; unknown and unsupported services are denied.
 - `firewall/SyncParser.kt`: the first client sync frame, path and direction,
   v1 and v2 ids.
-- `firewall/CallRules.kt`: built-in denies, first-match user rules, prompt and
-  deny defaults.
+- `firewall/CallRules.kt`: built-in denies, first-match user rules, raw-shell
+  prefix capability, prompt and deny defaults.
 - `firewall/AdbRelay.kt`: the byte relay, `A_OPEN` policy, sync path policy,
   stream tracking and denied-stream drops.
 - `firewall/FirewallProxy.kt`: VPN listener, IP allowlist, app allowlist, grace

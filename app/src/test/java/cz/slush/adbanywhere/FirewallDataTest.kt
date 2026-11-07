@@ -312,6 +312,28 @@ class FirewallDataTest {
         assertEquals(config.redactAudit, copy.redactAudit)
     }
 
+    @Test
+    fun rawShellPrefixMatchesMetacharacterCalls() {
+        val rule = CallRule(
+            id = "raw",
+            action = CallAction.ALLOW,
+            service = "shell",
+            predicates = listOf(
+                CallPredicate.Exact("service", "shell"),
+                CallPredicate.Prefix("command", "run-as cz.slush.adbanywhere "),
+            ),
+            rawShell = true,
+        )
+        val call = AdbCallParser.parse("shell:run-as cz.slush.adbanywhere sh -c id 2>&1")
+        assertTrue(call.metacharacters)
+        assertTrue(rule.matches(call))
+        assertFalse(rule.copy(rawShell = false).matches(call))
+        assertFalse(rule.matches(AdbCallParser.parse("shell:run-as com.example id")))
+        val copy = CallRule.fromJson(rule.toJson())!!
+        assertTrue(copy.rawShell)
+        assertTrue(copy.matches(call))
+    }
+
     private fun ip(text: String): Int =
         IpNetwork.parse("$text/32")!!.address
 

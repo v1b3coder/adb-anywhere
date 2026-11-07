@@ -19,6 +19,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -69,6 +70,8 @@ fun RuleEditorContent(
     var action by remember { mutableStateOf(CallAction.ALLOW) }
     var fixed by remember { mutableStateOf(call.fields.keys.toSet()) }
     var pathGlob by remember { mutableStateOf(false) }
+    var prefixMode by remember { mutableStateOf(false) }
+    var prefix by remember(call) { mutableStateOf(defaultPrefix(call)) }
     val fields = remember(call) {
         call.fields.toList().sortedBy { it.first }
     }
@@ -93,42 +96,85 @@ fun RuleEditorContent(
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            items(fields) { (name, value) ->
+            item {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Checkbox(
-                        checked = name in fixed,
-                        enabled = !call.metacharacters,
-                        onCheckedChange = { checked ->
-                            fixed = if (checked) fixed + name else fixed - name
-                        },
+                        checked = prefixMode,
+                        onCheckedChange = { prefixMode = it },
                     )
                     Column(Modifier.weight(1f)) {
-                        Text(name, style = MaterialTheme.typography.labelMedium)
                         Text(
-                            value,
-                            fontFamily = FontFamily.Monospace,
+                            "Prefix capability",
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                        Text(
+                            "Any remaining args run as the app's UID, including " +
+                                "shell operators. This is a capability, not a sandbox.",
                             style = MaterialTheme.typography.bodySmall,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
+                            color = MaterialTheme.colorScheme.error,
                         )
                     }
                 }
             }
-            if ("path" in call.fields) {
-                item {
+            if (!prefixMode) {
+                items(fields) { (name, value) ->
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Checkbox(
-                            checked = pathGlob,
-                            onCheckedChange = { pathGlob = it },
+                            checked = name in fixed,
+                            enabled = !call.metacharacters,
+                            onCheckedChange = { checked ->
+                                fixed = if (checked) fixed + name else fixed - name
+                            },
                         )
-                        Text("Match the path as a glob")
+                        Column(Modifier.weight(1f)) {
+                            Text(name, style = MaterialTheme.typography.labelMedium)
+                            Text(
+                                value,
+                                fontFamily = FontFamily.Monospace,
+                                style = MaterialTheme.typography.bodySmall,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
                     }
+                }
+                if ("path" in call.fields) {
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Checkbox(
+                                checked = pathGlob,
+                                onCheckedChange = { pathGlob = it },
+                            )
+                            Text("Match the path as a glob")
+                        }
+                    }
+                }
+            }
+            if (prefixMode) {
+                item {
+                    OutlinedTextField(
+                        value = prefix,
+                        onValueChange = { prefix = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Command prefix") },
+                        singleLine = true,
+                    )
+                }
+                item {
+                    Text(
+                        "Include the trailing space to pin the token boundary.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
             item {
@@ -144,7 +190,7 @@ fun RuleEditorContent(
                     ) { Text("Deny") }
                 }
             }
-            if (fixed.isEmpty()) {
+            if (!prefixMode && fixed.isEmpty()) {
                 item {
                     Text(
                         "This rule matches every call of ${call.service}.",
@@ -155,7 +201,7 @@ fun RuleEditorContent(
             }
             item {
                 Text(
-                    preview(call, action, fixed, pathGlob),
+                    preview(call, action, fixed, pathGlob, prefixMode, prefix),
                     fontFamily = FontFamily.Monospace,
                     style = MaterialTheme.typography.bodySmall,
                 )
@@ -169,13 +215,21 @@ fun RuleEditorContent(
         ) {
             TextButton(onClick = onDismiss) { Text("Cancel") }
             Button(
+                enabled = !prefixMode || prefix.isNotBlank(),
                 onClick = {
-                    val predicates = fixed.mapNotNull { name ->
-                        val value = call.fields[name] ?: return@mapNotNull null
-                        if (name == "path" && pathGlob) {
-                            CallPredicate.Glob(name, value)
-                        } else {
-                            CallPredicate.Exact(name, value)
+                    val predicates = if (prefixMode) {
+                        listOf(
+                            CallPredicate.Exact("service", call.service),
+                            CallPredicate.Prefix("command", prefix),
+                        )
+                    } else {
+                        fixed.mapNotNull { name ->
+                            val value = call.fields[name] ?: return@mapNotNull null
+                            if (name == "path" && pathGlob) {
+                                CallPredicate.Glob(name, value)
+                            } else {
+                                CallPredicate.Exact(name, value)
+                            }
                         }
                     }
                     onSave(
@@ -184,6 +238,7 @@ fun RuleEditorContent(
                             action = action,
                             service = call.service,
                             predicates = predicates,
+                            rawShell = prefixMode,
                         ),
                     )
                 },
@@ -192,15 +247,32 @@ fun RuleEditorContent(
     }
 }
 
+private fun defaultPrefix(call: AdbCall): String {
+    val tokens = call.argv.orEmpty()
+    if (tokens.isEmpty()) return call.fields["command"].orEmpty()
+    val count = minOf(2, tokens.size)
+    return tokens.take(count).joinToString(" ") + if (tokens.size > count) " " else ""
+}
+
 private fun preview(
     call: AdbCall,
     action: CallAction,
     fixed: Set<String>,
     pathGlob: Boolean,
+    prefixMode: Boolean,
+    prefix: String,
 ): String = buildString {
     append(action.name)
     append(' ')
     append(call.service)
+    if (prefixMode) {
+        append(" where\n  command starts with ")
+        append('"')
+        append(prefix)
+        append('"')
+        append('\n')
+        return@buildString
+    }
     append(" where\n")
     fixed.forEach { name ->
         append("  ")

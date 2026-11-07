@@ -108,10 +108,15 @@ data class CallRule(
     val predicates: List<CallPredicate>,
     val note: String = "",
     val createdAt: Long = System.currentTimeMillis(),
+    /** A prefix capability that also matches shell operators after the prefix. */
+    val rawShell: Boolean = false,
 ) {
     fun matches(call: AdbCall): Boolean {
         if (service != "*" && service != call.service) return false
-        if (call.metacharacters && predicates.none {
+        val prefixCapability = rawShell && predicates.any {
+            it is CallPredicate.Prefix && (it.field == "command" || it.field == "raw")
+        }
+        if (call.metacharacters && !prefixCapability && predicates.none {
                 it is CallPredicate.Exact &&
                     it.field == "metacharacters" &&
                     it.value == "true"
@@ -137,6 +142,7 @@ data class CallRule(
         put("service", service)
         put("note", note)
         put("createdAt", createdAt)
+        put("rawShell", rawShell)
         val array = JSONArray()
         predicates.forEach { array.put(it.toJson()) }
         put("predicates", array)
@@ -164,6 +170,7 @@ data class CallRule(
                 predicates = predicates,
                 note = json.optString("note"),
                 createdAt = json.optLong("createdAt", System.currentTimeMillis()),
+                rawShell = json.optBoolean("rawShell", false),
             )
         }
 

@@ -274,7 +274,8 @@ fun FirewallScreen(
                     ) {
                         Column(Modifier.weight(1f)) {
                             Text(
-                                "${rule.action.name} ${rule.service}",
+                                "${rule.action.name} ${rule.service}" +
+                                    if (rule.rawShell) " (raw shell prefix)" else "",
                                 style = MaterialTheme.typography.labelLarge,
                             )
                             Text(
