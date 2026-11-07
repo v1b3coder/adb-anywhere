@@ -105,6 +105,10 @@ class Prefs(context: Context) {
         get() = prefs.getString("firewall_ip_allowlist", "[]") ?: "[]"
         set(value) = prefs.edit().putString("firewall_ip_allowlist", value).apply()
 
+    var firewallIpLastUsedJson: String
+        get() = prefs.getString("firewall_ip_last_used", "{}") ?: "{}"
+        set(value) = prefs.edit().putString("firewall_ip_last_used", value).apply()
+
     var firewallAppAllowlistEnabled: Boolean
         get() = prefs.getBoolean("firewall_app_allowlist_enabled", false)
         set(value) = prefs.edit().putBoolean("firewall_app_allowlist_enabled", value).apply()
@@ -112,6 +116,10 @@ class Prefs(context: Context) {
     var firewallAppAllowlistJson: String
         get() = prefs.getString("firewall_app_allowlist", "[]") ?: "[]"
         set(value) = prefs.edit().putString("firewall_app_allowlist", value).apply()
+
+    var firewallAppLastUsedJson: String
+        get() = prefs.getString("firewall_app_last_used", "{}") ?: "{}"
+        set(value) = prefs.edit().putString("firewall_app_last_used", value).apply()
 
     var firewallAppGraceMs: Long
         get() = prefs.getLong("firewall_app_grace_ms", 15_000L)

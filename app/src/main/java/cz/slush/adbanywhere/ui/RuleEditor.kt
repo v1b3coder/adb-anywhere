@@ -334,6 +334,7 @@ fun RuleEditorContent(
                             predicates = predicates,
                             note = rule?.note ?: "",
                             createdAt = rule?.createdAt ?: System.currentTimeMillis(),
+                            lastUsed = rule?.lastUsed ?: 0L,
                             rawShell = prefixMode,
                             original = source,
                         ),

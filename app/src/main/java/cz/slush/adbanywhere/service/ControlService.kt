@@ -879,6 +879,9 @@ class ControlService : Service() {
                         ControlBus.firewallConfig.value = firewallStore.load()
                     },
                     audit = { auditLog.record(it) },
+                    onRuleUsed = { id ->
+                        ControlBus.firewallConfig.value = firewallStore.markRuleUsed(id)
+                    },
                 )
                 val proxy = FirewallProxy(
                     scope = scope,
@@ -886,6 +889,12 @@ class ControlService : Service() {
                     monitor = foregroundMonitor,
                     policy = policy,
                     audit = auditLog,
+                    onIpUsed = { cidr ->
+                        ControlBus.firewallConfig.value = firewallStore.markIpUsed(cidr)
+                    },
+                    onAppUsed = { packageName ->
+                        ControlBus.firewallConfig.value = firewallStore.markAppUsed(packageName)
+                    },
                     onState = { state -> ControlBus.update { it.copy(firewall = state) } },
                 )
                 try {

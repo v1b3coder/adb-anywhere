@@ -21,6 +21,8 @@ class FirewallProxy(
     private val monitor: ForegroundAppMonitor?,
     private val policy: RelayPolicy,
     private val audit: AuditLog,
+    private val onIpUsed: (String) -> Unit = {},
+    private val onAppUsed: (String) -> Unit = {},
     private val onState: (FirewallState) -> Unit,
 ) {
     private val lock = Any()
@@ -142,21 +144,29 @@ class FirewallProxy(
                 continue
             }
             val config = config()
-            if (config.ipAllowlistEnabled && !IpAllowlist(config.ipAllowlist).allows(peer, own)) {
-                audit.record(AuditEvent(event = "ip_denied", peer = peer.hostAddress ?: ""))
-                runCatching { client.close() }
-                continue
+            if (config.ipAllowlistEnabled) {
+                val allowlist = IpAllowlist(config.ipAllowlist)
+                if (!allowlist.allows(peer, own)) {
+                    audit.record(AuditEvent(event = "ip_denied", peer = peer.hostAddress ?: ""))
+                    runCatching { client.close() }
+                    continue
+                }
+                allowlist.matching(peer).forEach { onIpUsed(it.format()) }
             }
-            if (config.appAllowlistEnabled && !appAllowed()) {
-                audit.record(
-                    AuditEvent(
-                        event = "app_denied",
-                        peer = peer.hostAddress ?: "",
-                        detail = "target app is not foreground",
-                    ),
-                )
-                runCatching { client.close() }
-                continue
+            if (config.appAllowlistEnabled) {
+                val foreground = monitor?.state?.value?.foreground
+                if (foreground == null || foreground !in config.appAllowlist) {
+                    audit.record(
+                        AuditEvent(
+                            event = "app_denied",
+                            peer = peer.hostAddress ?: "",
+                            detail = "target app is not foreground",
+                        ),
+                    )
+                    runCatching { client.close() }
+                    continue
+                }
+                onAppUsed(foreground)
             }
             val peerKey = peer.hostAddress ?: ""
             if (activeSessions >= MAX_CONNECTIONS ||

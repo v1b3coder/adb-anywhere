@@ -294,7 +294,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun removeIp(cidr: String) {
         AppLog.info("firewall", "remove ip $cidr")
-        updateFirewall { it.copy(ipAllowlist = it.ipAllowlist.filterNot { n -> n.format() == cidr }) }
+        updateFirewall {
+            it.copy(
+                ipAllowlist = it.ipAllowlist.filterNot { n -> n.format() == cidr },
+                ipLastUsed = it.ipLastUsed - cidr,
+            )
+        }
     }
 
     fun setAppAllowlistEnabled(enabled: Boolean) {
@@ -309,7 +314,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun removeApp(packageName: String) {
         AppLog.info("firewall", "remove app $packageName")
-        updateFirewall { it.copy(appAllowlist = it.appAllowlist - packageName) }
+        updateFirewall {
+            it.copy(
+                appAllowlist = it.appAllowlist - packageName,
+                appLastUsed = it.appLastUsed - packageName,
+            )
+        }
     }
 
     fun setAppGraceMs(ms: Long) {
@@ -384,8 +394,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         apply: Boolean = true,
         block: (FirewallConfig) -> FirewallConfig,
     ) {
-        val updated = block(firewallStore.load())
-        firewallStore.save(updated)
+        val updated = firewallStore.update(block)
         ControlBus.firewallConfig.value = updated
         if (apply) applyIfRunning(ControlService.ACTION_APPLY_SETTINGS)
     }

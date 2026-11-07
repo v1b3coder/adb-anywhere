@@ -145,6 +145,8 @@ data class CallRule(
     val predicates: List<CallPredicate>,
     val note: String = "",
     val createdAt: Long = System.currentTimeMillis(),
+    /** When this rule last matched a call, or 0 if it never did. */
+    val lastUsed: Long = 0L,
     /** A prefix capability for calls without top-level shell operators. */
     val rawShell: Boolean = false,
     /** The call this rule was created from, kept so the editor can reopen it. */
@@ -214,6 +216,7 @@ data class CallRule(
         put("service", service)
         put("note", note)
         put("createdAt", createdAt)
+        if (lastUsed > 0) put("lastUsed", lastUsed)
         put("rawShell", rawShell)
         original?.let { put("original", it.toJson()) }
         val array = JSONArray()
@@ -243,6 +246,7 @@ data class CallRule(
                 predicates = predicates,
                 note = json.optString("note"),
                 createdAt = json.optLong("createdAt", System.currentTimeMillis()),
+                lastUsed = json.optLong("lastUsed", 0L),
                 rawShell = json.optBoolean("rawShell", false),
                 original = json.optJSONObject("original")?.let { AdbCall.fromJson(it) },
             )
@@ -297,13 +301,19 @@ data class FirewallConfig(
     val callRules: List<CallRule> = emptyList(),
     val promptTimeoutMs: Long = 30_000L,
     val redactAudit: Boolean = false,
+    /** Last accepted connection per IP allowlist entry, keyed by its CIDR text. */
+    val ipLastUsed: Map<String, Long> = emptyMap(),
+    /** Last accepted connection per app allowlist entry, keyed by package name. */
+    val appLastUsed: Map<String, Long> = emptyMap(),
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("enabled", enabled)
         put("ipAllowlistEnabled", ipAllowlistEnabled)
         put("ipAllowlist", JSONArray(ipAllowlist.map { it.format() }))
+        put("ipLastUsed", ipLastUsed.toJson())
         put("appAllowlistEnabled", appAllowlistEnabled)
         put("appAllowlist", JSONArray(appAllowlist.toList()))
+        put("appLastUsed", appLastUsed.toJson())
         put("appGraceMs", appGraceMs)
         put("callPolicyEnabled", callPolicyEnabled)
         put("callRules", JSONArray(callRules.map { it.toJson() }))
@@ -341,6 +351,8 @@ data class FirewallConfig(
                 callRules = rules,
                 promptTimeoutMs = json.optLong("promptTimeoutMs", 30_000L),
                 redactAudit = json.optBoolean("redactAudit"),
+                ipLastUsed = json.optJSONObject("ipLastUsed").toLastUsed(),
+                appLastUsed = json.optJSONObject("appLastUsed").toLastUsed(),
             )
         }
     }
@@ -351,8 +363,14 @@ class IpAllowlist(private val networks: List<IpNetwork>) {
         if (peer !is Inet4Address) return false
         if (peer.isLoopbackAddress || peer.isLinkLocalAddress) return false
         if (ownVpn != null && peer.address.contentEquals(ownVpn.address)) return false
+        return matching(peer).isNotEmpty()
+    }
+
+    /** Every entry that contains the peer; overlapping ranges all matched. */
+    fun matching(peer: InetAddress): List<IpNetwork> {
+        if (peer !is Inet4Address) return emptyList()
         val value = ipv4ToInt(peer)
-        return networks.any { it.contains(value) }
+        return networks.filter { it.contains(value) }
     }
 
     private fun ipv4ToInt(address: InetAddress): Int {
@@ -362,4 +380,18 @@ class IpAllowlist(private val networks: List<IpNetwork>) {
             ((bytes[2].toInt() and 0xff) shl 8) or
             (bytes[3].toInt() and 0xff)
     }
+}
+
+private fun Map<String, Long>.toJson(): JSONObject = JSONObject().apply {
+    forEach { (key, value) -> put(key, value) }
+}
+
+private fun JSONObject?.toLastUsed(): Map<String, Long> {
+    if (this == null) return emptyMap()
+    val map = linkedMapOf<String, Long>()
+    keys().forEach { key ->
+        val value = optLong(key, 0L)
+        if (value > 0) map[key] = value
+    }
+    return map
 }

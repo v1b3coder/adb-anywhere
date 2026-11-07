@@ -91,6 +91,10 @@ The tab has four modules:
   `Custom filter` lets the user pin the fields that must stay fixed.
 - **Audit log**: bounded JSONL on the device and the last 500 events in the UI.
 
+Each IP entry, app entry and call rule shows when it last matched, as a relative
+age (`2 hours ago`, or `never`). The timestamps are stored with the firewall
+configuration and are independent of the audit log.
+
 The app's own loopback channel is unchanged. The relay is byte-transparent and
 does not authenticate. Shell filtering is policy and audit, not a sandbox:
 interactive `shell:` and shell metacharacters are explicit capabilities, and sync

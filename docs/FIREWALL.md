@@ -96,6 +96,8 @@ instead.
 - The allowlist is only active when its own switch is on. When it is on and the
   list is empty, all external connections are denied. The UI prevents enabling it
   with an empty list, or shows a persistent warning if it is already enabled.
+- Each entry records the last time it accepted a connection. Overlapping ranges all
+  record the same connection. The UI shows the age as `2 hours ago` or `never`.
 - The peer address is the VPN source address. A NAT or a VPN that rewrites source
   addresses must whitelist the rewritten address. This is documented in the UI.
 - The relay rejects loopback, link-local and the phone's own VPN address as peers.
@@ -153,6 +155,8 @@ instead.
   be "resumed" while a system dialog is on top. The relay treats the last resumed
   activity as the foreground app, which is the same signal app blockers use. The
   one exception is the app's own approval dialog, which is skipped.
+- Each app entry records the last time a connection passed the app check while that
+  app was foreground. The UI shows the age as `2 hours ago` or `never`.
 
 ## 7. Module: call policy
 
@@ -256,6 +260,7 @@ data class CallRule(
     val predicates: List<Predicate>,
     val note: String,
     val createdAt: Long,
+    val lastUsed: Long,          // last call this rule matched, 0 if never
     val rawShell: Boolean,       // no-metacharacter prefix capability
     val original: AdbCall?,       // kept so the editor can reopen the call
 )
@@ -279,7 +284,9 @@ prefix capability still matches it and the quoted script runs as the app's UID.
 Evaluation is first match wins. A rule with fewer predicates is broader; a rule
 with no predicates matches every call of its service. The editor warns before
 saving a rule that matches every call of a service. The rule list is ordered and
-the UI supports move up, move down and delete.
+the UI supports move up, move down and delete. Each rule records the last time it
+matched a call, whether the action was allow or deny; the UI shows the age as
+`2 hours ago` or `never`. Editing a rule keeps that timestamp.
 
 Built-in rules, before user rules:
 
@@ -439,8 +446,10 @@ The audit log never contains file contents, terminal output or screen frames.
 var firewallEnabled: Boolean
 var firewallIpAllowlistEnabled: Boolean
 var firewallIpAllowlistJson: String
+var firewallIpLastUsedJson: String
 var firewallAppAllowlistEnabled: Boolean
 var firewallAppAllowlistJson: String
+var firewallAppLastUsedJson: String
 var firewallAppGraceMs: Long
 var firewallCallPolicyEnabled: Boolean
 var firewallCallRulesJson: String
@@ -488,12 +497,17 @@ calls `adb tcpip` and never moves to another port silently.
   turned off while the tab is open, the UI returns to Home.
 - `FirewallScreen` sections:
   - **Status**: listener address, active sessions, pending prompts, last error.
-  - **IP allowlist**: switch, list, add dialog (`a.b.c.d` or `a.b.c.d/n`), delete.
+  - **IP allowlist**: switch, list, add dialog (`a.b.c.d` or `a.b.c.d/n`), delete;
+    each entry shows its last accepted connection as a relative age.
   - **App allowlist**: switch, selected apps, searchable picker with a warning
     when ADB Anywhere itself is listed, delete, grace period (default 15 s, `0`
-    means immediate).
+    means immediate); each entry shows its last accepted connection as a relative
+    age.
   - **Call policy**: switch, rule list, default action, prompt timeout,
-    interactive-shell capability, audit log link.
+    interactive-shell capability, audit log link; each rule shows the last call it
+    matched as a relative age.
+- Last-use timestamps are persisted in the firewall configuration, not in the audit
+  log. Clearing the audit log does not clear them.
 - `CallPromptOverlay` is a `TYPE_APPLICATION_OVERLAY` window hosted by
   `ControlService`. It is non-modal (`FLAG_NOT_TOUCH_MODAL`), shows the same card,
   and is reachable only after the user grants Display over other apps. It cannot show
@@ -581,6 +595,8 @@ JVM unit tests:
 - Foreground app state machine with a fake clock and fake usage events,
   including the grace timer and a return before it expires.
 - Audit ring, rotation and redaction.
+- Last-use timestamps round-trip in the configuration JSON and relative ages
+  format as `just now`, `2 hours ago`, `3 days ago` or `never`.
 - Relay with in-memory sockets: allow, deny, hold, timeout, close, oversized frame.
 - Prefix capability: a `rawShell` rule with `Prefix("command", ...)` matches a
   quoted `run-as <package> sh -c 'id && uname'`; it does not match

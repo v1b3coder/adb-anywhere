@@ -37,6 +37,18 @@ class FirewallDataTest {
     }
 
     @Test
+    fun allowlistReportsEveryMatchingNetwork() {
+        val broad = IpNetwork.parse("100.64.0.0/10")!!
+        val exact = IpNetwork.parse("100.64.0.2/32")!!
+        val allowlist = IpAllowlist(listOf(broad, exact))
+        assertEquals(
+            listOf(broad, exact),
+            allowlist.matching(InetAddress.getByName("100.64.0.2")),
+        )
+        assertTrue(allowlist.matching(InetAddress.getByName("10.0.0.1")).isEmpty())
+    }
+
+    @Test
     fun allowlistRejectsLocalAndOwnAddresses() {
         val allowlist = IpAllowlist(listOf(IpNetwork.parse("100.64.0.0/10")!!))
         val own = InetAddress.getByName("100.64.0.10")
@@ -287,8 +299,10 @@ class FirewallDataTest {
             enabled = true,
             ipAllowlistEnabled = true,
             ipAllowlist = listOf(IpNetwork.parse("100.64.0.0/10")!!),
+            ipLastUsed = mapOf("100.64.0.0/10" to 1_700_000_000_000L),
             appAllowlistEnabled = true,
             appAllowlist = setOf("com.example.app"),
+            appLastUsed = mapOf("com.example.app" to 1_700_000_100_000L),
             appGraceMs = 10_000,
             callPolicyEnabled = true,
             callRules = listOf(
@@ -297,6 +311,7 @@ class FirewallDataTest {
                     action = CallAction.ALLOW,
                     service = "shell",
                     predicates = listOf(CallPredicate.Exact("argv[0]", "ls")),
+                    lastUsed = 1_700_000_200_000L,
                 ),
             ),
             promptTimeoutMs = 20_000,
@@ -305,9 +320,12 @@ class FirewallDataTest {
         val copy = FirewallConfig.fromJson(config.toJson())
         assertEquals(config.enabled, copy.enabled)
         assertEquals(config.ipAllowlist.map { it.format() }, copy.ipAllowlist.map { it.format() })
+        assertEquals(config.ipLastUsed, copy.ipLastUsed)
         assertEquals(config.appAllowlist, copy.appAllowlist)
+        assertEquals(config.appLastUsed, copy.appLastUsed)
         assertEquals(config.appGraceMs, copy.appGraceMs)
         assertEquals(config.callRules.single().predicates, copy.callRules.single().predicates)
+        assertEquals(config.callRules.single().lastUsed, copy.callRules.single().lastUsed)
         assertEquals(config.promptTimeoutMs, copy.promptTimeoutMs)
         assertEquals(config.redactAudit, copy.redactAudit)
     }

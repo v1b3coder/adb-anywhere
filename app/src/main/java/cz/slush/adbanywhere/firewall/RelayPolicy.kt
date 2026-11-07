@@ -30,9 +30,16 @@ class FirewallPolicy(
     private val pending: () -> Boolean,
     private val saveRule: (CallRule) -> Unit,
     private val audit: (AuditEvent) -> Unit,
+    private val onRuleUsed: (String) -> Unit = {},
 ) : RelayPolicy {
-    override fun evaluate(call: AdbCall): CallVerdict =
-        CallRules.evaluate(call, config())
+    override fun evaluate(call: AdbCall): CallVerdict {
+        val config = config()
+        val verdict = CallRules.evaluate(call, config)
+        verdict.ruleId
+            ?.takeIf { id -> config.callRules.any { it.id == id } }
+            ?.let(onRuleUsed)
+        return verdict
+    }
 
     override suspend fun prompt(
         call: AdbCall,
@@ -53,9 +60,11 @@ class FirewallPolicy(
             ),
         )
         val response = prompt(request, timeoutMs)
+        val now = System.currentTimeMillis()
         when (response?.decision) {
-            PromptDecision.ALWAYS_ALLOW -> saveRule(CallRule.forCall(call, CallAction.ALLOW))
-            PromptDecision.CUSTOM -> response.rule?.let(saveRule)
+            PromptDecision.ALWAYS_ALLOW ->
+                saveRule(CallRule.forCall(call, CallAction.ALLOW).copy(lastUsed = now))
+            PromptDecision.CUSTOM -> response.rule?.let { saveRule(it.copy(lastUsed = now)) }
             else -> Unit
         }
         return response

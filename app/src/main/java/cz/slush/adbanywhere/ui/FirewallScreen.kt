@@ -53,6 +53,7 @@ import cz.slush.adbanywhere.firewall.AuditEvent
 import cz.slush.adbanywhere.firewall.CallRule
 import cz.slush.adbanywhere.firewall.FirewallConfig
 import cz.slush.adbanywhere.service.ControlState
+import kotlinx.coroutines.delay
 
 @Composable
 fun FirewallScreen(
@@ -83,7 +84,14 @@ fun FirewallScreen(
     var showApps by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<CallRule?>(null) }
     var apps by remember { mutableStateOf<List<AppEntry>>(emptyList()) }
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) { apps = launcherApps() }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(60_000L)
+            now = System.currentTimeMillis()
+        }
+    }
     LaunchedEffect(config.appGraceMs) { grace = (config.appGraceMs / 1000).toString() }
     LaunchedEffect(config.promptTimeoutMs) { timeout = (config.promptTimeoutMs / 1000).toString() }
 
@@ -173,11 +181,13 @@ fun FirewallScreen(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(
-                            network.format(),
-                            modifier = Modifier.weight(1f),
-                            fontFamily = FontFamily.Monospace,
-                        )
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                network.format(),
+                                fontFamily = FontFamily.Monospace,
+                            )
+                            LastUsed(config.ipLastUsed[network.format()] ?: 0L, now)
+                        }
                         IconButton(onClick = { onRemoveIp(network.format()) }) {
                             Icon(Icons.Rounded.Delete, contentDescription = "Remove ${network.format()}")
                         }
@@ -217,11 +227,13 @@ fun FirewallScreen(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(
-                            packageName,
-                            modifier = Modifier.weight(1f),
-                            fontFamily = FontFamily.Monospace,
-                        )
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                packageName,
+                                fontFamily = FontFamily.Monospace,
+                            )
+                            LastUsed(config.appLastUsed[packageName] ?: 0L, now)
+                        }
                         IconButton(onClick = { onRemoveApp(packageName) }) {
                             Icon(Icons.Rounded.Delete, contentDescription = "Remove $packageName")
                         }
@@ -277,11 +289,21 @@ fun FirewallScreen(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Column(Modifier.weight(1f)) {
-                            Text(
-                                "${rule.action.name} ${rule.service}" +
-                                    if (rule.rawShell) " (raw shell prefix)" else "",
-                                style = MaterialTheme.typography.labelLarge,
-                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    "${rule.action.name} ${rule.service}" +
+                                        if (rule.rawShell) " (raw shell prefix)" else "",
+                                    modifier = Modifier.weight(1f),
+                                    style = MaterialTheme.typography.labelLarge,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                LastUsed(
+                                    rule.lastUsed,
+                                    now,
+                                    Modifier.padding(start = 8.dp),
+                                )
+                            }
                             Text(
                                 rule.predicates.joinToString { predicate ->
                                     "${predicate.field}=${predicate.toJson().optString("value").ifBlank { "*" }}"
@@ -421,6 +443,16 @@ private fun AppPickerDialog(
             }
         }
     }
+}
+
+@Composable
+private fun LastUsed(lastUsed: Long, now: Long, modifier: Modifier = Modifier) {
+    Text(
+        relativeTime(lastUsed, now),
+        modifier = modifier,
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }
 
 @Composable
