@@ -76,16 +76,19 @@ These are facts from AOSP `main`, not assumptions.
    adbd startup by `access("/dev/usb-ffs/adb/ep0", F_OK)`, not from the live
    cable state. `ADB_WIFI_ENABLED=0` stops the TLS server; `ADB_ENABLED=0` stops
    adbd.
-9. **The TLS port is published through Android 16.**
-   `service.adb.tls.port` is `adbd_prop` and `getprop` returns it to an
-   unprivileged process (`adb_wifi.cpp:149-187`). AOSP `main` after Android 16
-   stops setting it and delivers the port to the framework over the auth socket
-   instead. The app reads the property when it is present and otherwise finds the
-   port live from the socket: it probes the shell-owned listening ports with the
-   app key, and only the system adbd's TLS listener answers the handshake (the
-   app's own plain listener rejects it). The mDNS advertisement and the port from
-   the last successful bootstrap are the fallback. A remembered port is a hint: the
-   app connects to it before it trusts it.
+9. **The TLS port is not readable by the app.**
+   `service.adb.tls.port` is `adbd_prop`, and `system_internal_prop` adds
+   `neverallow { domain -coredomain } adbd_prop:file no_rw_file_perms`; only
+   `system_server` and the rest of `coredomain` read it, so `getprop` from the
+   app returns empty. That empty value is the device evidence, not proof that a
+   release stopped publishing the port. AOSP `main` after Android 16 stops
+   setting it and delivers the port to the framework over the auth socket; that
+   socket is a private `system_server` channel (`adbd`, `0660 system system`).
+   The app's discovery path is mDNS (`_adb-tls-connect._tcp`), the same
+   advertisement the host `adb` uses. When mDNS is unavailable the app falls back
+   to a TLS handshake against the shell-owned listening ports, and to the port
+   from the last successful bootstrap last. A remembered port is a hint: the app
+   connects to it before it trusts it.
 10. **`adb_enabled=0` stops adbd.**
     `AdbService.setAdbEnabled(false, USB)` calls `stopAdbd()`, and
     `UsbDeviceManager` removes ADB from the USB functions and calls
@@ -440,13 +443,16 @@ system adbd has no TCP listener, so there is nothing to monitor or turn off.
 
 ### Port discovery
 
-- Primary: `getprop service.adb.tls.port` (Android 11-16, `adbd_prop`, readable).
-- Live: the shell-owned listening ports probed with the app key; only the system
-  adbd's TLS listener answers the handshake (AOSP `main` after Android 16).
-- Fallback: `NsdManager` discovery of `_adb-tls-connect._tcp`.
+- Primary: `NsdManager` discovery of `_adb-tls-connect._tcp`; the host `adb`
+  uses the same advertisement.
+- Fallback: the shell-owned listening ports probed with the app key; only the
+  system adbd's TLS listener answers the handshake.
 - Last fallback: the port from the last successful bootstrap, which the app
   connects to before it trusts it.
 - Last resort: the user enters the port shown in Settings.
+- `getprop service.adb.tls.port` is not app-readable: `adbd_prop` is
+  `system_internal_prop`, so only `coredomain` reads it. The property and the
+  auth socket are internal to adbd and `system_server`.
 - The plain target port is chosen by the app and set with `tcpip:<port>`;
   it is stored in prefs and re-applied after boot.
 

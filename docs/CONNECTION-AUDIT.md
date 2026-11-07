@@ -271,11 +271,13 @@ restart.
   `10.0.2.16:45525`, the next one `10.0.2.16:35783`, and
   `system wireless debugging is up on 127.0.0.1:35783`.
   **False claim:** "Android 13+ does not publish `service.adb.tls.port`."
-  Android 11-16 still publish it (`adb_wifi.cpp`, `SetProperty`) and the
-  framework polls it. The empty property in the device evidence above is the I5
-  symptom (`adb_wifi_enabled=1` with the TLS server down), not a platform
-  change. Only AOSP `main` after Android 16 stops publishing it and delivers
-  the port to the framework over the auth socket. See `DESIGN.md` §4.9.
+  Android 11-16 still publish it (`adb_wifi.cpp`, `SetProperty`). The second
+  false claim is that the app can read it: `adbd_prop` is
+  `system_internal_prop`, so only `coredomain` reads it and `getprop` from the
+  app returns empty. The empty property in the device evidence above is that
+  denial (or the I5 symptom, a down TLS server), not a platform change. Only
+  AOSP `main` after Android 16 stops publishing it and delivers the port to the
+  framework over the auth socket. See `DESIGN.md` §4.9.
 - `SystemAdb` then connected on the TLS port, granted
   `WRITE_SECURE_SETTINGS`, deployed the patched adbd on
   `127.0.0.1:15037` and hardened `ADB_WIFI_ENABLED=0`.
