@@ -115,7 +115,7 @@ These are facts from AOSP `main`, not assumptions.
 | D8 | UI stack | Kotlin, Jetpack Compose, Material 3; package `cz.slush.adbanywhere` |
 | D9 | Bootstrap pairing | One `RemoteInput` notification: reply with `code:port` from the open dialog |
 | D10 | Patched adbd transports | TCP only; USB and vsock disabled |
-| D11 | Settings UI | Shows the current ADB state, any warning in the UI and in the persistent foreground notification, and the opt-in "Turn system adb off on Stop" switch |
+| D11 | Settings UI | Shows the current ADB state, any warning in the UI and in the persistent foreground notification, and the opt-in "Turn system adb off on Stop" switch. The System adb card shows only the system adbd's own state; the app's loopback channel is shown in the Ports card. The card re-reads when the tab is entered and when the app returns to the foreground, and the read runs off the main thread |
 | D12 | Failure policy | Explicit error and recovery steps; no silent fallback and no random-port redirect |
 | D13 | Firewall placement | App-side Kotlin relay in `ControlService`; byte-transparent; ADB key auth stays end-to-end between the developer machine and `adbd` |
 | D14 | Listener ownership | Exactly one component owns `<vpn-ip>:<portB>`: the patched `adbd` when the firewall is off, the app relay when it is on. The open port, not a pref, decides which |

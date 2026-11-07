@@ -24,6 +24,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -36,6 +37,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import cz.slush.adbanywhere.data.AdbStatus
 import cz.slush.adbanywhere.service.ControlState
 import cz.slush.adbanywhere.service.SystemSettings
@@ -66,6 +70,17 @@ fun SettingsScreen(
     }
     var status by remember { mutableStateOf<AdbStatus?>(null) }
     var reload by remember { mutableStateOf(0) }
+    // Entering the tab composes this screen, so the effect below refreshes it
+    // then; the observer covers a return from the background. The platform read
+    // runs on IO, so the UI keeps the last value and never waits for it.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) reload++
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     LaunchedEffect(reload, state.phase) {
         status = withContext(Dispatchers.IO) { SystemSettings.status(context) }
     }
