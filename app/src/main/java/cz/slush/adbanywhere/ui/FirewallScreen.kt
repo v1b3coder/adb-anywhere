@@ -27,7 +27,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import android.provider.Settings
@@ -141,22 +140,12 @@ fun FirewallScreen(
 
         item {
             SectionCard("IP allowlist") {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        "Only listed IPv4 addresses and CIDR ranges may connect. " +
-                            "An empty list denies every peer.",
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Switch(
-                        checked = config.ipAllowlistEnabled,
-                        onCheckedChange = onToggleIpAllowlist,
-                    )
-                }
+                SwitchRow(
+                    checked = config.ipAllowlistEnabled,
+                    onCheckedChange = onToggleIpAllowlist,
+                    description = "Only listed IPv4 addresses and CIDR ranges may connect. " +
+                        "An empty list denies every peer.",
+                )
                 OutlinedTextField(
                     value = ip,
                     onValueChange = {
@@ -189,8 +178,12 @@ fun FirewallScreen(
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
-                        Column(Modifier.weight(1f)) {
+                        Column(
+                            Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
                             Text(
                                 network.format(),
                                 fontFamily = FontFamily.Monospace,
@@ -207,23 +200,13 @@ fun FirewallScreen(
 
         item {
             SectionCard("App allowlist") {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        "External ADB is available only while one of the selected apps is " +
-                            "in the foreground. A ${config.appGraceMs / 1000}s grace period " +
-                            "covers a short switch.",
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Switch(
-                        checked = config.appAllowlistEnabled,
-                        onCheckedChange = onToggleAppAllowlist,
-                    )
-                }
+                SwitchRow(
+                    checked = config.appAllowlistEnabled,
+                    onCheckedChange = onToggleAppAllowlist,
+                    description = "External ADB is available only while one of the selected " +
+                        "apps is in the foreground. A ${config.appGraceMs / 1000}s grace " +
+                        "period covers a short switch.",
+                )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -235,8 +218,12 @@ fun FirewallScreen(
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
-                        Column(Modifier.weight(1f)) {
+                        Column(
+                            Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
                             Text(
                                 packageName,
                                 fontFamily = FontFamily.Monospace,
@@ -253,22 +240,12 @@ fun FirewallScreen(
 
         item {
             SectionCard("Call policy") {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        "Rules first; an unmatched call asks. A shell is a capability, " +
-                            "not a sandbox.",
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Switch(
-                        checked = config.callPolicyEnabled,
-                        onCheckedChange = onToggleCallPolicy,
-                    )
-                }
+                SwitchRow(
+                    checked = config.callPolicyEnabled,
+                    onCheckedChange = onToggleCallPolicy,
+                    description = "Rules first; an unmatched call asks. A shell is a " +
+                        "capability, not a sandbox.",
+                )
                 FloatingPromptRow(onRequestOverlayAccess)
                 OutlinedTextField(
                     value = grace,
@@ -296,6 +273,7 @@ fun FirewallScreen(
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
                         Column(Modifier.weight(1f)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -339,6 +317,7 @@ fun FirewallScreen(
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Text(
                         "The last ${audit.size} decisions. Stored on the device and " +
@@ -349,21 +328,11 @@ fun FirewallScreen(
                     )
                     TextButton(onClick = onClearAudit) { Text("Clear") }
                 }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        "Redact field values",
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Switch(
-                        checked = config.redactAudit,
-                        onCheckedChange = onToggleRedactAudit,
-                    )
-                }
+                SwitchRow(
+                    checked = config.redactAudit,
+                    onCheckedChange = onToggleRedactAudit,
+                    description = "Redact field values",
+                )
                 audit.takeLast(30).reversed().forEach { event ->
                     Text(
                         "${event.event} ${event.service} ${event.peer}".trim(),
@@ -465,7 +434,10 @@ private fun AppPickerDialog(
                                 },
                                 modifier = Modifier.fillMaxWidth(),
                             ) {
-                                Column(Modifier.fillMaxWidth()) {
+                                Column(
+                                    Modifier.fillMaxWidth(),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                                ) {
                                     Text(app.label)
                                     Text(
                                         app.packageName,
@@ -511,6 +483,7 @@ private fun FloatingPromptRow(onRequestOverlayAccess: () -> Unit) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Column(Modifier.weight(1f)) {
             Text("Floating prompt", style = MaterialTheme.typography.labelLarge)

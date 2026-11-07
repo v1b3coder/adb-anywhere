@@ -21,7 +21,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -91,22 +90,12 @@ fun SettingsScreen(
     ) {
         item {
             SectionCard("Firewall") {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        "Adds a proxy on the VPN port, IP and app allowlists, call " +
-                            "policy and an audit log. The Firewall tab appears when this is on.",
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Switch(
-                        checked = firewallEnabled,
-                        onCheckedChange = onToggleFirewall,
-                    )
-                }
+                SwitchRow(
+                    checked = firewallEnabled,
+                    onCheckedChange = onToggleFirewall,
+                    description = "Adds a proxy on the VPN port, IP and app allowlists, " +
+                        "call policy and an audit log. The Firewall tab appears when this is on.",
+                )
             }
         }
 
@@ -235,44 +224,24 @@ fun SettingsScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        "Turn system adb off on Stop\n" +
-                            "On: Stop turns ADB off and Start turns it back on. Android may " +
-                            "drop the paired key, so pair again on the next Start.",
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Switch(
-                        checked = turnSystemAdbOffOnStop,
-                        onCheckedChange = onToggleTurnSystemAdbOffOnStop,
-                    )
-                }
+                SwitchRow(
+                    checked = turnSystemAdbOffOnStop,
+                    onCheckedChange = onToggleTurnSystemAdbOffOnStop,
+                    title = "Turn system adb off on Stop",
+                    description = "On: Stop turns ADB off and Start turns it back on. " +
+                        "Android may drop the paired key, so pair again on the next Start.",
+                )
             }
         }
 
         item {
             SectionCard("Diagnostic log") {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        "Records the app's events, actions and applied changes in a bounded " +
-                            "on-device file, shown in Logs → App. Off by default.",
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Switch(
-                        checked = diagnosticLog,
-                        onCheckedChange = onToggleDiagnosticLog,
-                    )
-                }
+                SwitchRow(
+                    checked = diagnosticLog,
+                    onCheckedChange = onToggleDiagnosticLog,
+                    description = "Records the app's events, actions and applied changes " +
+                        "in a bounded on-device file, shown in Logs → App. Off by default.",
+                )
             }
         }
 
@@ -286,6 +255,7 @@ fun SettingsScreen(
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     FingerprintText(appKey.ifBlank { "generating…" }, Modifier.weight(1f))
                     IconButton(onClick = { if (appKey.isNotBlank()) onCopy(appKey) }) {
