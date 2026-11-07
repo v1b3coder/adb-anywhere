@@ -454,6 +454,8 @@ system adbd has no TCP listener, so there is nothing to monitor or turn off.
 - `getprop service.adb.tls.port` is not app-readable: `adbd_prop` is
   `system_internal_prop`, so only `coredomain` reads it. The property and the
   auth socket are internal to adbd and `system_server`.
+- Every candidate is verified with the TLS handshake, so a stale advertisement or
+  a plain listener is never reported as the system TLS port.
 - The plain target port is chosen by the app and set with `tcpip:<port>`;
   it is stored in prefs and re-applied after boot.
 
