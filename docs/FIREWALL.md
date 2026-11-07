@@ -125,9 +125,9 @@ instead.
   module cannot be enabled and the UI says why. Work-profile apps are out of
   scope for the first version.
 - ADB Anywhere itself appears in the picker and can be allowlisted like any other
-  app, so external ADB keeps working while its own UI is in the foreground. The
-  picker warns that this is the weakest choice, because it covers every screen of
-  the app, not only the audit log.
+  app, so external ADB keeps working while its own UI is in the foreground. Picking
+  it opens a confirmation that this is the weakest choice, because it covers every
+  screen of the app, not only the audit log.
 - The approval dialog is not a foreground app. A resumed `CallPromptActivity`
   leaves the previous package in place, so a call that raises the dialog cannot
   make the app allowlist pass by itself. A visible prompt is still exempt from the

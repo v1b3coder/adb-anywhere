@@ -18,6 +18,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -395,12 +396,34 @@ private fun AppPickerDialog(
     onAdd: (String) -> Unit,
 ) {
     var query by remember { mutableStateOf("") }
+    var confirmSelf by remember { mutableStateOf(false) }
     val filtered = remember(apps, query) {
         apps.orEmpty().filter {
             query.isBlank() ||
                 it.label.contains(query, ignoreCase = true) ||
                 it.packageName.contains(query, ignoreCase = true)
         }
+    }
+    // The warning is only worth interrupting for once the user actually picks
+    // this app, so it is a confirmation step rather than a banner over the list.
+    if (confirmSelf) {
+        AlertDialog(
+            onDismissRequest = { confirmSelf = false },
+            title = { Text("Allow ADB Anywhere itself?") },
+            text = {
+                Text(
+                    "Allowing ADB Anywhere itself is insecure: external ADB stays " +
+                        "open while this app is in front, not only while you watch " +
+                        "the log. The approval dialog is not counted.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { onAdd(selfPackage) }) { Text("Allow") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmSelf = false }) { Text("Cancel") }
+            },
+        )
     }
     Dialog(
         onDismissRequest = onDismiss,
@@ -413,15 +436,6 @@ private fun AppPickerDialog(
         ) {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Allow ADB for an app", style = MaterialTheme.typography.titleLarge)
-                if (filtered.any { it.packageName == selfPackage }) {
-                    Text(
-                        "Allowing ADB Anywhere itself is insecure: external ADB stays " +
-                            "open while this app is in front, not only while you watch " +
-                            "the log. The approval dialog is not counted.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
                 OutlinedTextField(
                     value = query,
                     onValueChange = { query = it },
@@ -442,7 +456,13 @@ private fun AppPickerDialog(
                     LazyColumn(Modifier.fillMaxWidth().heightIn(max = 400.dp)) {
                         items(filtered) { app ->
                             TextButton(
-                                onClick = { onAdd(app.packageName) },
+                                onClick = {
+                                    if (app.packageName == selfPackage) {
+                                        confirmSelf = true
+                                    } else {
+                                        onAdd(app.packageName)
+                                    }
+                                },
                                 modifier = Modifier.fillMaxWidth(),
                             ) {
                                 Column(Modifier.fillMaxWidth()) {
