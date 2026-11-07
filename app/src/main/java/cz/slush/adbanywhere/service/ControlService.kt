@@ -717,9 +717,10 @@ class ControlService : Service() {
         }
         // The advertisement appears a few seconds after the setting write, so
         // mDNS must be retried during the wait instead of resolved once before
-        // the loop. On Android 13+ the port is only in the advertisement.
+        // the loop. Android 11-16 publish the port; AOSP main after Android 16
+        // delivers it over the auth socket instead.
         while (System.currentTimeMillis() < deadline) {
-            system.tlsPort()?.let(ports::add)
+            SystemAdb.systemTlsPort()?.let(ports::add)
             val now = System.currentTimeMillis()
             if (ports.none(SystemSettings::isLocalPortOpen) && now >= nextDiscovery) {
                 nextDiscovery = now + MDNS_RETRY_MS
@@ -1079,7 +1080,7 @@ class ControlService : Service() {
         WirelessDebuggingGuard(
             readSetting = { SystemSettings.adbWifiEnabled(context) },
             writeDisabled = { SystemSettings.setAdbWifiEnabled(context, false) },
-            readTlsPort = { system.tlsPort() },
+            readTlsPort = { SystemAdb.systemTlsPort() },
             isPortOpen = { port ->
                 runCatching {
                     Socket().use { it.connect(InetSocketAddress("127.0.0.1", port), 300) }

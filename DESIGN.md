@@ -43,8 +43,9 @@ These are facts from AOSP `main`, not assumptions.
    Wi-Fi disconnect, empty BSSID, or BSSID change
    (`AdbDebuggingManager.java:611-658`). The TLS server is toggled by
    `persist.adb.tls_server.enable` (`system_adbd_prop`, system-only) and
-   publishes `service.adb.tls.port` where the release still does
-   (`adbd_prop`, readable).
+   publishes `service.adb.tls.port` (`adbd_prop`, readable) through Android 16;
+   AOSP `main` delivers the port to the framework over the auth socket instead
+   (`adbd_send_tls_server_port`, `adbd_auth.h:194`, `__INTRODUCED_IN(37)`).
 2. **Legacy `adb tcpip` is not Wi-Fi gated.**
    `tcpip:<port>` sets `service.adb.tcp.port`; adbd listens on `tcp:<port>` and
    `vsock:<port>` on all interfaces (`main.cpp:269-296`,
@@ -75,12 +76,13 @@ These are facts from AOSP `main`, not assumptions.
    adbd startup by `access("/dev/usb-ffs/adb/ep0", F_OK)`, not from the live
    cable state. `ADB_WIFI_ENABLED=0` stops the TLS server; `ADB_ENABLED=0` stops
    adbd.
-9. **The TLS port is not published on every release.**
+9. **The TLS port is published through Android 16.**
    `service.adb.tls.port` is `adbd_prop` and `getprop` returns it to an
-   unprivileged process on older releases; Android 13+ no longer publishes it,
-   so the mDNS advertisement and the port remembered from the last successful
-   bootstrap are the only sources. A remembered port is a hint: the app connects
-   to it before it trusts it.
+   unprivileged process (`adb_wifi.cpp:149-187`). AOSP `main` after Android 16
+   stops setting it and delivers the port to the framework over the auth socket
+   instead. The app reads the property when it is present and otherwise uses the
+   mDNS advertisement and the port from the last successful bootstrap. A
+   remembered port is a hint: the app connects to it before it trusts it.
 10. **`adb_enabled=0` stops adbd.**
     `AdbService.setAdbEnabled(false, USB)` calls `stopAdbd()`, and
     `UsbDeviceManager` removes ADB from the USB functions and calls
@@ -435,9 +437,9 @@ system adbd has no TCP listener, so there is nothing to monitor or turn off.
 
 ### Port discovery
 
-- Primary: the port from the last successful bootstrap, which the app connects
-  to before it trusts it.
-- `getprop service.adb.tls.port` when the release still publishes it.
+- Primary: `getprop service.adb.tls.port` (Android 11-16, `adbd_prop`, readable).
+- Then: the port from the last successful bootstrap, which the app connects to
+  before it trusts it.
 - Fallback: `NsdManager` discovery of `_adb-tls-connect._tcp`.
 - Last resort: the user enters the port shown in Settings.
 - The plain target port is chosen by the app and set with `tcpip:<port>`;
@@ -606,6 +608,9 @@ port.
   pending prompt is lost and denied. The loopback channel and the recovery steps are
   unaffected.
 - QR pairing needs a QR generator on the developer machine; `qrencode` is enough.
+- Hardening on a release that no longer publishes the TLS port has only the
+  setting as evidence that the system TLS listener is closed; the app cannot verify
+  the listener itself there.
 
 ## 13. Provenance
 

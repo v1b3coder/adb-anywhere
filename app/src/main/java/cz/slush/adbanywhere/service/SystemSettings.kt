@@ -11,6 +11,7 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.provider.Settings
+import cz.slush.adbanywhere.adb.SystemAdb
 import cz.slush.adbanywhere.data.AdbStatus
 import cz.slush.adbanywhere.data.Prefs
 import java.net.InetSocketAddress
@@ -68,13 +69,14 @@ object SystemSettings {
     }
 
     /**
-     * The system adbd's wireless-debugging port while it listens. Android 13+ no
-     * longer publishes service.adb.tls.port, so the port remembered from the last
-     * bootstrap is the only candidate. A port that belongs to the custom adb is
-     * never reported: it is our listener, not the system one.
+     * The system adbd's wireless-debugging port while it listens. Android 11-16
+     * publish service.adb.tls.port; AOSP main after Android 16 delivers it to the
+     * framework over the auth socket instead, so the port remembered from the last
+     * bootstrap is the fallback. A port that belongs to the custom adb is never
+     * reported: it is our listener, not the system one.
      */
     private fun systemWirelessPort(prefs: Prefs): Int {
-        val port = prefs.lastTlsPort
+        val port = SystemAdb.systemTlsPort() ?: prefs.lastTlsPort
         if (port <= 0 || port == prefs.loopbackPort || port == prefs.vpnPort) return 0
         return if (isLocalPortOpen(port)) port else 0
     }

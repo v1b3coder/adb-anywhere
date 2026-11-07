@@ -55,7 +55,7 @@ class SystemAdb(
         }
 
         val candidates = LinkedHashSet<Int>()
-        readProp("service.adb.tls.port")?.toIntOrNull()?.let(candidates::add)
+        systemTlsPort()?.let(candidates::add)
         prefs.lastTlsPort.takeIf { it > 0 }?.let(candidates::add)
         candidates += listeningShellPorts()
         candidates += 5555
@@ -70,9 +70,10 @@ class SystemAdb(
             pairingRequired = pairingRequired || manager.pairingRequired
         }
 
-        // Android 13+ no longer publishes service.adb.tls.port; the port is only
-        // in the mDNS advertisement. Keep this as a fallback: the settings write
-        // above is the primary bootstrap and refreshes the advertisement.
+        // Android 11-16 publish service.adb.tls.port; AOSP main after Android 16
+        // delivers the port to the framework over the auth socket instead. Keep
+        // mDNS as a fallback: the settings write above is the primary bootstrap
+        // and refreshes the advertisement.
         for (port in discoverTlsPorts()) {
             if (port == prefs.loopbackPort || port == prefs.vpnPort) continue
             if (manager.connectTo("127.0.0.1", port)) {
@@ -113,9 +114,6 @@ class SystemAdb(
     fun settingsPut(key: String, value: String): Boolean =
         shell.exec("settings put global $key $value").ok
 
-    /** The system wireless debugging TLS port; null when adbd does not listen. */
-    fun tlsPort(): Int? = WirelessDebuggingGuard.parseTlsPort(readProp("service.adb.tls.port"))
-
     fun grantSelfPermission(): Boolean {
         val result = shell.exec(
             "pm grant ${context.packageName} android.permission.WRITE_SECURE_SETTINGS",
@@ -128,24 +126,6 @@ class SystemAdb(
             return check.stdout.contains("granted=true")
         }
         return true
-    }
-
-    private fun readProp(name: String): String? {
-        val fromBinary = runCatching {
-            val process = ProcessBuilder("/system/bin/getprop", name)
-                .redirectErrorStream(true)
-                .start()
-            val value = process.inputStream.bufferedReader().readText().trim()
-            process.waitFor()
-            value
-        }.getOrNull()
-        if (!fromBinary.isNullOrEmpty()) return fromBinary
-
-        return runCatching {
-            val clazz = Class.forName("android.os.SystemProperties")
-            val method = clazz.getMethod("get", String::class.java)
-            method.invoke(null, name) as? String
-        }.getOrNull()?.takeIf { it.isNotEmpty() }
     }
 
     private fun listeningShellPorts(): List<Int> {
@@ -162,5 +142,33 @@ class SystemAdb(
             }
         }
         return ports.distinct()
+    }
+
+    companion object {
+        /**
+         * The system wireless debugging TLS port, read from the property adbd
+         * publishes on Android 11-16; null when the release does not publish it
+         * or when adbd does not listen.
+         */
+        fun systemTlsPort(): Int? =
+            WirelessDebuggingGuard.parseTlsPort(readProp("service.adb.tls.port"))
+
+        private fun readProp(name: String): String? {
+            val fromBinary = runCatching {
+                val process = ProcessBuilder("/system/bin/getprop", name)
+                    .redirectErrorStream(true)
+                    .start()
+                val value = process.inputStream.bufferedReader().readText().trim()
+                process.waitFor()
+                value
+            }.getOrNull()
+            if (!fromBinary.isNullOrEmpty()) return fromBinary
+
+            return runCatching {
+                val clazz = Class.forName("android.os.SystemProperties")
+                val method = clazz.getMethod("get", String::class.java)
+                method.invoke(null, name) as? String
+            }.getOrNull()?.takeIf { it.isNotEmpty() }
+        }
     }
 }

@@ -1,8 +1,10 @@
 /*
  * WirelessDebuggingGuard - enforces D5: every check re-asserts
- * adb_wifi_enabled=0 and only reports success when the system TLS listener is
- * gone, not merely when the setting reads off. The platform reads, writes and the
- * wait are injected so the JVM tests can drive every outcome.
+ * adb_wifi_enabled=0 and reports success only when the system TLS listener is
+ * gone, not merely when the setting reads off. Android 11-16 publish the port, so
+ * the listener is checked; a release that does not publish it leaves the setting
+ * as the only evidence. The platform reads, writes and the wait are injected so the
+ * JVM tests can drive every outcome.
  */
 package cz.slush.adbanywhere.data
 
@@ -51,8 +53,10 @@ class WirelessDebuggingGuard(
         const val RETRY_DELAY_MS = 300L
 
         /**
-         * adbd publishes the TLS port and clears the property when the server
-         * stops; 0 and out-of-range values are not usable ports.
+         * adbd publishes the TLS port on Android 11-16 and clears the property
+         * when the server stops; 0 and out-of-range values are not usable ports.
+         * AOSP main after Android 16 does not publish it, so the setting is the
+         * only evidence there.
          */
         fun parseTlsPort(raw: String?): Int? =
             raw?.trim()?.toIntOrNull()?.takeIf { it in 1..65535 }
