@@ -1,7 +1,7 @@
 # adb-anywhere — Design
 
-Status: draft for review
-Date: 2026-11-03
+Status: implemented; records the decisions the code follows
+Date: 2026-11-06
 Scope: stock Android phones, no root
 
 ## 1. Problem
@@ -29,7 +29,9 @@ control.
 - Rooted devices, Magisk, KernelSU, custom ROMs.
 - Replacing the system `adbd` on the system partition.
 - A general-purpose VPN or firewall for other apps.
-- Call-level ADB policy in the first release (see phase 3).
+- A sandbox for `shell`. Call policy is policy and audit, not isolation
+  (see §8 and `docs/FIREWALL.md`).
+- Filtering the app's own loopback channel.
 - TV and set-top boxes.
 
 ## 4. Verified platform constraints
@@ -81,38 +83,52 @@ These are facts from AOSP `main`, not assumptions.
     `stopAdbdForTransport(USB)` (`AdbService.java:444-469`,
     `UsbDeviceManager.java:2494-2503`). This is a clean off switch, unlike
     `usb:`.
+11. **A per-app VPN that excludes the app does not deliver inbound packets to
+    its UID.** The relay listens in the app's UID, so an excluded app cannot
+    accept on the VPN address even though the bind succeeds. The app detects the
+    exclusion and fails with an instruction instead of reporting a listener that
+    cannot be reached.
 
 ## 5. Product decisions
 
 | # | Decision | Choice |
 |---|---|---|
 | D1 | Device support | Stock Android 12+, no root |
-| D2 | Data plane | One patched `adbd` instance with two listeners: `127.0.0.1:<portA>` for the app, `<vpn-ip>:<portB>` for developer machines |
+| D2 | Data plane | Two listener modes. Firewall off: one patched `adbd` with `127.0.0.1:<portA>` and `<vpn-ip>:<portB>`. Firewall on: the patched `adbd` binds only `127.0.0.1:<portA>` and the app relay owns `<vpn-ip>:<portB>` |
 | D3 | App key | Ephemeral RSA keypair generated on first run; private key in app-private storage; public key in the patched adbd key file |
 | D4 | Developer machine pairing | QR or pasted public key from the developer machine; app confirms the fingerprint; user labels the machine; no pairing listener on the phone |
 | D5 | System adbd lifecycle | Start writes `ADB_ENABLED=1` when it reads 0, then tries the system adbd's existing TCP listeners; on Wi-Fi it falls back to `ADB_WIFI_ENABLED=1` even when it already reads 1. Stop stops only the patched adbd; the opt-in Settings switch "Turn system adb off on Stop" makes Stop write `ADB_ENABLED=0` |
-| D6 | Watchdog | Keeps `ADB_WIFI_ENABLED=0`; probes 5555 on every tick and reports the open listener as the §8 residual warning; restarts the patched adbd through the system adbd when reachable; never writes `ADB_ENABLED` (the opt-in switch is the only writer) |
-| D7 | Policy | Patched adbd enforces per-key and per-service rules; VPN ACL is the outer boundary |
+| D6 | Watchdog | Keeps `ADB_WIFI_ENABLED=0`; probes 5555 on every tick and reports the open listener as the §8 residual warning; restarts the patched adbd through the system adbd when reachable; never writes `ADB_ENABLED` (only Start does, and only when it reads 0) |
+| D7 | Policy | The app enforces policy, not the daemon. The optional relay parses `A_OPEN` and applies the IP allowlist, the foreground-app allowlist and call rules. The patched `adbd` stays policy-free; the VPN ACL is the outer boundary |
 | D8 | UI stack | Kotlin, Jetpack Compose, Material 3; package `cz.slush.adbanywhere` |
 | D9 | Bootstrap pairing | One `RemoteInput` notification: reply with `code:port` from the open dialog |
 | D10 | Patched adbd transports | TCP only; USB and vsock disabled |
 | D11 | Settings UI | Shows the current ADB state, any warning in the UI and in the persistent foreground notification, and the opt-in "Turn system adb off on Stop" switch |
 | D12 | Failure policy | Explicit error and recovery steps; no silent fallback and no random-port redirect |
+| D13 | Firewall placement | App-side Kotlin relay in `ControlService`; byte-transparent; ADB key auth stays end-to-end between the developer machine and `adbd` |
+| D14 | Listener ownership | Exactly one component owns `<vpn-ip>:<portB>`: the patched `adbd` when the firewall is off, the app relay when it is on. The open port, not a pref, decides which |
+| D15 | Listener mode persistence | `firewallEnabled` is the intent; `daemonFirewallMode` is the mode the running daemon was started with. A mismatch restarts the daemon and the relay |
+| D16 | Port range | The loopback and VPN ports are below 32768, outside Android's ephemeral range |
+| D17 | State publication | `ControlState` is the only UI source of truth. Each listener publishes its own state, `setup()` never resets a live listener's state, and `firewallDown` is derived |
+| D18 | Restart coordination | One daemon identity (`--listen` in `ps`, `/proc` fallback), one restart-script naming scheme, a PID marker, and a wait for the predecessor |
 
 ## 6. Architecture
 
-Three ADB processes and one app process:
+Two ADB endpoints and one app process, in two listener modes:
 
-| Component | Runs as | Listener | Role |
-|---|---|---|---|
-| System `adbd` | `shell` (retail) | USB (left on); TLS before `ADB_WIFI_ENABLED=0`; TCP 5555 only on some devices | Bootstrap; key auth; system services |
-| Patched `adbd` | `shell` | `127.0.0.1:<portA>` and `<vpn-ip>:<portB>` | Only ADB endpoint for the app and developer machines; key file and logs |
-| App | app uid | none | Control plane: deploys, keys, watchdog, UI |
-| Developer machine `adb` | host | none | Client |
+| Component | Runs as | Listener, firewall off | Listener, firewall on | Role |
+|---|---|---|---|---|
+| System `adbd` | `shell` (retail) | USB (left on); TLS before `ADB_WIFI_ENABLED=0`; TCP 5555 only on some devices | same | Bootstrap; key auth; system services |
+| Patched `adbd` | `shell` | `127.0.0.1:<portA>`, `<vpn-ip>:<portB>` | `127.0.0.1:<portA>` | Only ADB endpoint for the app and developer machines; key file and logs |
+| App relay | app uid | none | `<vpn-ip>:<portB>` | Optional firewall: accept, policy, relay to loopback |
+| App | app uid | none | none | Control plane: deploys, keys, watchdog, UI, audit |
+| Developer machine `adb` | host | none | none | Client |
 
 The patched adbd is AOSP `adbd` vendored under `adbd/`, built as a standalone
-CMake subproject. It is the "internal proxy" in the sense that it is the only
-endpoint a developer machine can reach. There is no separate proxy process.
+CMake subproject. It is the only ADB endpoint for a developer machine while the
+firewall is off; with the firewall on, the app relay is the only endpoint and
+forwards to the daemon's loopback listener. The VPN port has exactly one owner in
+either mode.
 
 The upstream trees under `adbd/vendor/` are pristine. The patches in
 `adbd/patches/` are applied to a build copy by `adbd/build.sh`, so a re-vendor is
@@ -145,9 +161,10 @@ the APK as assets. AOSP `adbd` is Apache 2.0; ship `NOTICE` and the source offer
 
 Not implemented: USB, vsock, TLS, pairing, mDNS, `jdwp:`, `track-jdwp`,
 `track-app`, `abb:` (the shell-protocol variant), `root:`, `remount:`, `reboot:`,
-`restore:`, `disable-verity:` and `enable-verity:`. The daemon also has no per-key policy or filtering layer
-yet, so every key in the key file may open every supported service. The app no
-longer writes a `policy.tsv`; filtering will get its own design.
+`restore:`, `disable-verity:` and `enable-verity:`. The daemon has no per-key
+policy or filtering layer: every key in the key file may open every service the
+relay allows. Filtering lives in the app relay (`docs/FIREWALL.md`), not in the
+daemon.
 
 ### Key provisioning
 
@@ -204,17 +221,19 @@ because the key is idempotent; removing the key revokes it.
 
 ### Start/Stop ownership
 
-The default never writes `ADB_ENABLED`.  Start writes `ADB_WIFI_ENABLED=1`
-when the patched adbd is down and Wi-Fi is up, then waits 900 ms before it
-connects; the write is not skipped when the setting already reads 1, because the
-framework can have the setting on while its TLS server is down.  Stop stops only
-the patched adbd; the system wireless debugging and its paired keys survive as the
-recovery path.
+Start writes `ADB_ENABLED=1` only when it reads 0, because the write starts the
+system adbd and does not delete the paired key.  It then tries the system adbd's
+existing TCP listeners and, on Wi-Fi, falls back to `ADB_WIFI_ENABLED=1`, waits
+900 ms and retries; the write is not skipped when the setting already reads 1,
+because the framework can have the setting on while its TLS server is down.  Stop
+stops only the patched adbd; the system wireless debugging and its paired keys
+survive as the recovery path.  Stop never writes `ADB_ENABLED` unless the opt-in
+switch is on.
 
 The Settings switch **Turn system adb off on Stop** is the opt-in ownership:
 
-- Off (default): Start and Stop never write `ADB_ENABLED`; Stop leaves the
-  system adb and its paired key alone.
+- Off (default): Start writes `ADB_ENABLED=1` only when it reads 0, and Stop
+  never writes it, so the system adb and its paired key stay.
 - On: Start writes `ADB_ENABLED=1` when it reads 0, and Stop writes
   `ADB_ENABLED=0` and `ADB_WIFI_ENABLED=0`.  Android may drop the paired key
   when ADB is turned off, so the next Start can need a new pairing code.
@@ -273,11 +292,81 @@ Plain TCP listener:
 
 `ADB_ENABLED=0` stops adbd entirely: no TLS, no plain, no USB.
 
+### Listener modes
+
+`firewallEnabled` selects the mode. The app never runs both listeners on the VPN
+port.
+
+| Firewall | Patched `adbd` listens on | App listens on | Developer machine connects to |
+|---|---|---|---|
+| off | `127.0.0.1:<portA>`, `<vpn-ip>:<portB>` | nothing | `adbd` |
+| on | `127.0.0.1:<portA>` | `<vpn-ip>:<portB>` | the app relay, which connects to `adbd` loopback |
+
+1. The VPN port has one owner. Before the relay binds, the app checks whether the
+   port is open and who owns it: the relay itself (reuse it), the patched `adbd`
+   (restart it loopback-only), or Android's legacy plain listener (send `usb:` to the
+   system adbd, reconnect, retry). The port, not a pref, is the authority.
+2. `daemonFirewallMode` records the mode the running daemon was started with.
+   `firewallEnabled != daemonFirewallMode` forces a restart, because a daemon started
+   in the other mode holds the wrong listener set even when the persisted intent
+   already matches.
+3. A mode change stops the relay first, then restarts the daemon, then starts the
+   relay. The app process and the UI stay up; active external sessions drop.
+4. The relay binds the exact VPN address, never `0.0.0.0`, and sets `SO_REUSEADDR`
+   so a `TIME_WAIT` socket from the previous instance does not block the new bind. A
+   live listener still blocks it.
+5. The relay is the only component that can fail without killing ADB: the loopback
+   channel is independent, so a relay failure is an error state with a recovery step,
+   not a stopped daemon.
+
+### Lifecycle invariants
+
+Each invariant exists because its violation produced a real defect; the commit column
+is the fix that established it. A change that breaks one needs a test showing the new
+behavior is still correct.
+
+| # | Invariant | Prevents | Fix |
+|---|---|---|---|
+| I1 | Remove a fallback last. Every step that removes a recovery path (turning the system wireless debugging off, closing the plain listener) runs after the replacement is verified. | A relay bind failure after `ADB_WIFI_ENABLED=0` left the phone with no reachable ADB endpoint | `0803d46` |
+| I2 | One owner per port. Before binding, identify the current owner; never treat our own listener as foreign. | `vpnPortBusy` saw the relay on the VPN port, restarted the daemon and waited 10 s for a port the relay owned | `d22a63e` |
+| I3 | State has one writer. A listener publishes its own state through one function; `setup()` preserves live fields and republishes them; derived flags live in `ControlState`. | Home showed "ADB is reachable" while the Firewall tab showed "not listening" | `7e8a4df`, `55d9bbf`, `74bb129` |
+| I4 | Persisted is not actual. `paired`, `setupComplete` and `daemonFirewallMode` are hints; validate them against `user_keys`, the open port and the listener before use. | `paired=true` with only the host key in `user_keys` reported "wireless debugging is not reachable" | `77191da` |
+| I5 | Re-assert the effect, not the setting. Write `adb_wifi_enabled=1` even when it reads 1; the framework's TLS server can be down while the setting is on. | Bootstrap wrote nothing and the TLS server stayed down | `4b5596d` |
+| I6 | Intent wins over deferred work. Every cleanup and every queued setup re-checks `userWantsRunning` under `lifecycleLock`; a stop uses `stopSelf(startId)`. | A quick Stop→Start lost the foreground notification and the daemon | `83b5fb9` |
+| I7 | One identity per process. The service and the activity share one `AppKeyStore` identity; pairing uses one atomic `code:port` reply. | `CERTIFICATE_AND_PRIVATE_KEY_MISMATCH`; a code from one dialog paired with a port from another | `77191da`, `83b5fb9` |
+| I8 | One daemon identity and one restart path. The daemon is found by `--listen` in `ps` (`/proc` fallback); the restart script has a unique name and a PID marker; a new start waits for the predecessor. | A fixed script path truncated a running restart; a start verified the daemon that was about to die; the `/proc` scan took 40 s | `44a4ca9`, `68d48b7`, `d5a6706`, `2c76489` |
+| I9 | No silent fallback. A failure is an explicit error with the recovery step; never another port, never another listener, never a proxy. | An occupied port silently moved the endpoint; the app connected to Android's TLS listener instead | `21e2280`, `0803d46` |
+| I10 | Custom ports stay out of the ephemeral range. Both ports are below 32768 and `setup()` rejects an older pref above it. | The phone used 43935 for both wireless debugging and the app endpoint | `21e2280` |
+| I11 | Listener and prompt lifecycle are serialized. `startFirewall()`, `stopFirewall()` and the relay rebind share `relayLock`; a stop bumps an epoch that invalidates an in-flight start; the prompt map is concurrent and every prompt path releases its slot. | Two starts bound the VPN port at once; a retrying start bound after a stop; a cancelled prompt left `pending()` true and suspended the app-allowlist grace timer | `74bb129` |
+| I12 | The watchdog never writes `ADB_ENABLED`. Hardening is bound to the running daemon, not to the app process; a stop leaves wireless debugging alone. | Stop wrote `ADB_ENABLED=0` and dropped the paired key | `4b5596d` |
+
+### Start and stop order
+
+Start:
+
+1. Validate the ports (below 32768) and the persisted intent.
+2. Bootstrap the system adbd: enable ADB when it reads 0, try its existing
+   listeners, then the Wi-Fi fallback.
+3. Deploy the patched `adbd` with the listener set for the current mode and verify
+   loopback (and the VPN listener when the firewall is off).
+4. Start the relay and verify the VPN listener (when the firewall is on).
+5. Turn the system wireless debugging off. This is the last step: it removes the
+   fallback.
+6. Publish Running and start the watchdog.
+
+Stop:
+
+1. Stop the relay.
+2. Stop the patched `adbd`.
+3. Only with the opt-in switch: write `ADB_ENABLED=0` and `ADB_WIFI_ENABLED=0`.
+4. Publish Stopped and remove the foreground notification.
+
 ### Watchdog
 
-The app's foreground service always keeps the system wireless debugging off.
-In the normal case (`is_usb=true`, `service.adb.tcp.port` empty) the system adbd
-has no TCP listener, so there is nothing to monitor or turn off.
+The app keeps the system wireless debugging off while the patched adbd runs.
+A stop leaves it alone: the system wireless debugging and its paired keys are the
+recovery path. In the normal case (`is_usb=true`, `service.adb.tcp.port` empty) the
+system adbd has no TCP listener, so there is nothing to monitor or turn off.
 
 - Mandatory: set `ADB_WIFI_ENABLED=0`. The framework stops the system TLS
   server.
@@ -291,9 +380,9 @@ has no TCP listener, so there is nothing to monitor or turn off.
 - Register `UsbManager.ACTION_USB_STATE` (sticky) and
   `ConnectivityManager.NetworkCallback`.
 - Backoff and hysteresis; never fight an explicit user "off".
-- The app never writes `ADB_ENABLED` unless the opt-in switch is on; if the
-  system adbd is off and the switch is off, bootstrap fails with explicit recovery
-  steps and no random-port redirect.
+- The watchdog never writes `ADB_ENABLED`; only Start does, and only when it
+  reads 0. If the system adbd is off and the app cannot write it, bootstrap fails
+  with explicit recovery steps and no random-port redirect.
 
 ## 7. Flows
 
@@ -305,11 +394,11 @@ has no TCP listener, so there is nothing to monitor or turn off.
    defaults to running, so an update keeps the daemon supervised.
 3. Nothing brings the daemon up without that intent: opening the app, a
    reboot, a sticky restart and the watchdog all respect it.
-4. Start kills every vendored adbd it finds through `/proc` by its
-   `--listen` argument, waits for it to disappear and only then starts its own.
-   A detached restart from an earlier process is waited for first. This needs no
-   lock and no adbd change; a survivor aborts the start instead of leaving two
-   daemons.
+4. Start finds every vendored adbd through `ps` by its `--listen` argument
+   (`/proc` as the fallback), kills it, waits for it to disappear and only then
+   starts its own. A detached restart from an earlier process is waited for first.
+   This needs no lock and no adbd change; a survivor aborts the start instead of
+   leaving two daemons.
 5. Opening the app while it runs re-checks the daemon; it never overrides a stop.
 6. Stop takes the setup mutex, so a stop during a deployment waits for the
    deployment and then stops the daemon; the loopback port confirms the stop.
@@ -320,7 +409,7 @@ has no TCP listener, so there is nothing to monitor or turn off.
 
 1. User installs the app, opens it and taps ▶️ Start.
 2. App requests notification permission.
-3. App posts the pairing notification asking for the six-digit code.
+3. App posts the pairing notification asking for `code:port`.
 4. User opens Settings → Developer options → Wireless debugging → Pair device with
    pairing code.
 5. User pulls the shade over the dialog and replies once with `code:port`.
@@ -330,10 +419,12 @@ has no TCP listener, so there is nothing to monitor or turn off.
    `/data/local/tmp/adb-anywhere/`, verifies SHA-256, and `chmod 755`.
 9. App writes its public key to the patched adbd key file.
 10. App starts the patched adbd with `--listen tcp:127.0.0.1:<portA>` and, when
-    the VPN is up, `--listen tcp:<vpn-ip>:<portB>`.
-11. App verifies both listeners and `shell:id`.
-12. App sets `ADB_WIFI_ENABLED=0` to stop the system TLS server.
-13. App starts the watchdog and shows the endpoint.
+    the firewall is off and the VPN is up, `--listen tcp:<vpn-ip>:<portB>`.
+11. App verifies loopback (and the VPN listener when the firewall is off).
+12. With the firewall on, the app starts the relay on `<vpn-ip>:<portB>`, verifies
+    it and publishes its state.
+13. App sets `ADB_WIFI_ENABLED=0` to stop the system TLS server. This is the last
+    step, so the fallback exists until the new path is verified.
 
 ### Port discovery
 
@@ -347,25 +438,25 @@ has no TCP listener, so there is nothing to monitor or turn off.
 
 1. `BootReceiver` starts the service on `BOOT_COMPLETED` and
    `LOCKED_BOOT_COMPLETED`, but only when the user last started it.
-2. Service re-asserts `adb_wifi_enabled` only when Wi-Fi is up, and
-   `adb_allowed_connection_time=0`.
-3. Service probes for a system adbd TCP listener: `5555`, the last known port,
-   or the TLS port on Wi-Fi.
-4. If reachable, start the patched adbd, verify, then set `ADB_WIFI_ENABLED=0`.
-5. If not reachable, ask the user to connect to any Wi-Fi once. The app then
-   sets `adb_wifi_enabled=1`, reads `service.adb.tls.port`, connects with its
-   paired key, and switches to the stable port. This is a manual recovery step,
-   not a blocker.
-6. If no Wi-Fi is available, the developer machine can connect USB once and
-   run `adb tcpip:<port>` to bootstrap.
+2. Service enables ADB when it reads 0, then probes the system adbd's existing
+   TCP listeners: `5555`, the last known port, the TLS property and mDNS.
+3. If one answers, start the patched adbd, verify, then set `ADB_WIFI_ENABLED=0`.
+4. If none answers and Wi-Fi is up, write `adb_wifi_enabled=1` (even when it
+   already reads 1), wait 900 ms, resolve the TLS port over mDNS and retry. This is
+   a manual recovery step, not a blocker.
+5. On mobile data with no plain listener, fail with the explicit instruction:
+   connect Wi-Fi once, or run `adb tcpip 5555` over USB.
+6. `adb_allowed_connection_time=0` is applied with the bootstrap and every
+   watchdog tick.
 
 ### Network change
 
 1. `NetworkCallback` fires. The app coalesces the callback pair and waits for
    the new tunnel to settle before it touches the daemon.
-2. If the VPN address changed, restart the patched adbd with the new address and
-   keep the loopback listener. A change that arrives during a setup is reconciled
-   by the serialized setup, not dropped.
+2. If the VPN address changed: with the firewall off, restart the patched adbd with
+   the new address and keep the loopback listener; with the firewall on, rebind the
+   relay and do not restart the daemon. A change that arrives during a setup is
+   reconciled by the serialized setup, not dropped.
 3. If the VPN is gone, remove the VPN listener; the app keeps the loopback
    listener.
 4. The watchdog re-reads the VPN address, so a missed callback cannot leave the
@@ -373,6 +464,16 @@ has no TCP listener, so there is nothing to monitor or turn off.
 5. If the active transport is Wi-Fi or Ethernet and no VPN is up, the app
    switches the developer machine to the system TLS endpoint and shows it. If TLS
    is unavailable, the app shows an explicit error.
+
+### Firewall toggle
+
+1. The Settings switch stores `firewallEnabled` and sends `ACTION_APPLY_FIREWALL`.
+2. `setup()` compares it with `daemonFirewallMode`. A change stops the relay,
+   restarts the daemon with the new listener set and starts the relay.
+3. Active external sessions drop; the app process, the UI and the loopback channel
+   stay up.
+4. If the VPN is down, the relay does not listen and the UI says why; the toggle
+   never blocks the daemon.
 
 ### USB
 
@@ -385,16 +486,23 @@ has no TCP listener, so there is nothing to monitor or turn off.
 ## 8. Security model
 
 - **Assets**: ADB shell access, the app key, developer machine keys.
-- **Outer boundary**: the VPN ACL. The patched adbd's VPN listener is only
-  reachable by allowed VPN peers.
+- **Outer boundary**: the VPN ACL. With the firewall off, the patched adbd's VPN
+  listener is only reachable by allowed VPN peers. With the firewall on, the app relay
+  is the only inbound TCP endpoint and the IP allowlist is the first gate.
 - **Inner boundary**: the patched adbd key file. Only the app and explicitly paired
   developer machines are accepted.
 - **App channel**: loopback, independent of the VPN.
+- **Relay**: byte-transparent, no second authentication, no sandbox. ADB key auth
+  stays between the developer machine and `adbd`. The relay is a policy enforcement
+  point, not a boundary against a determined shell user.
+- **App process**: with the firewall on it is a listener. A per-app VPN that excludes
+  the app, or a process kill, drops external sessions; the loopback channel and the
+  recovery steps are unaffected.
 - **System adbd**: USB (left on); not reachable over TCP after
   `ADB_WIFI_ENABLED=0`.
 - **Residual**: on devices where the system adbd exposes 5555, show an explicit
-  warning. The app never stops the system adbd; the user must do that outside the
-  app, and the patched adbd may stop with it.
+  warning.  Unless the opt-in switch is on, the app never stops the system adbd; the
+  user must do that outside the app, and the patched adbd may stop with it.
 - **Pairing**: QR is out-of-band, one-time, fingerprint-confirmed. No listener.
 - **Keys**: app key is ephemeral; developer keys are public only; private keys
   never leave their owners.
@@ -408,11 +516,18 @@ has no TCP listener, so there is nothing to monitor or turn off.
 | Failure | Response |
 |---|---|
 | Patched adbd dies | Restart via system adbd if reachable; otherwise show an explicit error with recovery steps |
-| Stale patched adbd after a crash | Start kills every adbd with `--listen` found through `/proc`, waits for it to exit and aborts if it survives |
+| Stale patched adbd after a crash | Start finds every adbd with `--listen` through `ps` (`/proc` fallback), waits for it to exit and aborts if it survives |
 | System adbd returns to TCP | Watchdog shows an explicit warning; no `ADB_ENABLED` write |
-| System adbd is off | Bootstrap fails with explicit recovery steps; the app does not enable it |
-| VPN address changes | Restart patched adbd with the new address; loopback stays |
+| System adbd is off | Start writes `ADB_ENABLED=1` when it reads 0; if the write is unavailable or the system adbd still has no TCP listener, fail with explicit recovery steps |
+| VPN address changes | Firewall off: restart the patched adbd with the new address. Firewall on: rebind the relay. Loopback stays |
 | VPN down | Remove VPN listener; app still controls via loopback |
+| Relay bind fails | Setup waits for the port, closes Android's legacy plain listener with `usb:` when it owns the port, and retries; if the port stays busy, fail with the port and the recovery step |
+| Relay dies | Watchdog restarts it and reports Error if it cannot; active sessions drop |
+| VPN excludes the app | Setup fails with an instruction to include ADB Anywhere in the VPN; no fallback listener |
+| App process is killed | Service restart starts the relay again; prompts are lost and denied |
+| Prompt not answered | 30 s timeout, deny, audit |
+| Malformed ADB frame | Close the connection, audit, never crash the service |
+| `UsageStats` missing | App allowlist cannot be enabled; the UI shows the grant action |
 | App key lost | Re-pair via notification; regenerate key; rewrite key file |
 | Developer key leaked | Remove from key file; restart patched adbd; revoke on the developer machine |
 | Doze kills the app | Battery exemption prompt; foreground service; `START_STICKY`; watchdog |
@@ -428,11 +543,15 @@ a different mode.
 ## 10. Testing
 
 - Unit: QR payload parser and public-key validation, key file writer, address
-  selection, watchdog state machine.
+  selection, watchdog state machine, `ControlState.firewallDown`, the port guard,
+  `AppKeyStore` concurrent first use of several instances, relay frame parsing,
+  prompt state and audit ring.
 - Integration: the vendored adbd's shared-core suite (`ADBD_TESTS=1`), two
   listeners, auth with two keys, `shell:`/`sync:`/`tcp:`/`reverse:`, key reload.
 - Device matrix: Pixel, Samsung, OnePlus; Tailscale and WireGuard; reboot,
   Wi-Fi↔cellular, USB attach/detach, Doze.
+- Device, firewall: toggle with a live session, `TIME_WAIT` rebind, mode change with
+  the daemon already up, Stop→Start, process kill, VPN address change.
 - CI: `./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug`;
   no device tests in CI.
 
@@ -446,10 +565,9 @@ a different mode.
   explicitly if the patched adbd is unavailable.
 - **Phase 2 — vendored adbd**: build from `adbd/`, bundle, deploy, two listeners,
   key provisioning, QR and paste pairing, logs, watchdog.
-- **Phase 3 — depth**: per-service and per-command policy, connection log
-  export, recovery hardening. The optional firewall, its IP/app allowlists, the
-  call-policy model and the audit log are designed and implemented in
-  `docs/FIREWALL.md`.
+- **Phase 3 — depth**: implemented. The optional firewall, its IP/app allowlists,
+  the call-policy model and the audit log are in `docs/FIREWALL.md`. Remaining:
+  IPv6 allowlist entries, per-key defaults, audit export.
 
 ## 12. Open risks
 
@@ -458,8 +576,8 @@ a different mode.
 - OEM blocks `pm grant WRITE_SECURE_SETTINGS`.
 - Plain listener remains when `is_usb=false` or `service.adb.tcp.port` is set;
   the app shows an explicit warning.
-- System adbd is off: the app cannot bootstrap until the user turns USB debugging
-  or wireless debugging on; this is a manual recovery step.
+- The system adbd is off and the app cannot write `ADB_ENABLED` (no
+  `WRITE_SECURE_SETTINGS`): bootstrap fails until the user turns USB debugging on.
 - Patched adbd is killed by LMK/Doze; no restart path if the system adbd is
   USB-only.
 - No silent fallback: if the patched adbd cannot run, the app shows an explicit
@@ -471,8 +589,12 @@ port.
   `adbd_auth`, `liblog`, BoringSSL) and the BoringSSL build move with it. The
   upstream commits are recorded in `adbd/README.md`; a re-vendor is a copy and a
   patch reapply, not a merge.
-- VPN app excludes the app from the tunnel, so loopback still works but the VPN
-  listener is unreachable.
+- A per-app VPN that excludes the app does not deliver inbound packets to the
+  relay, which runs in the app's UID; the app fails with an instruction instead of
+  falling back to the direct listener.
+- The relay runs in the app process: a process kill drops external sessions, and a
+  pending prompt is lost and denied. The loopback channel and the recovery steps are
+  unaffected.
 - QR pairing needs a QR generator on the developer machine; `qrencode` is enough.
 
 ## 13. Provenance
