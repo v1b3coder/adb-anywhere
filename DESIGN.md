@@ -1,7 +1,7 @@
 # adb-anywhere — Design
 
 Status: implemented; records the decisions the code follows
-Date: 2026-11-06
+Date: 2026-11-07
 Scope: stock Android phones, no root
 
 ## 1. Problem
@@ -43,7 +43,8 @@ These are facts from AOSP `main`, not assumptions.
    Wi-Fi disconnect, empty BSSID, or BSSID change
    (`AdbDebuggingManager.java:611-658`). The TLS server is toggled by
    `persist.adb.tls_server.enable` (`system_adbd_prop`, system-only) and
-   publishes `service.adb.tls.port` (`adbd_prop`, readable).
+   publishes `service.adb.tls.port` where the release still does
+   (`adbd_prop`, readable).
 2. **Legacy `adb tcpip` is not Wi-Fi gated.**
    `tcpip:<port>` sets `service.adb.tcp.port`; adbd listens on `tcp:<port>` and
    `vsock:<port>` on all interfaces (`main.cpp:269-296`,
@@ -74,9 +75,12 @@ These are facts from AOSP `main`, not assumptions.
    adbd startup by `access("/dev/usb-ffs/adb/ep0", F_OK)`, not from the live
    cable state. `ADB_WIFI_ENABLED=0` stops the TLS server; `ADB_ENABLED=0` stops
    adbd.
-9. **The TLS port is readable by the app.**
-   `service.adb.tls.port` is `adbd_prop`; `getprop` returns it to an
-   unprivileged process. mDNS is a fallback, not the only source.
+9. **The TLS port is not published on every release.**
+   `service.adb.tls.port` is `adbd_prop` and `getprop` returns it to an
+   unprivileged process on older releases; Android 13+ no longer publishes it,
+   so the mDNS advertisement and the port remembered from the last successful
+   bootstrap are the only sources. A remembered port is a hint: the app connects
+   to it before it trusts it.
 10. **`adb_enabled=0` stops adbd.**
     `AdbService.setAdbEnabled(false, USB)` calls `stopAdbd()`, and
     `UsbDeviceManager` removes ADB from the USB functions and calls
@@ -111,6 +115,7 @@ These are facts from AOSP `main`, not assumptions.
 | D16 | Port range | The loopback and VPN ports are below 32768, outside Android's ephemeral range, and never 5555, the system adbd's plain listener |
 | D17 | State publication | `ControlState` is the only UI source of truth. Each listener publishes its own state, `setup()` never resets a live listener's state, and `firewallDown` is derived |
 | D18 | Restart coordination | One daemon identity (`--listen` in `ps`, `/proc` fallback), one restart-script naming scheme, a PID marker, and a wait for the predecessor |
+| D19 | Ownership | Every value has one owner. The UI shows only the state its component publishes: the System adb card reads the system adbd's state, the Ports card reads the app's ports, and a probe names the owner it found. A persisted config has one writer and one read-modify-write entry point. A platform read runs off the UI thread, and the UI shows an explicit loading state. The app's own tooling is not exempt from the call policy |
 
 ## 6. Architecture
 
@@ -339,6 +344,8 @@ behavior is still correct.
 | I10 | Custom ports stay out of the ephemeral range and off the system adbd's 5555. Both ports are below 32768 and not 5555, and `setup()` rejects an older pref that violates either. | The phone used 43935 for both wireless debugging and the app endpoint | `21e2280` |
 | I11 | Listener and prompt lifecycle are serialized. `startFirewall()`, `stopFirewall()` and the relay rebind share `relayLock`; a stop bumps an epoch that invalidates an in-flight start; the prompt map is concurrent and every prompt path releases its slot. | Two starts bound the VPN port at once; a retrying start bound after a stop; a cancelled prompt left `pending()` true and suspended the app-allowlist grace timer | `74bb129` |
 | I12 | The watchdog never writes `ADB_ENABLED`. Hardening is bound to the running daemon, not to the app process; a stop leaves wireless debugging alone. | Stop wrote `ADB_ENABLED=0` and dropped the paired key | `4b5596d` |
+| I13 | One owner per value. The UI shows only the state its component publishes; a persisted config has one writer; a platform read runs off the UI thread; the app's own tooling is not exempt. | The System adb card showed the app's own loopback port as the system adbd's port; the relay and the UI overwrote each other's config write; the app-catalog query froze the Firewall tab; `make install-phone` reported a failed install as success | `0bc537c`, `5e446cf`, `10cda0a`, `63067d5` |
+| I14 | A fix closes the class, not the instance. Every fix names the class of defect it closes and adds the test for the class, not only for the reported instance. | A fix closed the reported instance and left a smaller instance of the same class: a preference comparison after a port-ownership fix, a whole-config write after a writer-race fix, a nested dialog after a warning-placement fix, and a swallowed exit code after a tooling decision | `0bc537c`, `10cda0a`, `303f9aa`, `5e446cf`, `63067d5` |
 
 ### Start and stop order
 
@@ -428,7 +435,9 @@ system adbd has no TCP listener, so there is nothing to monitor or turn off.
 
 ### Port discovery
 
-- Primary: `getprop service.adb.tls.port` (`adbd_prop`, readable).
+- Primary: the port from the last successful bootstrap, which the app connects
+  to before it trusts it.
+- `getprop service.adb.tls.port` when the release still publishes it.
 - Fallback: `NsdManager` discovery of `_adb-tls-connect._tcp`.
 - Last resort: the user enters the port shown in Settings.
 - The plain target port is chosen by the app and set with `tcpip:<port>`;
@@ -439,7 +448,8 @@ system adbd has no TCP listener, so there is nothing to monitor or turn off.
 1. `BootReceiver` starts the service on `BOOT_COMPLETED` and
    `LOCKED_BOOT_COMPLETED`, but only when the user last started it.
 2. Service enables ADB when it reads 0, then probes the system adbd's existing
-   TCP listeners: `5555`, the last known port, the TLS property and mDNS.
+   TCP listeners: the TLS property, the last known port, the shell-owned listening
+   ports, `5555` and mDNS.
 3. If one answers, start the patched adbd, verify, then set `ADB_WIFI_ENABLED=0`.
 4. If none answers and Wi-Fi is up, write `adb_wifi_enabled=1` (even when it
    already reads 1), wait 900 ms, resolve the TLS port over mDNS and retry. This is
@@ -532,7 +542,7 @@ system adbd has no TCP listener, so there is nothing to monitor or turn off.
 | Developer key leaked | Remove from key file; restart patched adbd; revoke on the developer machine |
 | Doze kills the app | Battery exemption prompt; foreground service; `START_STICKY`; watchdog |
 | OEM blocks `pm grant` | Show an explicit error: the app cannot self-grant; link the upstream issue and the manual `adb shell pm grant` steps |
-| Reboot on cellular | Probe 5555, last port, TLS on Wi-Fi, `persist.adb.tcp.port`; otherwise show the Wi-Fi/USB recovery steps |
+| Reboot on cellular | Probe the TLS property, the last port, the shell-owned listening ports, 5555 and mDNS; otherwise show the Wi-Fi/USB recovery steps |
 
 The app never silently falls back. If the patched adbd cannot start, bind its
 listeners, or dies without a restart path, the app shows the exact failure, the
