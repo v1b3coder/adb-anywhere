@@ -1,3 +1,6 @@
+> **Status: resolved (2026-11-07).** This audit is closed. Every finding is
+> fixed in `11aac38` or in the earlier fix commit named in the finding, or is an
+> accepted residual documented in `DESIGN.md` §12 and `docs/FIREWALL.md` §12.
 <!-- Production-readiness audit of adb-anywhere against DESIGN.md. -->
 # Production-readiness audit
 
