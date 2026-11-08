@@ -85,6 +85,30 @@ jobs:
           echo "VERSION_NAME=$NAME" >> "$GITHUB_OUTPUT"
           echo "VERSION_CODE=$(to_version_code "$NAME")" >> "$GITHUB_OUTPUT"
 
+      - name: Read release notes
+        id: notes
+        env:
+          VERSION_NAME: ${{ steps.version.outputs.VERSION_NAME }}
+        run: |
+          set -euo pipefail
+          notes="$RUNNER_TEMP/release-notes.md"
+          if [ -f CHANGELOG.md ]; then
+            awk -v heading="## $VERSION_NAME" '
+              index($0, heading) == 1 { found=1; next }
+              found && /^## / { exit }
+              found { print }
+            ' CHANGELOG.md > "$notes"
+          fi
+          {
+            echo "body<<RELEASE_NOTES_EOF"
+            if [ -s "$notes" ]; then
+              cat "$notes"
+            else
+              echo "**Experimental.** This is a preview release; the app is not production-ready yet."
+            fi
+            echo "RELEASE_NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Install Android SDK platform
         run: |
           set -euo pipefail
@@ -159,10 +183,8 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           files: dist/adb-anywhere-*.apk
-          # 0.x previews are experimental; drop this line for 1.0.0.
-          body: |
-            **Experimental.** This is a preview release; the app is not production-ready yet.
-          generate_release_notes: true
+          body: ${{ steps.notes.outputs.body }}
+          generate_release_notes: false
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
