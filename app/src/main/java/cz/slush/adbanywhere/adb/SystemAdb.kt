@@ -143,9 +143,9 @@ class SystemAdb(
          * The system adbd's TLS port, live. The client path is mDNS, the same
          * advertisement the host `adb` uses. A release that does not advertise
          * it is probed on the socket: every shell-owned listening port is probed
-         * with the app key, and only the system adbd's TLS listener completes
-         * the handshake (or asks to pair). The app's own plain listener rejects
-         * it.
+         * with the app key, and the system adbd's TLS listener answers (or asks
+         * to pair). The app's own ports and the plain 5555 are excluded by
+         * port, so a plain listener is never reported as the system one.
          */
         suspend fun detectTlsPort(
             context: Context,
@@ -163,6 +163,10 @@ class SystemAdb(
             candidates += listeningShellPorts()
             candidates.remove(prefs.loopbackPort)
             candidates.remove(prefs.vpnPort)
+            // The plain 5555 listener is not the TLS server, and a probe of it
+            // succeeds without TLS. Reporting it as the wireless port would show
+            // the app's own endpoint as the system one.
+            candidates.remove(Prefs.PLAIN_ADB_PORT)
             val manager = AdbManager(context, keys)
             manager.setTimeout(2, TimeUnit.SECONDS)
             for (port in candidates) {

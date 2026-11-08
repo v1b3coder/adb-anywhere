@@ -28,6 +28,17 @@ class ControlDataTest {
     )!!
 
     @Test
+    fun needsSetupOnlyForPairing() {
+        // A VPN, relay or port failure is not a pairing problem: the UI must
+        // not offer the pairing steps for it.
+        assertFalse(ControlState().needsSetup)
+        assertTrue(ControlState(phase = Phase.NeedsPairing).needsSetup)
+        assertFalse(ControlState(phase = Phase.Pairing).needsSetup)
+        assertFalse(ControlState(phase = Phase.Error).needsSetup)
+        assertFalse(ControlState(phase = Phase.Running).needsSetup)
+    }
+
+    @Test
     fun firewallDownRequiresEnabledButNotListening() {
         assertFalse(ControlState().firewallDown)
         assertFalse(

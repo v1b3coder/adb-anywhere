@@ -43,7 +43,13 @@ data class ControlState(
     val firewall: FirewallState = FirewallState(),
 ) {
     val running: Boolean get() = phase == Phase.Running
-    val needsSetup: Boolean get() = phase == Phase.NeedsPairing || phase == Phase.Error
+
+    /**
+     * Pairing is its own phase. A generic failure must not present the pairing
+     * steps: the VPN, the relay and the ports fail for reasons that a new code
+     * cannot fix, and the user would pair again for nothing.
+     */
+    val needsSetup: Boolean get() = phase == Phase.NeedsPairing
 
     /**
      * The custom adb can be healthy while the firewall relay is down: the loopback

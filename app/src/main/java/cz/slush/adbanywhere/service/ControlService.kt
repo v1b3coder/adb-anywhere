@@ -172,6 +172,9 @@ class ControlService : Service() {
             ACTION_START -> {
                 prefs.userWantsRunning = true
                 AppLog.info("service", "user asked to run")
+                // An explicit Start is the user's retry: give it a fresh
+                // retry budget instead of the cap a previous failure set.
+                resetBackoff()
                 // A Stop followed immediately by a Start must not lose the new
                 // start.  promoteForeground() and the stop cleanup share
                 // lifecycleLock and the stop checks userWantsRunning under it.
@@ -196,6 +199,7 @@ class ControlService : Service() {
             ACTION_RESTART -> {
                 prefs.userWantsRunning = true
                 AppLog.info("service", "restart requested")
+                resetBackoff()
                 promoteForeground()
                 scope.launch { setup(forceRestart = true) }
             }
@@ -279,7 +283,10 @@ class ControlService : Service() {
         AppLog.info("service", "destroyed")
         hidePromptOverlay()
         stopFirewall("The service stopped")
-        if (ControlBus.state.value.phase == Phase.Running) {
+        // The daemon is not ours to stop here, and a service the system
+        // destroyed while the user still wants it running is resumed by the
+        // sticky restart. Only an explicit stop leaves the Stopped phase.
+        if (ControlBus.state.value.phase == Phase.Running && !prefs.userWantsRunning) {
             ControlBus.update {
                 it.copy(phase = Phase.Stopped, endpoint = "", message = "The service stopped.")
             }
@@ -334,7 +341,7 @@ class ControlService : Service() {
             // instruction instead of connecting to the wrong listener and
             // reporting "pairing required".
             Prefs.validatePorts(prefs.loopbackPort, prefs.vpnPort)?.let { failure ->
-                fail("$failure Press Start again after saving the ports.")
+                fail("$failure Press Start again after saving the ports.", retryable = false)
                 return@withLock
             }
             val previous = ControlBus.state.value
@@ -362,6 +369,11 @@ class ControlService : Service() {
             // A failed attempt must undo what it changed: it may have written the
             // bootstrap settings or reached a shell on the device.
             var cleanupRequired = false
+            // A daemon that was already running and only got its key file
+            // rewritten must survive a later failure: killing it would drop the
+            // loopback channel the user still has.
+            var daemonStarted = false
+            var relayTouched = false
             val firewallConfig = firewallStore.load()
             // What the setup is allowed to change, so a failed attempt can put
             // the platform back instead of leaving the system TLS listener on.
@@ -491,6 +503,7 @@ class ControlService : Service() {
                                 "The app key is paired, but the system adbd has no TCP listener. " +
                                 "Connect Wi-Fi once, or enable USB debugging and run " +
                                 "`adb tcpip 5555` over USB, then press Start again.",
+                            retryable = false,
                         )
                     }
                     return@withLock
@@ -504,6 +517,7 @@ class ControlService : Service() {
                     fail(
                         "WRITE_SECURE_SETTINGS could not be granted. Grant it once with " +
                             "`adb shell pm grant ${packageName} android.permission.WRITE_SECURE_SETTINGS`.",
+                        retryable = false,
                     )
                     return@withLock
                 }
@@ -514,6 +528,7 @@ class ControlService : Service() {
                 if (firewallChanged) {
                     AppLog.info("firewall", "listener mode changed; stopping the relay first")
                     stopFirewall("Firewall mode changed")
+                    relayTouched = true
                 }
 
                 step(1, StepStatus.Active, "Deploying the custom adb")
@@ -527,6 +542,9 @@ class ControlService : Service() {
                     prefs.vpnPort != previous.vpnPort
                 val restart = forceRestart || !daemonAlive || portsChanged ||
                     (exposeVpn && vpnChanged) || firewallChanged || vpnPortBusy
+                // What this attempt starts or restarts is what a later failure
+                // may stop; a daemon it leaves untouched stays.
+                daemonStarted = !daemonAlive || restart
                 AppLog.info(
                     "setup",
                     "deploy: adbAlive=$daemonAlive vpnChanged=$vpnChanged " +
@@ -587,6 +605,7 @@ class ControlService : Service() {
                     fail(
                         "ADB Anywhere is excluded from the VPN. Include it in the VPN app, " +
                             "then press Start again. The firewall relay runs in the app process.",
+                        retryable = false,
                     )
                     return@withLock
                 }
@@ -600,6 +619,7 @@ class ControlService : Service() {
                         firewallProxy?.isListening != true
                     ) {
                         startFirewall(vpnIp)
+                        relayTouched = true
                     }
                     verifyFirewall()
                     firewallProxy?.publishState()
@@ -644,6 +664,7 @@ class ControlService : Service() {
                         error = "",
                     )
                 }
+                resetBackoff()
                 scheduleWatchdog()
                 startWatchdogLoop()
                 refreshLogs()
@@ -652,9 +673,12 @@ class ControlService : Service() {
                 fail(e.message ?: "Setup failed")
             } finally {
                 if (cleanupRequired && ControlBus.state.value.phase != Phase.Running) {
-                    abortSetup(adbStateBefore)?.let { warning ->
+                    abortSetup(adbStateBefore, daemonStarted, relayTouched)?.let { warning ->
                         val error = ControlBus.state.value.error
-                        fail(if (error.isEmpty()) warning else "$error $warning")
+                        fail(
+                            if (error.isEmpty()) warning else "$error $warning",
+                            retryable = false,
+                        )
                     }
                 }
                 // D11: read the platform state after the last write, so the UI
@@ -670,19 +694,31 @@ class ControlService : Service() {
      * setup may have opened it for the bootstrap; leaving it on would expose the
      * system TLS listener on every interface while the custom adb is down.
      */
-    private suspend fun abortSetup(adbStateBefore: SystemSettings.AdbState?): String? =
+    private suspend fun abortSetup(
+        adbStateBefore: SystemSettings.AdbState?,
+        stopDaemon: Boolean,
+        stopRelay: Boolean,
+    ): String? =
         withContext(Dispatchers.IO + NonCancellable) {
-            runCatching { stopFirewall("Setup failed") }
-            val stopped = runCatching {
-                val shell = runCatching { daemonShell() }.getOrNull() ?: system.shell
-                try {
-                    daemon.stop(shell)
-                } finally {
-                    shell.close()
-                }
-            }.onFailure {
-                AppLog.warn("setup", "cleanup cannot stop adb: ${it.message}")
-            }.isSuccess
+            if (stopRelay) runCatching { stopFirewall("Setup failed") }
+            // Only stop what this attempt started or restarted. A daemon that
+            // was already running and only got its key file rewritten is still
+            // the user's channel; a failure elsewhere must not kill it.
+            val stopped = if (!stopDaemon) {
+                AppLog.info("setup", "cleanup keeps the running custom adb")
+                true
+            } else {
+                runCatching {
+                    val shell = runCatching { daemonShell() }.getOrNull() ?: system.shell
+                    try {
+                        daemon.stop(shell)
+                    } finally {
+                        shell.close()
+                    }
+                }.onFailure {
+                    AppLog.warn("setup", "cleanup cannot stop adb: ${it.message}")
+                }.isSuccess
+            }
             val warnings = mutableListOf<String>()
             // Restore the bootstrap only when the setup changed it. When it was
             // already on before the setup, the fallback stays as it was.
@@ -716,7 +752,7 @@ class ControlService : Service() {
             }
             // The shell may be gone because the daemon already died; the port
             // is the authority on whether anything still runs.
-            val daemonListening = runCatching {
+            val daemonListening = stopDaemon && runCatching {
                 Socket().use { it.connect(InetSocketAddress("127.0.0.1", prefs.loopbackPort), 300) }
                 true
             }.getOrDefault(false)
@@ -789,6 +825,7 @@ class ControlService : Service() {
         }
         prefs.paired = true
         AppLog.info("pair", "paired; starting setup")
+        resetBackoff()
         ControlBus.update {
             it.copy(steps = listOf(SetupStep("Pair with Android's wireless debugging", StepStatus.Done, "Paired")))
         }
@@ -946,6 +983,16 @@ class ControlService : Service() {
                     firewallProxy = proxy
                     true
                 } catch (e: BindException) {
+                    // A bind failure is not always an occupied port: a stale VPN
+                    // address fails with "Cannot assign requested address", and
+                    // ten retries only delay the real message.
+                    if (e.message.orEmpty().contains("assign", ignoreCase = true)) {
+                        throw IOException(
+                            "The VPN address $vpnIp is no longer assigned. " +
+                                "Connect the VPN and press Start again.",
+                            e,
+                        )
+                    }
                     last = e
                     false
                 }
@@ -1214,12 +1261,22 @@ class ControlService : Service() {
         AppLog.info("watchdog", "loop started")
         watchdogJob = scope.launch {
             while (true) {
-                // A repeated failure backs off instead of retrying every minute.
+                // A repeated failure backs off instead of retrying every
+                // minute, and a failure that needs the user (a missing VPN, a
+                // port change, a missing permission) stops the retry: fail()
+                // sets the backoff to the cap and the user presses Try again.
                 delay(if (watchdogBackoffMs > 0L) watchdogBackoffMs else 60_000L)
                 when (ControlBus.state.value.phase) {
                     Phase.Running -> watchdog()
-                    Phase.Error -> if (prefs.setupComplete) scope.launch { setup() }
-                    else -> Unit
+                    Phase.Error -> {
+                        if (prefs.setupComplete && watchdogBackoffMs < MAX_BACKOFF_MS) {
+                            scope.launch { setup() }
+                        } else {
+                            AppLog.info("watchdog", "setup failed; waiting for the user")
+                            return@launch
+                        }
+                    }
+                    else -> return@launch
                 }
             }
         }
@@ -1231,14 +1288,7 @@ class ControlService : Service() {
         scheduleWatchdog()
         val state = ControlBus.state.value
         if (state.phase != Phase.Running) return
-        val alive = withContext(Dispatchers.IO) {
-            runCatching {
-                val manager = AdbManager(this@ControlService, keys)
-                val ok = manager.connectTo("127.0.0.1", prefs.loopbackPort)
-                manager.disconnectQuietly()
-                ok
-            }.getOrDefault(false)
-        }
+        val alive = probeDaemon()
         if (!alive) {
             AppLog.warn("watchdog", "custom adb is down; restarting")
             ControlBus.update { it.copy(message = "The custom adb is down. Restarting…") }
@@ -1248,8 +1298,8 @@ class ControlService : Service() {
             return
         }
         if (vpnAddressChanged()) {
-            AppLog.info("watchdog", "vpn address changed; restarting setup")
-            scope.launch { setup() }
+            AppLog.info("watchdog", "vpn address changed; reconciling")
+            networkChanged()
             return
         }
         // D6: every tick keeps D5, not only the first setup.
@@ -1257,7 +1307,6 @@ class ControlService : Service() {
             ensureWifiDebuggingOff()
         } catch (e: IOException) {
             AppLog.error("watchdog", "wireless debugging guard failed: ${e.message}")
-            nextBackoff()
             fail(e.message ?: "System wireless debugging is still on.")
             return
         }
@@ -1269,18 +1318,44 @@ class ControlService : Service() {
             val vpnIp = withContext(Dispatchers.IO) {
                 VpnDetector.currentVpnAddress(this@ControlService)
             }
-            if (vpnIp == null) {
-                if (firewallProxy != null) stopFirewall("VPN is down")
-                ControlBus.update {
-                    it.copy(firewall = FirewallState(enabled = true, lastError = "VPN is down"))
+            when {
+                vpnIp == null -> {
+                    if (firewallProxy != null) stopFirewall("VPN is down")
+                    ControlBus.update {
+                        it.copy(
+                            vpnIp = null,
+                            endpoint = Endpoint.display(null, prefs.vpnPort),
+                            message = "VPN is down. The firewall cannot expose the custom adb.",
+                            firewall = FirewallState(enabled = true, lastError = "VPN is down"),
+                        )
+                    }
                 }
-            } else if (firewallProxy?.isListening != true) {
-                AppLog.warn("watchdog", "firewall relay is down; restarting")
-                runCatching { startFirewall(vpnIp) }.onFailure {
-                    AppLog.error("watchdog", "firewall restart failed: ${it.message}")
-                    nextBackoff()
-                    fail("The firewall relay is not listening: ${it.message}")
-                    return
+                !isVpnActive() -> {
+                    // The VPN is up but this app is not in it, so the relay
+                    // cannot receive inbound packets. Do not start it: the fix
+                    // is a VPN setting, not a retry.
+                    if (firewallProxy != null) {
+                        stopFirewall("ADB Anywhere is excluded from the VPN")
+                    }
+                    ControlBus.update {
+                        it.copy(
+                            vpnIp = vpnIp,
+                            endpoint = Endpoint.display(vpnIp, prefs.vpnPort),
+                            message = "ADB Anywhere is excluded from the VPN.",
+                            firewall = FirewallState(
+                                enabled = true,
+                                lastError = "Excluded from the VPN",
+                            ),
+                        )
+                    }
+                }
+                firewallProxy?.isListening != true -> {
+                    AppLog.warn("watchdog", "firewall relay is down; restarting")
+                    runCatching { startFirewall(vpnIp) }.onFailure {
+                        AppLog.error("watchdog", "firewall restart failed: ${it.message}")
+                        fail("The firewall relay is not listening: ${it.message}")
+                        return
+                    }
                 }
             }
         } else if (firewallProxy != null) {
@@ -1326,19 +1401,50 @@ class ControlService : Service() {
             val vpnIp = withContext(Dispatchers.IO) {
                 VpnDetector.currentVpnAddress(this@ControlService)
             }
-            if (vpnIp == null) {
-                stopFirewall("VPN is down")
-                ControlBus.update {
-                    it.copy(
-                        vpnIp = null,
-                        firewall = FirewallState(enabled = true, lastError = "VPN is down"),
-                    )
+            when {
+                vpnIp == null -> {
+                    // The VPN is down: remove the VPN listener and keep the
+                    // loopback channel. A relay on the old address would
+                    // keep accepting peers the VPN no longer routes.
+                    stopFirewall("VPN is down")
+                    ControlBus.update {
+                        it.copy(
+                            vpnIp = null,
+                            endpoint = Endpoint.display(null, prefs.vpnPort),
+                            message = "VPN is down. The firewall cannot expose the custom adb.",
+                            firewall = FirewallState(enabled = true, lastError = "VPN is down"),
+                        )
+                    }
                 }
-            } else {
-                runCatching { rebindFirewall(vpnIp) }.onFailure {
-                    fail(it.message ?: "Firewall rebind failed")
+                !isVpnActive() -> {
+                    // The VPN is up but this app is not in it: the relay
+                    // cannot receive inbound packets, so do not bind it.
+                    stopFirewall("ADB Anywhere is excluded from the VPN")
+                    ControlBus.update {
+                        it.copy(
+                            vpnIp = vpnIp,
+                            endpoint = Endpoint.display(vpnIp, prefs.vpnPort),
+                            message = "ADB Anywhere is excluded from the VPN.",
+                            firewall = FirewallState(
+                                enabled = true,
+                                lastError = "Excluded from the VPN",
+                            ),
+                        )
+                    }
                 }
-                ControlBus.update { it.copy(vpnIp = vpnIp) }
+                else -> {
+                    runCatching { rebindFirewall(vpnIp) }.onFailure {
+                        fail(it.message ?: "Firewall rebind failed")
+                    }
+                    ControlBus.update {
+                        it.copy(
+                            vpnIp = vpnIp,
+                            endpoint = Endpoint.display(vpnIp, prefs.vpnPort),
+                            message = "Firewall is on. Developer machines connect through " +
+                                "$vpnIp:${prefs.vpnPort}.",
+                        )
+                    }
+                }
             }
         } else {
             setup()
@@ -1477,9 +1583,13 @@ class ControlService : Service() {
         open
     }
 
-    private fun fail(message: String) {
+    private fun fail(message: String, retryable: Boolean = true) {
         AppLog.error("setup", message)
         prefs.lastError = message
+        // A failure that needs the user (a missing VPN, a port change, a
+        // missing permission) must not retry on a timer: the watchdog retries
+        // only a transient failure, with a backoff capped at 15 minutes.
+        if (retryable) nextBackoff() else watchdogBackoffMs = MAX_BACKOFF_MS
         // A failure must not lose the 15-minute wakeup: the watchdog loop may
         // be gone with the process, and an Error phase returns early.
         scheduleWatchdog()
@@ -1618,7 +1728,7 @@ class ControlService : Service() {
         if (state.phase == Phase.Running) {
             builder.addAction(0, "Stop", servicePendingIntent(ACTION_STOP))
         }
-        if (state.phase == Phase.NeedsPairing || state.phase == Phase.Error) {
+        if (state.phase == Phase.NeedsPairing) {
             builder.addAction(0, "Pair", contentPendingIntent())
         }
         return builder.build()
@@ -1654,6 +1764,7 @@ class ControlService : Service() {
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
             .setGroup(Notifications.GROUP_PAIRING)
             .setContentIntent(contentPendingIntent())
             .addAction(action)

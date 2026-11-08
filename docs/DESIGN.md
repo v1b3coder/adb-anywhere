@@ -101,6 +101,11 @@ These are facts from AOSP `main`, not assumptions.
     accept on the VPN address even though the bind succeeds. The app detects the
     exclusion and fails with an instruction instead of reporting a listener that
     cannot be reached.
+12. **The VPN address is the VPN transport's address, not an interface guess.**
+    `ConnectivityManager` reports the VPN networks and their `LinkProperties`; the
+    app takes the address from those networks only. A scan of the Wi-Fi or cellular
+    interfaces returns the LAN or carrier address when no VPN is up, and binding it
+    would expose plain ADB outside the VPN.
 
 ## 5. Product decisions
 
@@ -111,7 +116,7 @@ These are facts from AOSP `main`, not assumptions.
 | D3 | App key | Ephemeral RSA keypair generated on first run; private key in app-private storage; public key in the patched adbd key file |
 | D4 | Developer machine pairing | QR or pasted public key from the developer machine; app confirms the fingerprint; user labels the machine; no pairing listener on the phone |
 | D5 | System adbd lifecycle | Start writes `ADB_ENABLED=1` when it reads 0, then tries the system adbd's existing TCP listeners; on Wi-Fi it falls back to `ADB_WIFI_ENABLED=1` even when it already reads 1. Stop stops only the patched adbd; the opt-in Settings switch "Turn system adb off on Stop" makes Stop write `ADB_ENABLED=0` |
-| D6 | Watchdog | Keeps `ADB_WIFI_ENABLED=0`; probes 5555 on every tick and reports the open listener as the §8 residual warning; restarts the patched adbd through the system adbd when reachable; re-arms its alarm on every tick and backs off after a failure; never writes `ADB_ENABLED` (only Start does, and only when it reads 0) |
+| D6 | Watchdog | Keeps `ADB_WIFI_ENABLED=0`; probes 5555 on every tick and reports the open listener as the §8 residual warning; restarts the patched adbd through the system adbd when reachable; re-arms its alarm on every tick and backs off after a failure; retries a failed setup only while the failure is transient, and a failure that needs the user (a missing VPN, a port change, a missing permission) waits for Try again; never writes `ADB_ENABLED` (only Start does, and only when it reads 0) |
 | D7 | Policy | The app enforces policy, not the daemon. The optional relay parses `A_OPEN` and applies the IP allowlist, the foreground-app allowlist and call rules. The patched `adbd` stays policy-free; the VPN ACL is the outer boundary |
 | D8 | UI stack | Kotlin, Jetpack Compose, Material 3; package `cz.slush.adbanywhere` |
 | D9 | Bootstrap pairing | One `RemoteInput` notification: reply with `code:port` from the open dialog |
@@ -489,9 +494,9 @@ system adbd has no TCP listener, so there is nothing to monitor or turn off.
    listener.
 4. The watchdog re-reads the VPN address, so a missed callback cannot leave the
    daemon on a stale address.
-5. If the active transport is Wi-Fi or Ethernet and no VPN is up, the app
-   switches the developer machine to the system TLS endpoint and shows it. If TLS
-   is unavailable, the app shows an explicit error.
+5. If no VPN is up, the app removes the VPN listener and keeps the loopback
+   channel. It never switches the developer machine to the system TLS endpoint and
+   never binds a Wi-Fi or cellular address.
 
 ### Firewall toggle
 

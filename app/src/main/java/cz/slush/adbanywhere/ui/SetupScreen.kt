@@ -45,51 +45,59 @@ fun SetupScreen(
         contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 96.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        item {
-            SectionCard("1. Pair with Android's wireless debugging") {
-                Text(
-                    "Android only lets this app deploy the custom adb after a one-time pairing. " +
-                        "Nothing is exposed by this step; it only authorizes this app's key.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    PairingStep("1", "Open Settings → Developer options → Wireless debugging.")
-                    PairingStep("2", "Tap “Pair device with pairing code” and keep that dialog open.")
-                    PairingStep(
-                        "3",
-                        "Pull down the shade and reply to the ADB Anywhere notification.",
-                    )
-                }
-                PairingReply()
-                Text(
-                    "Both numbers are in Android's pairing dialog. The notification reply keeps " +
-                        "the app in the background, so the dialog stays open while it connects.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Button(onClick = onNotify, modifier = Modifier.fillMaxWidth()) {
-                    Icon(Icons.Outlined.NotificationsActive, contentDescription = null)
-                    Text("Show pairing notification", modifier = Modifier.padding(start = 8.dp))
-                }
-                OutlinedButton(
-                    onClick = onOpenDeveloperSettings,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Icon(Icons.Outlined.OpenInNew, contentDescription = null)
-                    Text("Open developer settings", modifier = Modifier.padding(start = 8.dp))
-                }
-                if (state.phase == Phase.NeedsPairing || state.phase == Phase.Error) {
-                    TextButton(onClick = onSetup) {
-                        Text("Retry connection")
-                    }
-                }
-                if (state.error.isNotEmpty()) {
+        if (state.error.isNotEmpty()) {
+            item {
+                SectionCard("Setup failed") {
                     Text(
                         state.error,
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.error,
                     )
+                    TextButton(onClick = onSetup) {
+                        Text("Retry connection")
+                    }
+                }
+            }
+        }
+
+        // Pairing is its own phase. A VPN, relay or port failure is not a
+        // pairing problem, and a new code cannot fix it: show the error and
+        // the retry instead of the pairing steps.
+        if (state.phase != Phase.Error) {
+            item {
+                SectionCard("1. Pair with Android's wireless debugging") {
+                    Text(
+                        "Android only lets this app deploy the custom adb after a one-time pairing. " +
+                            "Nothing is exposed by this step; it only authorizes this app's key.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        PairingStep("1", "Open Settings → Developer options → Wireless debugging.")
+                        PairingStep("2", "Tap “Pair device with pairing code” and keep that dialog open.")
+                        PairingStep(
+                            "3",
+                            "Pull down the shade and reply to the ADB Anywhere notification.",
+                        )
+                    }
+                    PairingReply()
+                    Text(
+                        "Both numbers are in Android's pairing dialog. The notification reply keeps " +
+                            "the app in the background, so the dialog stays open while it connects.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Button(onClick = onNotify, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Outlined.NotificationsActive, contentDescription = null)
+                        Text("Show pairing notification", modifier = Modifier.padding(start = 8.dp))
+                    }
+                    OutlinedButton(
+                        onClick = onOpenDeveloperSettings,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(Icons.Outlined.OpenInNew, contentDescription = null)
+                        Text("Open developer settings", modifier = Modifier.padding(start = 8.dp))
+                    }
                 }
             }
         }
