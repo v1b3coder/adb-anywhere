@@ -3,6 +3,11 @@
 Remote wireless ADB that follows your phone — over VPN, on mobile data, across
 network changes. No root, stock Android 12+.
 
+ADB Anywhere exists for one workflow: a real-time programming loop for small
+Android utilities while traveling. The author runs T3 Code on the phone and keeps ADB
+Anywhere in the loop, so the agent can write, deploy and test directly on the same
+phone — no laptop, no USB cable and no root.
+
 After a reboot it comes back once Android's adb can be reached again.
 
 Android turns wireless debugging off when Wi-Fi disconnects, randomises its port
