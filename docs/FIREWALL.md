@@ -524,9 +524,11 @@ calls `adb tcpip` and never moves to another port silently.
   It uses `setShowWhenLocked(false)` and refuses to show over the keyguard.
 - `RuleEditor` is a modal screen with field rows, lock toggles, action selector,
   preview and save.
-- The ongoing notification adds one line: `Firewall: 2 sessions` or
-  `Firewall: VPN is down`. Prompts are foreground dialogs, so the notification
-  does not count them.
+- The ongoing notification adds one line: `Firewall: 1 session`,
+  `Firewall: 2 sessions` or `Firewall: VPN is down`. `sessions` is the number of
+  open TCP connections accepted by the relay, not the number of ADB calls or
+  authenticated devices. Prompts are foreground dialogs, so the notification does
+  not count them.
 
 ## 11. Failure modes
 

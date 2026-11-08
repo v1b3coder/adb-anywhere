@@ -935,8 +935,11 @@ class ControlService : Service() {
                     onAppUsed = { packageName ->
                         ControlBus.firewallConfig.value = firewallStore.markAppUsed(packageName)
                     },
-                    pendingPrompts = { prompts.size },
-                    onState = { state -> ControlBus.update { it.copy(firewall = state) } },
+                    onState = { state ->
+                        ControlBus.update { current ->
+                            current.copy(firewall = current.firewall.withRelayState(state))
+                        }
+                    },
                 )
                 try {
                     proxy.start(vpnIp, prefs.vpnPort, prefs.loopbackPort)
@@ -1591,13 +1594,7 @@ class ControlService : Service() {
         val text = buildList {
             addAll(warnings)
             if (state.firewall.enabled) {
-                add(
-                    if (state.firewall.listening) {
-                        "Firewall: ${state.firewall.activeSessions} sessions"
-                    } else {
-                        "Firewall: ${state.firewall.lastError.ifBlank { "not listening" }}"
-                    },
-                )
+                add(firewallStatusLine(state.firewall))
             }
             when {
                 state.error.isNotEmpty() -> add(state.error)

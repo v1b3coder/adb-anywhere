@@ -11,4 +11,16 @@ data class FirewallState(
     val activeSessions: Int = 0,
     val pendingPrompts: Int = 0,
     val lastError: String = "",
-)
+) {
+    /**
+     * Applies the fields the relay owns. `pendingPrompts` belongs to the service,
+     * so a relay snapshot must not overwrite it.
+     */
+    fun withRelayState(relay: FirewallState): FirewallState = copy(
+        enabled = relay.enabled,
+        listening = relay.listening,
+        listenAddress = relay.listenAddress,
+        activeSessions = relay.activeSessions,
+        lastError = relay.lastError,
+    )
+}

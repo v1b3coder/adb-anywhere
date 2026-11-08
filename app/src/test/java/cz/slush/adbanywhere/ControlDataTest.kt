@@ -9,6 +9,7 @@ import cz.slush.adbanywhere.data.VpnInterface
 import cz.slush.adbanywhere.firewall.FirewallState
 import cz.slush.adbanywhere.service.ControlState
 import cz.slush.adbanywhere.service.Phase
+import cz.slush.adbanywhere.service.firewallStatusLine
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -46,6 +47,50 @@ class ControlDataTest {
                 phase = Phase.Running,
                 firewall = FirewallState(enabled = true, listening = true),
             ).firewallDown,
+        )
+    }
+
+    @Test
+    fun relayStateKeepsTheServiceOwnedPromptCount() {
+        val current = FirewallState(enabled = true, pendingPrompts = 3)
+        val relay = FirewallState(
+            enabled = true,
+            listening = true,
+            listenAddress = "100.64.0.10:15038",
+            activeSessions = 2,
+        )
+        val merged = current.withRelayState(relay)
+        assertEquals(3, merged.pendingPrompts)
+        assertEquals(2, merged.activeSessions)
+        assertEquals("100.64.0.10:15038", merged.listenAddress)
+        assertTrue(merged.listening)
+    }
+
+    @Test
+    fun notificationLinePluralizesSessionsAndKeepsTheListenerError() {
+        assertEquals(
+            "Firewall: 0 sessions",
+            firewallStatusLine(FirewallState(enabled = true, listening = true)),
+        )
+        assertEquals(
+            "Firewall: 1 session",
+            firewallStatusLine(
+                FirewallState(enabled = true, listening = true, activeSessions = 1),
+            ),
+        )
+        assertEquals(
+            "Firewall: 2 sessions",
+            firewallStatusLine(
+                FirewallState(enabled = true, listening = true, activeSessions = 2),
+            ),
+        )
+        assertEquals(
+            "Firewall: VPN is down",
+            firewallStatusLine(FirewallState(enabled = true, lastError = "VPN is down")),
+        )
+        assertEquals(
+            "Firewall: not listening",
+            firewallStatusLine(FirewallState(enabled = true)),
         )
     }
 

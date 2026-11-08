@@ -1,7 +1,10 @@
 /*
- * Notifications - channel and id constants shared by the app and the service.
+ * Notifications - channel and id constants and the relay line shared by the app
+ * and the service.
  */
 package cz.slush.adbanywhere.service
+
+import cz.slush.adbanywhere.firewall.FirewallState
 
 object Notifications {
     const val CHANNEL_SERVICE = "service"
@@ -13,3 +16,12 @@ object Notifications {
     const val GROUP_SERVICE = "service"
     const val GROUP_PAIRING = "pairing"
 }
+
+/** The relay line in the ongoing notification. */
+internal fun firewallStatusLine(firewall: FirewallState): String =
+    if (firewall.listening) {
+        val sessions = firewall.activeSessions
+        "Firewall: $sessions ${if (sessions == 1) "session" else "sessions"}"
+    } else {
+        "Firewall: ${firewall.lastError.ifBlank { "not listening" }}"
+    }

@@ -8,6 +8,7 @@ import cz.slush.adbanywhere.firewall.CallRule
 import cz.slush.adbanywhere.firewall.CallVerdict
 import cz.slush.adbanywhere.firewall.FirewallConfig
 import cz.slush.adbanywhere.firewall.FirewallProxy
+import cz.slush.adbanywhere.firewall.FirewallState
 import cz.slush.adbanywhere.firewall.IpNetwork
 import cz.slush.adbanywhere.firewall.PromptResponse
 import cz.slush.adbanywhere.firewall.RelayPolicy
@@ -16,6 +17,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -27,6 +29,7 @@ import org.junit.Test
 import java.io.ByteArrayOutputStream
 import java.net.ServerSocket
 import java.net.Socket
+import java.util.concurrent.CopyOnWriteArrayList
 
 class FirewallProxyTest {
     private class FakePolicy : RelayPolicy {
@@ -51,15 +54,17 @@ class FirewallProxyTest {
         val proxyPort = freePort()
         val audit = AuditLog(null) { false }
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val states = CopyOnWriteArrayList<FirewallState>()
         val proxy = FirewallProxy(
             scope = scope,
             config = { FirewallConfig(enabled = true) },
             monitor = null,
             policy = FakePolicy(),
             audit = audit,
-            onState = {},
+            onState = { states.add(it) },
         )
         proxy.start("127.0.0.1", proxyPort, upstream.localPort)
+        assertEquals(0, states.last().activeSessions)
         try {
             Socket("127.0.0.1", proxyPort).use { client ->
                 val server = withTimeout(3_000) { accepted.await() }
@@ -90,7 +95,9 @@ class FirewallProxyTest {
                 }
                 assertNotNull(reply)
                 assertEquals(AdbFrameCodec.A_OKAY, reply!!.command)
+                awaitSessions(states, 1)
             }
+            awaitSessions(states, 0)
             assertTrue(audit.entries.value.any { it.event == "connection_open" })
             assertTrue(audit.entries.value.any { it.event == "call_allowed" })
         } finally {
@@ -194,6 +201,12 @@ class FirewallProxyTest {
             upstream.close()
         }
         assertFalse(proxy.isListeningOn("127.0.0.1", proxyPort, upstream.localPort))
+    }
+
+    private suspend fun awaitSessions(states: List<FirewallState>, expected: Int) {
+        withTimeout(3_000) {
+            while (states.lastOrNull()?.activeSessions != expected) delay(10)
+        }
     }
 
     private fun freePort(): Int =

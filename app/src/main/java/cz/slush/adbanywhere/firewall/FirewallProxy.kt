@@ -24,7 +24,6 @@ class FirewallProxy(
     private val audit: AuditLog,
     private val onIpUsed: (String) -> Unit = {},
     private val onAppUsed: (String) -> Unit = {},
-    private val pendingPrompts: () -> Int = { 0 },
     private val onState: (FirewallState) -> Unit,
 ) {
     private val lock = Any()
@@ -43,6 +42,10 @@ class FirewallProxy(
     // the relay must be started or reused, so the read must see the last write.
     @Volatile
     private var listening = false
+    // A stopped proxy must not publish a snapshot over the state of the relay that
+    // replaced it. The flag is checked under `lock` in publish().
+    @Volatile
+    private var stopped = true
     private var localListener = false
     private var lastError = ""
 
@@ -74,6 +77,7 @@ class FirewallProxy(
         }
         server = socket
         listening = true
+        stopped = false
         lastError = ""
         acceptJob = scope.launch(Dispatchers.IO) { acceptLoop(socket) }
         monitorJob = scope.launch {
@@ -89,11 +93,12 @@ class FirewallProxy(
         acceptJob = null
         monitorJob = null
         graceJob = null
+        stopped = true
         runCatching { server?.close() }
         server = null
         listening = false
         closeAll()
-        publish()
+        publish(force = true)
     }
 
     fun rebind(vpnIp: String?) {
@@ -261,17 +266,22 @@ class FirewallProxy(
         publish()
     }
 
-    private fun publish() {
-        onState(
-            FirewallState(
-                enabled = config().enabled,
-                listening = listening,
-                listenAddress = if (listening) "${vpnIp ?: ""}:$port" else "",
-                activeSessions = activeSessions,
-                pendingPrompts = pendingPrompts(),
-                lastError = lastError,
-            ),
-        )
+    private fun publish(force: Boolean = false) {
+        // The snapshot and the write are one critical section: two connections
+        // closing at once must not publish their counts out of order, and a stopped
+        // proxy must not overwrite the state of the relay that replaced it.
+        synchronized(lock) {
+            if (stopped && !force) return
+            onState(
+                FirewallState(
+                    enabled = config().enabled,
+                    listening = listening,
+                    listenAddress = if (listening) "${vpnIp ?: ""}:$port" else "",
+                    activeSessions = connections.size,
+                    lastError = lastError,
+                ),
+            )
+        }
     }
 
     private inner class Connection(
