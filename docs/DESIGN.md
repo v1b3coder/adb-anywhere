@@ -550,7 +550,7 @@ system adbd has no TCP listener, so there is nothing to monitor or turn off.
 | VPN down | Remove VPN listener; app still controls via loopback |
 | Relay bind fails | Setup waits for the port, closes Android's legacy plain listener with `usb:` when it owns the port, and retries; if the port stays busy, fail with the port and the recovery step |
 | Relay dies | Watchdog restarts it and reports Error if it cannot; active sessions drop |
-| Setup fails after the Wi-Fi bootstrap | The pre-setup `adb_wifi_enabled` is restored and the TLS port is verified closed; a failure to close is reported with the manual step |
+| Setup fails after the Wi-Fi bootstrap | The bootstrap this attempt opened is closed and the TLS port is verified closed; a bootstrap that was already on before the attempt is left as it was, and a failure to close is reported with the manual step |
 | VPN excludes the app | Setup fails with an instruction to include ADB Anywhere in the VPN; no fallback listener |
 | App process is killed | Service restart starts the relay again; prompts are lost and denied |
 | Prompt not answered | 30 s timeout, deny, audit; a cancelled prompt releases its slot without suspending |
