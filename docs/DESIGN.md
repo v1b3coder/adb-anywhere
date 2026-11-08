@@ -17,8 +17,9 @@ control.
 
 ## 2. Goals
 
-- Keep ADB reachable from the developer machine across reboots, sleep and network
-  changes, including mobile data over a VPN.
+- Keep ADB reachable from the developer machine across sleep and network
+  changes, including mobile data over a VPN, and redeploy it after a reboot when the
+  system adbd can be reached once.
 - Never expose plain ADB on an untrusted LAN.
 - Make the app the only entity that controls the ADB listener and the only entity
   that decides which developer machines may connect.

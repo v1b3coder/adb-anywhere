@@ -1,7 +1,8 @@
 # adb-anywhere
 
-Wireless ADB that survives reboots, sleep and network changes on ordinary
-Android phones, without root.
+Wireless ADB that stays reachable across sleep and network changes on ordinary
+Android phones, without root. After a reboot it comes back once Android's adb can be
+reached again.
 
 Android turns wireless debugging off when Wi-Fi disconnects, randomises its port
 after reboot and exposes the stock listener on every interface. `adb-anywhere`
@@ -10,7 +11,9 @@ for the app. By default, when a VPN is up, the daemon also listens on the VPN
 address for your computers. With the optional firewall on, the app owns the VPN
 address and the daemon stays loopback-only.
 
-The app controls the daemon and decides which machines may connect.
+The app controls the daemon and decides which machines may connect. The daemon
+process itself does not survive a reboot: the app redeploys it after boot once it can
+reach Android's adb.
 
 The design is in [docs/DESIGN.md](docs/DESIGN.md); the firewall and its limits are
 in [docs/FIREWALL.md](docs/FIREWALL.md). Release notes are in
@@ -22,9 +25,10 @@ in [docs/FIREWALL.md](docs/FIREWALL.md). Release notes are in
 - A VPN that gives the phone a stable IPv4 address reachable by your computers
   (Tailscale or WireGuard). With the firewall on, the VPN must also include ADB
   Anywhere in the tunnel.
-- One Wi-Fi connection for the first pairing. After a reboot the app needs one TCP
-  shell: Wi-Fi wireless debugging, the plain 5555 listener (`adb tcpip 5555` over
-  USB), or root.
+- One Wi-Fi connection for the first pairing.
+- After a reboot the app needs one TCP shell to redeploy the daemon: Wi-Fi wireless
+  debugging, the plain 5555 listener (`adb tcpip 5555` over USB), or root. The app does
+  not keep ADB alive through the reboot by itself.
 - The computer you connect from has its ADB public key at hand.
 - Optional firewall: Usage access for the app allowlist, and Display over other apps
   for the floating approval card. Without overlay permission the prompt falls back
@@ -134,8 +138,9 @@ not isolated. The full design and its limits are in
 - The app allowlist needs Usage access. The floating approval card needs Display
   over other apps; without it the app uses a notification and dialog. A locked
   screen denies a call that needs approval.
-- A reboot with no Wi-Fi needs one Wi-Fi connection (or USB `adb tcpip`) to
-  bootstrap. The app shows the recovery steps.
+- A reboot does not keep the daemon running. The app redeploys it after boot when it
+  can reach Android's adb; on mobile data without the plain 5555 listener it waits for
+  Wi-Fi or USB. The app shows the recovery steps.
 - On some OEMs Android does not restart wireless debugging on a Wi-Fi network
   without internet. Enable Wireless debugging once in Settings to recover.
 - A VPN address change restarts the daemon when the firewall is off and rebinds the

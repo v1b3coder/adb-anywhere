@@ -7,16 +7,18 @@ semantic versioning once the project leaves 0.x.
 ## 0.9.0 — 2026-11-08
 
 First feature-complete preview. ADB Anywhere keeps wireless ADB reachable on a
-stock Android 12+ phone without root, across reboots, sleep and network changes.
+stock Android 12+ phone without root across sleep and network changes, and redeploys
+it after a reboot when Android's adb can be reached once.
 
 ### Wireless ADB that stays up
 
 - A patched AOSP `adbd` runs as the `shell` user with a stable loopback channel
   for the app and, by default, a VPN listener for your computers.
-- Start, Stop, Re-check and Restart from the status card. The last explicit choice
-  survives reboots, app updates and service restarts.
-- Boot receiver, foreground service and watchdog bring ADB back after a reboot, Doze
-  or a process kill, and follow VPN address changes.
+- Start, Stop, Re-check and Restart from the status card. The last explicit choice is
+  remembered across reboots, app updates and service restarts.
+- Boot receiver, foreground service and watchdog try to bring ADB back after a reboot,
+  Doze or a process kill, and follow VPN address changes. After a reboot this needs one
+  reachable Android adb: Wi-Fi wireless debugging, plain 5555, or root.
 - Configurable loopback and VPN ports, kept out of Android's ephemeral range and
   away from the system adbd's plain 5555 listener.
 
@@ -63,8 +65,8 @@ stock Android 12+ phone without root, across reboots, sleep and network changes.
 
 - The firewall IP allowlist is IPv4-only.
 - Per-key policy, audit export and work-profile apps are not implemented yet.
-- A reboot on mobile data needs one Wi-Fi connection or USB `adb tcpip` to
-  bootstrap.
+- A reboot does not keep the daemon alive. On mobile data the app needs one Wi-Fi
+  connection or USB `adb tcpip` to redeploy it.
 - Some OEMs do not restart wireless debugging on a Wi-Fi network without internet;
   enable Wireless debugging once in Settings to recover.
 
