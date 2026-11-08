@@ -8,7 +8,6 @@ semantic versioning once the project leaves 0.x.
 
 First feature-complete preview. Remote wireless ADB that follows your phone —
 over VPN, on mobile data, across network changes. No root, stock Android 12+.
-After a reboot it comes back once Android's adb can be reached again.
 
 ### Wireless ADB that stays up
 

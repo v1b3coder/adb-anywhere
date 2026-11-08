@@ -8,8 +8,6 @@ Android utilities while traveling. The author runs T3 Code on the phone and keep
 Anywhere in the loop, so the agent can write, deploy and test directly on the same
 phone — no laptop, no USB cable and no root.
 
-After a reboot it comes back once Android's adb can be reached again.
-
 Android turns wireless debugging off when Wi-Fi disconnects, randomises its port
 after reboot and exposes the stock listener on every interface. `adb-anywhere`
 keeps a patched AOSP `adbd` running as the `shell` user with a loopback listener
