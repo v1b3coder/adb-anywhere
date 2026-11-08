@@ -10,45 +10,30 @@ listeners and decides which machines may connect.
 
 | Path | What it owns |
 |---|---|
-| [`DESIGN.md`](DESIGN.md) | Architecture, decisions D1–D19, lifecycle invariants I1–I14, failure modes, security model |
+| [`docs/DESIGN.md`](docs/DESIGN.md) | Architecture, decisions D1–D19, lifecycle invariants I1–I14, failure modes, security model |
 | [`docs/FIREWALL.md`](docs/FIREWALL.md) | Relay, IP/app allowlists, call policy, audit log, and their limits |
 | [`adbd/README.md`](adbd/README.md) | Daemon fork, patch set, supported services, tests |
 | [`README.md`](README.md) | User-facing behavior and recovery steps |
-| [`Makefile`](Makefile) | Build, install and e2e helpers |
+| [`Makefile`](Makefile) | Every build, test, e2e and install target |
 
-`DESIGN.md` is the contract. A change that contradicts a decision, an invariant or
-a documented limit updates the design doc in the same commit; design drift is a
-defect.
+`docs/DESIGN.md` is the contract. A change that contradicts a decision, an
+invariant or a documented limit updates the design doc in the same commit; design
+drift is a defect.
 
-## Invariants
+## Folder map
 
-Each exists because its violation shipped a real defect; the full table is
-`DESIGN.md` §6. A change that breaks one needs a test proving the new behavior is
-correct.
-
-- One owner per port and per value. The UI shows only what the owning component
-  publishes; `ControlState` is the single UI truth.
-- Remove a fallback last: turn the system wireless debugging off only after the
-  replacement listener is verified.
-- Persisted is not actual: validate `paired`, `setupComplete` and
-  `daemonFirewallMode` against `user_keys`, the open port and the listener.
-- Re-assert the effect, not the setting (`adb_wifi_enabled=1` even when it reads 1).
-- No silent fallback: an explicit error with recovery steps, never another port,
-  listener or proxy.
-- Ports stay below 32768 and are never 5555.
-- The watchdog never writes `ADB_ENABLED`; only Start does, and only when it reads 0.
-- Serialize listener and prompt lifecycle under the existing locks and epochs.
-- A fix closes the class, not the instance: test the class, not only the reported
-  case.
-
-## Security
-
-- No root, no custom ROM, no proxy fallback, no random-port redirect.
-- `adbd` binds explicit addresses only; wildcard binds are refused.
-- Only keys in the app's key file are accepted; never auto-accept or prompt for an
-  unknown key.
-- The relay is byte-transparent and does not authenticate; ADB key auth stays
-  end-to-end. The firewall is policy and audit, not a sandbox.
+| Path | Contents |
+|---|---|
+| `app/src/main/java/cz/slush/adbanywhere/adb/` | System adbd access, deployment, ports, mDNS, shell |
+| `app/src/main/java/cz/slush/adbanywhere/data/` | App key, developer keys, prefs, endpoints, pairing |
+| `app/src/main/java/cz/slush/adbanywhere/firewall/` | Relay, frame codec, call parser, rules, audit |
+| `app/src/main/java/cz/slush/adbanywhere/service/` | Control service, state, notifications, watchdog, boot |
+| `app/src/main/java/cz/slush/adbanywhere/ui/` | Compose screens, prompt, rule editor |
+| `app/src/test/` | JVM unit tests |
+| `adbd/` | Daemon fork: `vendor/` pristine, `patches/` ours |
+| `scripts/` | Rooted-emulator e2e scripts |
+| `docs/` | Design, firewall, historical e2e evidence |
+| `signing/` | Release keystore inputs; never committed |
 
 ## The `adbd/` fork
 
@@ -64,23 +49,16 @@ correct.
 - Keep the licenses: the app is MIT, the daemon Apache-2.0; update `NOTICE` when the
   fork moves.
 
-```sh
-cd adbd && ./build.sh                          # all ABIs
-cd adbd && ABIS="arm64-v8a" ./build.sh           # one ABI
-cd adbd && ADBD_TESTS=1 ABIS=x86_64 ./build.sh   # + adbd_tests
-```
+## Build, test, e2e
 
-## Gates
+The Makefile owns every command, its variables and the `install-phone` approval
+flow; `make help` lists the targets. Do not copy commands into docs or commits.
 
-```sh
-./gradlew :app:testDebugUnitTest   # JVM tests
-./gradlew :app:lintDebug           # lint gate; errors fail the build
-./gradlew :app:assembleDebug       # APK; needs the Android NDK
-make e2e-firewall                  # firewall e2e on a rooted emulator
-```
-
-`.github/workflows/ci.yml` runs tests, lint and assemble on every push to `main`
-and every PR; keep it green. `scripts/e2e-emulator.sh` is the control-plane e2e.
+- `make check` is the CI gate locally: JVM tests, lint and the debug APK.
+- `make adbd`, `make adbd-abi ABI=...` and `make adbd-tests` build the daemon;
+  a local build needs the Android NDK.
+- `.github/workflows/ci.yml` runs tests, lint and assemble on every push to `main`
+  and every PR; keep it green.
 
 - Never commit `signing/`, keystores, `local.properties` or
   `app/src/main/assets/adbd/`.

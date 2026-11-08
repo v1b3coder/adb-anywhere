@@ -50,7 +50,7 @@ object SystemSettings {
     }.getOrDefault(false)
 
     /**
-     * DESIGN §7: 0 removes the framework's wireless-debugging timeout, so the
+     * docs/DESIGN §7: 0 removes the framework's wireless-debugging timeout, so the
      * bootstrap path survives while the app is in the background. The key is
      * @hide, so it is addressed by name like adb_wifi_enabled; the read-back
      * rejects a write an OEM ignored.

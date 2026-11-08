@@ -30,7 +30,7 @@ control.
 - Replacing the system `adbd` on the system partition.
 - A general-purpose VPN or firewall for other apps.
 - A sandbox for `shell`. Call policy is policy and audit, not isolation
-  (see §8 and `docs/FIREWALL.md`).
+  (see §8 and `FIREWALL.md`).
 - Filtering the app's own loopback channel.
 - TV and set-top boxes.
 
@@ -176,7 +176,7 @@ Not implemented: USB, vsock, TLS, pairing, mDNS, `jdwp:`, `track-jdwp`,
 `track-app`, `abb:` (the shell-protocol variant), `root:`, `remount:`, `reboot:`,
 `restore:`, `disable-verity:` and `enable-verity:`. The daemon has no per-key
 policy or filtering layer: every key in the key file may open every service the
-relay allows. Filtering lives in the app relay (`docs/FIREWALL.md`), not in the
+relay allows. Filtering lives in the app relay (`FIREWALL.md`), not in the
 daemon.
 
 ### Key provisioning
@@ -595,7 +595,7 @@ a different mode.
 - **Phase 2 — vendored adbd**: build from `adbd/`, bundle, deploy, two listeners,
   key provisioning, QR and paste pairing, logs, watchdog.
 - **Phase 3 — depth**: implemented. The optional firewall, its IP/app allowlists,
-  the call-policy model and the audit log are in `docs/FIREWALL.md`. Remaining:
+  the call-policy model and the audit log are in `FIREWALL.md`. Remaining:
   IPv6 allowlist entries, per-key defaults, audit export.
 
 ## 12. Open risks
@@ -616,7 +616,7 @@ port.
 - Vendored AOSP adbd re-vendor across releases: the patch set is small, but the
   vendored trees (`adb`, `libbase`, `libcutils`, `libcrypto_utils`, `libasyncio`,
   `adbd_auth`, `liblog`, BoringSSL) and the BoringSSL build move with it. The
-  upstream commits are recorded in `adbd/README.md`; a re-vendor is a copy and a
+  upstream commits are recorded in `../adbd/README.md`; a re-vendor is a copy and a
   patch reapply, not a merge.
 - A per-app VPN that excludes the app does not deliver inbound packets to the
   relay, which runs in the app's UID; the app fails with an instruction instead of
@@ -634,5 +634,6 @@ port.
 Inspired by [mouldybread/adb-auto-enable](https://github.com/mouldybread/adb-auto-enable)
 (MIT). The patched adbd is vendored from AOSP `packages/modules/adb` (Apache 2.0)
 and BoringSSL (ISC); the upstream commits, the patches and the `NOTICE` files are
-in `adbd/`. The app's own code is MIT (see `LICENSE`); the vendored daemon stays
-Apache 2.0 (see `adbd/LICENSE`), and third-party attributions are in `NOTICE`.
+in `../adbd/`. The app's own code is MIT (see `../LICENSE`); the vendored daemon
+stays Apache 2.0 (see `../adbd/LICENSE`), and third-party attributions are in
+`../NOTICE`.

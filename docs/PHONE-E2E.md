@@ -82,7 +82,7 @@ Killing the patched daemon while the phone's Wi-Fi had no internet exposed a
 Samsung/Android limitation: the framework refused to restart the TLS server after
 the app re-asserted `adb_wifi_enabled=1`. The app showed the explicit error
 ("wireless debugging is not reachable ...") and did not fall back to a proxy or a
-random port, matching DESIGN.md section 9. Recovery is the documented one-Wi-Fi
+random port, matching docs/DESIGN.md section 9. Recovery is the documented one-Wi-Fi
 step: enable Wireless debugging once in Settings.
 
 ## Revocation

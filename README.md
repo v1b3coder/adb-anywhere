@@ -10,7 +10,7 @@ listeners: loopback for this app and the VPN address for developer machines. The
 app is the only entity that controls the listener, and the only entity that decides
 which machines may connect.
 
-The design is in [DESIGN.md](DESIGN.md).
+The design is in [docs/DESIGN.md](docs/DESIGN.md).
 
 ## Requirements
 

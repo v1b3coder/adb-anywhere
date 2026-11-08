@@ -158,7 +158,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _keys.value = updated
         AppLog.info("keys", "removed ${fingerprint.take(16)}; restarting to close sessions")
         // Revocation must close live sessions, so the service restarts the daemon
-        // instead of only rewriting the key file (DESIGN.md §8).
+        // instead of only rewriting the key file (docs/DESIGN.md §8).
         applyIfRunning(ControlService.ACTION_REVOKE_KEYS)
     }
 
