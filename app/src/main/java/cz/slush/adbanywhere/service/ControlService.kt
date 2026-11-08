@@ -1593,8 +1593,7 @@ class ControlService : Service() {
             if (state.firewall.enabled) {
                 add(
                     if (state.firewall.listening) {
-                        "Firewall: ${state.firewall.activeSessions} sessions, " +
-                            "${state.firewall.pendingPrompts} prompts"
+                        "Firewall: ${state.firewall.activeSessions} sessions"
                     } else {
                         "Firewall: ${state.firewall.lastError.ifBlank { "not listening" }}"
                     },
