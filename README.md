@@ -1,8 +1,9 @@
 # adb-anywhere
 
-Wireless ADB that stays reachable across sleep and network changes on ordinary
-Android phones, without root. After a reboot it comes back once Android's adb can be
-reached again.
+Remote wireless ADB that follows your phone — over VPN, on mobile data, across
+network changes. No root, stock Android 12+.
+
+After a reboot it comes back once Android's adb can be reached again.
 
 Android turns wireless debugging off when Wi-Fi disconnects, randomises its port
 after reboot and exposes the stock listener on every interface. `adb-anywhere`

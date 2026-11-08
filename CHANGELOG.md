@@ -6,9 +6,9 @@ semantic versioning once the project leaves 0.x.
 
 ## 0.9.0 — 2026-11-08
 
-First feature-complete preview. ADB Anywhere keeps wireless ADB reachable on a
-stock Android 12+ phone without root across sleep and network changes, and redeploys
-it after a reboot when Android's adb can be reached once.
+First feature-complete preview. Remote wireless ADB that follows your phone —
+over VPN, on mobile data, across network changes. No root, stock Android 12+.
+After a reboot it comes back once Android's adb can be reached again.
 
 ### Wireless ADB that stays up
 
