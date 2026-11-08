@@ -33,5 +33,5 @@ vendored AOSP daemon with a focused patch instead.
 
 - The app is Kotlin/Compose; `vendor/adb-auto-enable` is a gitignored reference
   clone, not part of the build.
-- `docs/AUDIT.md` is the production-readiness audit. `docs/E2E.md` and
-  `docs/PHONE-E2E.md` are historical evidence from the original daemon.
+- `docs/E2E.md` and `docs/PHONE-E2E.md` are historical evidence from the
+  original daemon.
