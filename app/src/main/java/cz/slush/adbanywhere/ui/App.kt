@@ -6,11 +6,13 @@ package cz.slush.adbanywhere.ui
 import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.provider.Settings
+import android.service.quicksettings.TileService
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -171,7 +173,7 @@ fun AppRoot(viewModel: AppViewModel) {
                     onCopy = ::copy,
                     onRestart = viewModel::restart,
                     onPair = { screen = Screen.Setup },
-                    onOpenSettings = { screen = Screen.Settings },
+                    onOpenSettings = { openWirelessDebugging(context) },
                 )
                 Screen.Setup -> SetupScreen(
                     state = state,
@@ -235,5 +237,30 @@ fun AppRoot(viewModel: AppViewModel) {
                 )
             }
         }
+    }
+}
+
+/**
+ * Opens Android's Wireless debugging page. Stock Settings has no public intent
+ * for it, but its own Quick Settings tile long-press handler does: the developer
+ * options activity turns this action plus the tile component into the page. A build
+ * without that handler still lands in Developer options.
+ */
+private fun openWirelessDebugging(context: Context) {
+    val wireless = Intent(TileService.ACTION_QS_TILE_PREFERENCES)
+        .setPackage("com.android.settings")
+        .putExtra(
+            Intent.EXTRA_COMPONENT_NAME,
+            ComponentName(
+                "com.android.settings",
+                "com.android.settings.development.qstile.DevelopmentTiles\$WirelessDebugging",
+            ),
+        )
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    if (runCatching { context.startActivity(wireless) }.isFailure) {
+        context.startActivity(
+            Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
     }
 }
