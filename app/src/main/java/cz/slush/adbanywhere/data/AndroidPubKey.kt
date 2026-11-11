@@ -30,6 +30,11 @@ object AndroidPubKey {
     ) {
         val fingerprint: String = fingerprintOf(raw)
         val bits: Int = modulus.bitLength()
+
+        fun toPublicKey(): RSAPublicKey =
+            java.security.KeyFactory.getInstance("RSA").generatePublic(
+                java.security.spec.RSAPublicKeySpec(modulus, exponent),
+            ) as RSAPublicKey
     }
 
     /** Encodes an RSA public key into Android's adbkey.pub binary format. */
@@ -93,7 +98,8 @@ object AndroidPubKey {
 
     fun encodeLine(publicKey: RSAPublicKey, label: String): String {
         val b64 = Base64.getEncoder().encodeToString(encode(publicKey))
-        return if (label.isBlank()) b64 else "$b64 ${label.trim()}"
+        val clean = DeveloperKey.sanitize(label).takeIf { label.isNotBlank() }
+        return if (clean == null) b64 else "$b64 $clean"
     }
 
     fun fingerprintOf(raw: ByteArray): String {

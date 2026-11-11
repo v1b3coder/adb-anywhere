@@ -1,7 +1,7 @@
 # adb-anywhere — Design
 
 Status: implemented; records the decisions the code follows
-Date: 2026-11-07
+Date: 2026-11-10
 Scope: stock Android phones, no root
 
 ## 1. Problem
@@ -86,10 +86,12 @@ These are facts from AOSP `main`, not assumptions.
    setting it and delivers the port to the framework over the auth socket; that
    socket is a private `system_server` channel (`adbd`, `0660 system system`).
    The app's discovery path is mDNS (`_adb-tls-connect._tcp`), the same
-   advertisement the host `adb` uses. When mDNS is unavailable the app falls back
-   to a TLS handshake against the shell-owned listening ports, and to the port
-   from the last successful bootstrap last. A remembered port is a hint: the app
-   connects to it before it trusts it.
+   advertisement the host `adb` uses, with the port from the last verified
+   bootstrap as a hint. `/proc/net/tcp` is not app-readable on the releases this
+   app targets, so there is no socket-table fallback. Any app can advertise an
+   mDNS service or listen on a loopback port, so a discovered port is only a
+   candidate: it must speak TLS and pass the shell proof (I16) before the app
+   trusts it.
 10. **`adb_enabled=0` stops adbd.**
     `AdbService.setAdbEnabled(false, USB)` calls `stopAdbd()`, and
     `UsbDeviceManager` removes ADB from the USB functions and calls
@@ -101,7 +103,23 @@ These are facts from AOSP `main`, not assumptions.
     accept on the VPN address even though the bind succeeds. The app detects the
     exclusion and fails with an instruction instead of reporting a listener that
     cannot be reached.
-12. **The VPN address is the VPN transport's address, not an interface guess.**
+12. **Binding the VPN address does not confine traffic to the VPN.** Linux
+    accepts a packet for any local address on any interface, so a LAN host can
+    address the VPN IP through the phone's Wi-Fi. A TCP handshake still needs the
+    reply to reach the peer, and the reply follows the phone's routes; the relay
+    therefore accepts only peers whose replies are routed into the tunnel
+    (`FIREWALL.md` §5). The patched daemon's direct VPN listener cannot make that
+    check.
+13. **The system adbd's TLS key cannot be pinned.** adbd generates a random RSA
+    key for its TLS server per process, and pairing exchanges no server key the
+    app could keep. A TLS client certificate still signs the handshake transcript,
+    so a signature given to a fake server cannot be replayed to the real one; the
+    fake server is excluded by the shell proof instead (I16).
+14. **A plain ADB token signature can be replayed.** The client signs only the
+    20-byte token the server chose, not the connection. Whoever owns the port the
+    client connects to can forward a token from a real plain listener and replay
+    the signature there (I15).
+15. **The VPN address is the VPN transport's address, not an interface guess.**
     `ConnectivityManager` reports the VPN networks and their `LinkProperties`; the
     app takes the address from those networks only. A scan of the Wi-Fi or cellular
     interfaces returns the LAN or carrier address when no VPN is up, and binding it
@@ -112,11 +130,11 @@ These are facts from AOSP `main`, not assumptions.
 | # | Decision | Choice |
 |---|---|---|
 | D1 | Device support | Stock Android 12+, no root |
-| D2 | Data plane | Two listener modes. Firewall off: one patched `adbd` with `127.0.0.1:<portA>` and `<vpn-ip>:<portB>`. Firewall on: the patched `adbd` binds only `127.0.0.1:<portA>` and the app relay owns `<vpn-ip>:<portB>` |
-| D3 | App key | Ephemeral RSA keypair generated on first run; private key in app-private storage; public key in the patched adbd key file |
+| D2 | Data plane | Two listener modes. Firewall off: one patched `adbd` with the TLS listener `127.0.0.1:<portA>` and the plain listener `<vpn-ip>:<portB>`. Firewall on: the patched `adbd` binds only `127.0.0.1:<portA>` and the app relay owns `<vpn-ip>:<portB>` |
+| D3 | App keys | Two ephemeral RSA keypairs generated on first use, private keys in app-private device-protected storage, excluded from backup and device transfer: the system key (paired with Android's adbd, bootstrap only) and the daemon key (trusted only by the patched adbd). See D20 |
 | D4 | Developer machine pairing | QR or pasted public key from the developer machine; app confirms the fingerprint; user labels the machine; no pairing listener on the phone |
-| D5 | System adbd lifecycle | Start writes `ADB_ENABLED=1` when it reads 0, then tries the system adbd's existing TCP listeners; on Wi-Fi it falls back to `ADB_WIFI_ENABLED=1` even when it already reads 1. Stop stops only the patched adbd; the opt-in Settings switch "Turn system adb off on Stop" makes Stop write `ADB_ENABLED=0` |
-| D6 | Watchdog | Keeps `ADB_WIFI_ENABLED=0`; probes 5555 on every tick and reports the open listener as the §8 residual warning; restarts the patched adbd through the system adbd when reachable; re-arms its alarm on every tick and backs off after a failure; retries a failed setup only while the failure is transient, and a failure that needs the user (a missing VPN, a port change, a missing permission) waits for Try again; never writes `ADB_ENABLED` (only Start does, and only when it reads 0) |
+| D5 | System adbd lifecycle | An explicit Start, Restart or pairing writes `ADB_ENABLED=1` when it reads 0, then tries the system adbd's existing TCP listeners; on Wi-Fi it falls back to `ADB_WIFI_ENABLED=1` even when it already reads 1. Opening the app, a boot, an update, a sticky restart, a network change and the watchdog never write `ADB_ENABLED`: they re-check, and with ADB off they fail and wait for Start. Stop stops only the patched adbd; the opt-in Settings switch "Turn system adb off on Stop" makes Stop write `ADB_ENABLED=0` |
+| D6 | Watchdog | Keeps `ADB_WIFI_ENABLED=0`; probes 5555 on every tick and reports the open listener as the §8 residual warning; restarts the patched adbd through the system adbd when reachable; checks the daemon key files against the app's copy and restores them; re-arms its alarm on every tick and backs off after a failure; retries a transient failure indefinitely at the backoff cap, also in a process that never reached Running; a failure that needs the user (a missing VPN, a port change, a missing permission, ADB turned off) waits for Try again, across process restarts too; never writes `ADB_ENABLED` |
 | D7 | Policy | The app enforces policy, not the daemon. The optional relay parses `A_OPEN` and applies the IP allowlist, the foreground-app allowlist and call rules. The patched `adbd` stays policy-free; the VPN ACL is the outer boundary |
 | D8 | UI stack | Kotlin, Jetpack Compose, Material 3; package `cz.slush.adbanywhere` |
 | D9 | Bootstrap pairing | One `RemoteInput` notification: reply with `code:port` from the open dialog |
@@ -129,6 +147,8 @@ These are facts from AOSP `main`, not assumptions.
 | D16 | Port range | The loopback and VPN ports are below 32768, outside Android's ephemeral range, and never 5555, the system adbd's plain listener |
 | D17 | State publication | `ControlState` is the only UI source of truth. Each listener publishes its own state, `setup()` never resets a live listener's state, and `firewallDown` is derived |
 | D18 | Restart coordination | One daemon identity (`--listen` in `ps`, `/proc` fallback), one restart-script naming scheme, a PID marker, and a wait for the predecessor |
+| D20 | App channel and key separation | The patched adbd's loopback listener is TLS-only: the server key is generated by the app, pushed over a verified channel and pinned (SHA-256 of its SubjectPublicKeyInfo); only the daemon key may finish the handshake (`--tls-clients`), and ADB key auth then runs inside the channel. The relay tunnels each developer session through the same listener, so developer key auth stays end to end. The system key is used only with the system adbd; the daemon never trusts it. libadb is used only for pairing; every connection goes through the app's own client, which decides when a token is signed (I15) |
+| D21 | Test hooks | The end-to-end hooks live in a debug-only receiver protected by `android.permission.DUMP`, which only the shell user holds. The exported launcher activity reads no intent extras |
 | D19 | Ownership | Every value has one owner. The UI shows only the state its component publishes: the System adb card reads the system adbd's state, the Ports card reads the app's ports, and a probe names the owner it found. A persisted config has one writer and one read-modify-write entry point. A platform read runs off the UI thread, and the UI shows an explicit loading state. The UsageStats appop is checked before the app allowlist is enabled, and a revoked appop clears the foreground so the module fails closed. The app's own tooling is not exempt from the call policy |
 
 ## 6. Architecture
@@ -137,9 +157,9 @@ Two ADB endpoints and one app process, in two listener modes:
 
 | Component | Runs as | Listener, firewall off | Listener, firewall on | Role |
 |---|---|---|---|---|
-| System `adbd` | `shell` (retail) | USB (left on); TLS before `ADB_WIFI_ENABLED=0`; TCP 5555 only on some devices | same | Bootstrap; key auth; system services |
-| Patched `adbd` | `shell` | `127.0.0.1:<portA>`, `<vpn-ip>:<portB>` | `127.0.0.1:<portA>` | Only ADB endpoint for the app and developer machines; key file and logs |
-| App relay | app uid | none | `<vpn-ip>:<portB>` | Optional firewall: accept, policy, relay to loopback |
+| System `adbd` | `shell` (retail) | USB (left on); TLS before `ADB_WIFI_ENABLED=0`; TCP 5555 only on some devices | same | Bootstrap with the system key; system services |
+| Patched `adbd` | `shell` | TLS `127.0.0.1:<portA>`, plain `<vpn-ip>:<portB>` | TLS `127.0.0.1:<portA>` | Only ADB endpoint for the app and developer machines; key files and logs |
+| App relay | app uid | none | `<vpn-ip>:<portB>` | Optional firewall: accept, policy, tunnel to the TLS loopback listener |
 | App | app uid | none | none | Control plane: deploys, keys, watchdog, UI, audit |
 | Developer machine `adb` | host | none | none | Client |
 
@@ -157,15 +177,17 @@ a copy, never a merge.
 
 | Patch | Purpose |
 |---|---|
-| `daemon/main.cpp`: accept `--listen`, `--keys`, `--log`, `--pid-file` | Bind the exact addresses and key file the app gives it |
+| `daemon/main.cpp`: accept `--listen`, `--tls-listen`, `--tls-key`, `--tls-clients`, `--keys`, `--log`, `--pid-file`; no listener fallback; every listener binds at startup or the daemon exits | Bind the exact addresses and key files the app gives it; never a wildcard, 5555 or a late bind |
 | `daemon/main.cpp`: skip USB, vsock, mDNS, watchdog, jdwp, trade-in, privilege dropping | Never touch USB, vsock or the system adbd |
-| `daemon/auth.cpp`: no TLS or pairing | RSA key-file authentication only |
+| `daemon/auth.cpp`, `transport.cpp`, `adb.cpp`: TLS tunnel on `--tls-listen` | TLS 1.3 with the app's server key; the client certificate must be in `--tls-clients`; ADB key auth against `--keys` then runs inside TLS. No pairing, no TLS on the plain listener |
+| `adb.cpp`, `adbd_auth.cpp`: pre-auth limits | 16 failed signatures or a second offered key close the transport; the unlisted-key log line is bounded |
+| `daemon/services.cpp`: `reverse:` binds loopback only | A developer's `adb reverse` never opens a port on Wi-Fi or cellular |
 | `daemon/services.cpp`: keep `shell:`, `exec:`, `abb_exec:`, `sync:`, `tcp:`, `reverse:`, `framebuffer:` | What developer machines, `adb install`, `adb reverse` and screenshots need |
 | `daemon/services.cpp`: reject `abb:`, `jdwp:`, `root:`, `remount:`, `reboot:`, `usb:`, `tcpip:` and the test socket services | The patched adbd must not touch the system adbd or reboot |
-| `transport.cpp`, `adb.cpp`, `adb_auth.h`: no TLS handshake | Plain ADB over the VPN |
 | `compression_utils.h`: keep Zstd, stub Brotli/LZ4 | Compressed `adb push`/`adb pull` without vendoring all three codecs |
-| `transport.cpp`: advertise only the implemented features | `apex`, `abb_exec`, `sendrecv_v2_zstd` and `devraw` are advertised; `abb`, Brotli, LZ4, mDNS, `track-app`, `remount_shell`, `app_info` and `devicetracker_proto_format` are not |
-| `adb_trace.cpp`, `socket_spec.cpp`: null log tag, explicit-address bind | The standalone daemon's two small robustness fixes |
+| `transport.cpp`: advertise only the implemented features | `apex`, `abb_exec` and `sendrecv_v2_zstd` are advertised; `abb`, Brotli, LZ4, mDNS, `track-app`, `remount_shell`, `app_info`, `devraw` and `devicetracker_proto_format` are not |
+| `adb_trace.cpp`, `socket_spec.cpp`: null log tag, explicit-address bind | Explicit numeric addresses only; a wildcard (`0.0.0.0`, `::`, v4-mapped any) is refused after parsing, not by string |
+| `daemon/main.cpp`: `umask(022)`; log and pid files `0600`, `O_NOFOLLOW` | Nothing the daemon or its children create is world-writable |
 
 Multi-listener is not a large patch. `setup_adb` already loops over the address
 list and `init_transport_socket_server` starts one thread per address
@@ -178,25 +200,46 @@ build script and vendored dependencies, not a per-release patch.
 Build targets: `arm64-v8a`, `armeabi-v7a`, `x86_64` (`adbd/build.sh`). Bundle in
 the APK as assets. AOSP `adbd` is Apache 2.0; ship `NOTICE` and the source offer.
 
-Not implemented: USB, vsock, TLS, pairing, mDNS, `jdwp:`, `track-jdwp`,
+Rejecting a service is not a security control: the daemon runs every service
+as `shell`, so `exec:reboot`, `exec:setprop` or `abb_exec:` reach what `reboot:`,
+`tcpip:` or `abb:` did. The rejections stop accidental client commands only;
+the call policy and the key file are the controls.
+
+Not implemented: USB, vsock, TLS on the plain listener, pairing, mDNS, `jdwp:`, `track-jdwp`,
 `track-app`, `abb:` (the shell-protocol variant), `root:`, `remount:`, `reboot:`,
-`restore:`, `disable-verity:` and `enable-verity:`. The daemon has no per-key
+`backup:`, `restore:`, `disable-verity:`, `enable-verity:` and `dev-raw:`. The daemon has no per-key
 policy or filtering layer: every key in the key file may open every service the
 relay allows. Filtering lives in the app relay (`FIREWALL.md`), not in the
 daemon.
 
 ### Key provisioning
 
-- First run: the app generates an ephemeral RSA keypair. The private key stays in
-  app-private storage; the public key is written to the patched adbd key file before
-  it starts.
-- The patched adbd key file contains the app key and the developer keys the user
-  adds. Unknown keys are never prompted for or auto-accepted.
+- First use: the app generates two ephemeral RSA keypairs (D20) and the daemon's
+  TLS server key. The private keys stay in app-private device-protected storage,
+  excluded from cloud backup and device-to-device transfer.
+- The system key (`appkey.pk8`) is what pairing puts into the system adbd's
+  `user_keys`. It is used only to bootstrap and never written to the patched
+  adbd's files.
+- The patched adbd has three files, each written atomically (private temporary
+  file, then `mv`) with mode `600`:
+  - `adb_keys` (`--keys`): the daemon key and the developer keys the user adds.
+  - `tls_clients` (`--tls-clients`): the daemon key only.
+  - `tls_key.pem` (`--tls-key`): the TLS server key; the app pins its public key.
+- Unknown keys are never prompted for or auto-accepted.
+- Labels are comments in a line-based file written through a shell command:
+  every control character becomes a space and the length is capped at 64.
 - Developer machine keys are added by QR or pasted public key. Each key has a label.
-- The app rewrites the key file through the patched adbd's `shell:`. It never needs
-  a second listener.
-- On reinstall, the app generates a new keypair and rewrites the key file. Old keys
+- The app rewrites the key files through the patched adbd's pinned channel. It
+  never needs a second listener.
+- Every shell-uid process can edit these files. The watchdog compares them with
+  the app's copy on every tick, restores them and restarts the daemon on a
+  mismatch, and tells the user; it cannot prevent the edit.
+- On reinstall, the app generates new keys and rewrites the key files. Old keys
   are removed.
+- A daemon deployed by a build before D20 trusts the old single app key, which is
+  now the system key. It is migrated once through its own shell: only while
+  `127.0.0.1:5555` is closed (no plain system listener to replay a signature to),
+  and only after the shell proof (I16).
 
 ### Developer machine pairing
 
@@ -228,10 +271,12 @@ because the key is idempotent; removing the key revokes it.
   removes the USB recovery path and, on devices where the pairing store is
   tied to it, can lose the paired key.  The opt-in Settings switch makes this
   explicit: off by default, so a Stop leaves ADB and its paired key alone.
-- Bootstrap: after pairing, the app key is in the system adbd's `user_keys`.
-  Start writes `ADB_ENABLED=1` when it reads 0 (safe: it does not delete the key)
-  and then tries the system adbd's existing TCP listeners: the TLS property, the
-  last TLS port, the plain 5555 listener and mDNS.  On Wi-Fi, if none answers,
+- Bootstrap: after pairing, the system key is in the system adbd's `user_keys`.
+  An explicit Start writes `ADB_ENABLED=1` when it reads 0 (safe: it does not
+  delete the key) and then tries the system adbd's existing TCP listeners: the
+  TLS property, the last TLS port, the plain 5555 listener and mDNS. Every
+  candidate except 5555 must speak TLS; a plain token there is refused unsigned
+  (I15). The first endpoint that passes the shell proof is used (I16). On Wi-Fi, if none answers,
   it writes `ADB_WIFI_ENABLED=1` even when it already reads 1, waits 900 ms and
   retries.  On mobile data the system adbd has no TCP listener unless the plain
   listener was enabled over USB (`adb tcpip 5555`) or root; the app fails with that
@@ -259,12 +304,12 @@ The Settings switch **Turn system adb off on Stop** is the opt-in ownership:
 
 | Action | `ADB_ENABLED` | `ADB_WIFI_ENABLED` | Patched adbd |
 |---|---|---|---|
-| Start, patched adbd down | `1` when off | `1` only in the Wi-Fi fallback | deploy |
+| Start, patched adbd down | `1` when off (explicit Start only) | `1` only in the Wi-Fi fallback | deploy |
 | Start, patched adbd up | unchanged | unchanged | keep running |
 | Running | unchanged | `0` after harden | keep running |
 | Stop, switch off | unchanged | unchanged | stop |
 | Stop, switch on | `0` | `0` | stop |
-| Boot after Start | unchanged | `1` only in the Wi-Fi fallback | deploy |
+| Boot after Start | unchanged; fails and waits for Start when off | `1` only in the Wi-Fi fallback | deploy |
 | Boot after Stop | unchanged | unchanged | not running |
 
 ### Port behavior
@@ -318,13 +363,20 @@ port.
 
 | Firewall | Patched `adbd` listens on | App listens on | Developer machine connects to |
 |---|---|---|---|
-| off | `127.0.0.1:<portA>`, `<vpn-ip>:<portB>` | nothing | `adbd` |
-| on | `127.0.0.1:<portA>` | `<vpn-ip>:<portB>` | the app relay, which connects to `adbd` loopback |
+| off | TLS `127.0.0.1:<portA>`, plain `<vpn-ip>:<portB>` | nothing | `adbd` |
+| on | TLS `127.0.0.1:<portA>` | `<vpn-ip>:<portB>` | the app relay, which tunnels to `adbd` loopback |
 
+0. The loopback listener is TLS in both modes. The relay forwards the
+   developer's own `A_CNXN`, answers the daemon's `A_STLS` with the pinned
+   handshake and relays the rest inside TLS, so the developer key authenticates
+   end to end and the relay still sees plain ADB framing.
 1. The VPN port has one owner. Before the relay binds, the app checks whether the
    port is open and who owns it: the relay itself (reuse it), the patched `adbd`
-   (restart it loopback-only), or Android's legacy plain listener (send `usb:` to the
-   system adbd, reconnect, retry). The port, not a pref, is the authority.
+   (restart it loopback-only), or Android's legacy plain listener, identified by
+   the verified system shell reading `service.adb.tcp.port` (send `usb:`,
+   reconnect, retry). Any other holder is foreign and the bind fails with the
+   port. `usb:` keeps the system adbd on USB, so the recovery path stays. The
+   port, not a pref, is the authority.
 2. `daemonFirewallMode` records the mode the running daemon was started with.
    `firewallEnabled != daemonFirewallMode` forces a restart, because a daemon started
    in the other mode holds the wrong listener set even when the persisted intent
@@ -336,7 +388,8 @@ port.
    live listener still blocks it.
 5. The relay is the only component that can fail without killing ADB: the loopback
    channel is independent, so a relay failure is an error state with a recovery step,
-   not a stopped daemon.
+   not a stopped daemon. A setup that verified the daemon and then failed at the
+   relay keeps the daemon running.
 
 ### Lifecycle invariants
 
@@ -359,6 +412,9 @@ behavior is still correct.
 | I11 | Listener and prompt lifecycle are serialized. `startFirewall()`, `stopFirewall()` and the relay rebind share `relayLock`; a stop bumps an epoch that invalidates an in-flight start; the prompt map is concurrent and every prompt path releases its slot. | Two starts bound the VPN port at once; a retrying start bound after a stop; a cancelled prompt left `pending()` true and suspended the app-allowlist grace timer | `74bb129` |
 | I12 | The watchdog never writes `ADB_ENABLED`. Hardening is bound to the running daemon, not to the app process; a stop leaves wireless debugging alone. | Stop wrote `ADB_ENABLED=0` and dropped the paired key | `4b5596d` |
 | I13 | One owner per value. The UI shows only the state its component publishes; a persisted config has one writer; a platform read runs off the UI thread; the app's own tooling is not exempt. | The System adb card showed the app's own loopback port as the system adbd's port; the relay and the UI overwrote each other's config write; the app-catalog query froze the Firewall tab; `make install-phone` reported a failed install as success | `0bc537c`, `5e446cf`, `10cda0a`, `63067d5` |
+| I15 | Sign only where a signature cannot be replayed. A plain ADB token is signed only inside the pinned daemon channel, on the system adbd's 5555, or for the one-time legacy migration with 5555 closed; everywhere else the app requires TLS and refuses a plain token unsigned. Each adbd has its own key | libadb signed any token a loopback server sent, so a local app could relay a token from the patched adbd and get `shell` | this change |
+| I16 | Trust an endpoint only after it proves who it is. The patched adbd proves it with the pinned TLS key; the system adbd and a legacy daemon prove they run commands as shell by delivering a nonce to a receiver only the shell user can reach. A port that is open, advertised or remembered proves nothing | The daemon identity check ran over the connection it checked, so a squatter answered it; a discovered port was trusted on connect | this change |
+| I17 | Unknown is denied. The relay drops a frame for a stream it does not track or with a mismatched device id; it parses sync as a byte stream; the daemon refuses a listener it cannot bind instead of retrying | A close naming another stream, two requests in one frame, or a request inside a data phase bypassed the sync policy | this change |
 | I14 | A fix closes the class, not the instance. Every fix names the class of defect it closes and adds the test for the class, not only for the reported instance. | A fix closed the reported instance and left a smaller instance of the same class: a preference comparison after a port-ownership fix, a whole-config write after a writer-race fix, a nested dialog after a warning-placement fix, and a swallowed exit code after a tooling decision | `0bc537c`, `10cda0a`, `303f9aa`, `5e446cf`, `63067d5` |
 
 ### Start and stop order
@@ -366,14 +422,17 @@ behavior is still correct.
 Start:
 
 1. Validate the ports (below 32768) and the persisted intent.
-2. Bootstrap the system adbd: enable ADB when it reads 0, try its existing
-   listeners, then the Wi-Fi fallback.
-3. Deploy the patched `adbd` with the listener set for the current mode and verify
-   loopback (and the VPN listener when the firewall is off).
-4. Start the relay and verify the VPN listener (when the firewall is on).
-5. Turn the system wireless debugging off. This is the last step: it removes the
+2. Probe the loopback port: the pinned daemon, a legacy daemon to migrate, or a
+   foreign holder that is never trusted.
+3. Bootstrap the system adbd: an explicit Start enables ADB when it reads 0; try
+   its existing listeners, then the Wi-Fi fallback; prove the endpoint (I16).
+4. Deploy the patched `adbd` with the listener set for the current mode and verify
+   loopback through the pinned channel (and that the VPN port is bound when the
+   firewall is off).
+5. Start the relay and verify the VPN listener (when the firewall is on).
+6. Turn the system wireless debugging off. This is the last step: it removes the
    fallback.
-6. Publish Running and start the watchdog.
+7. Publish Running and start the watchdog.
 
 Stop:
 
@@ -394,8 +453,14 @@ system adbd has no TCP listener, so there is nothing to monitor or turn off.
 - Probe `127.0.0.1:5555` on every tick and show an explicit warning when it is
   open. Never set `ADB_ENABLED=0`: stopping the system adbd would also kill the
   patched adbd on devices that share its cgroup.
-- Poll `127.0.0.1:<portA>` every 60 s while the screen is on and every 15 min
-  via `AlarmManager.setExactAndAllowWhileIdle` otherwise.
+- Poll `127.0.0.1:<portA>` through the pinned channel every 60 s while the
+  process runs, and every 15 min via `AlarmManager.setAndAllowWhileIdle`
+  otherwise (an exact alarm needs `SCHEDULE_EXACT_ALARM`, which the app does not
+  ask for).
+- Compare the daemon key files with the app's copy; restore them, restart the
+  daemon and warn on a mismatch.
+- "Listener gone" means nothing on the system adbd's last TLS port still answers
+  `A_STLS`; the property is not app-readable, so the remembered port is the evidence.
 - If `<portA>` is down, restart the patched adbd through the system adbd if it is
   reachable, otherwise show an explicit error with recovery steps.
 - Register `UsbManager.ACTION_USB_STATE` (sticky) and
@@ -415,13 +480,15 @@ system adbd has no TCP listener, so there is nothing to monitor or turn off.
    A fresh install defaults to stopped; an install that already completed setup
    defaults to running, so an update keeps the daemon supervised.
 3. Nothing brings the daemon up without that intent: opening the app, a
-   reboot, a sticky restart and the watchdog all respect it.
+   reboot, a sticky restart and the watchdog all respect it. Only an explicit
+   Start, Restart or pairing may turn the system adb on (D5).
 4. Start finds every vendored adbd through `ps` by its `--listen` argument
    (`/proc` as the fallback), kills it, waits for it to disappear and only then
    starts its own. A detached restart from an earlier process is waited for first.
    This needs no lock and no adbd change; a survivor aborts the start instead of
    leaving two daemons.
-5. Opening the app while it runs re-checks the daemon; it never overrides a stop.
+5. Opening the app while it runs re-checks the daemon; it never overrides a stop,
+   never writes `ADB_ENABLED` and never retries a failure that waits for the user.
 6. Stop takes the setup mutex, so a stop during a deployment waits for the
    deployment and then stops the daemon; the loopback port confirms the stop.
 7. Key and settings changes are stored immediately and applied on the next start
@@ -435,14 +502,17 @@ system adbd has no TCP listener, so there is nothing to monitor or turn off.
 4. User opens Settings → Developer options → Wireless debugging → Pair device with
    pairing code.
 5. User pulls the shade over the dialog and replies once with `code:port`.
-6. App pairs with the system adbd over loopback and stores its key.
-7. App self-grants `WRITE_SECURE_SETTINGS` over ADB.
+6. App pairs with the system adbd over loopback (SPAKE2 with the code) using the
+   system key.
+7. App connects over TLS, proves the endpoint runs as shell (I16) and self-grants
+   `WRITE_SECURE_SETTINGS` over ADB.
 8. App extracts the patched adbd for the device ABI, pushes it to
    `/data/local/tmp/adb-anywhere/`, verifies SHA-256, and `chmod 755`.
-9. App writes its public key to the patched adbd key file.
-10. App starts the patched adbd with `--listen tcp:127.0.0.1:<portA>` and, when
+9. App writes the daemon key files (`adb_keys`, `tls_clients`, `tls_key.pem`).
+10. App starts the patched adbd with `--tls-listen tcp:127.0.0.1:<portA>` and, when
     the firewall is off and the VPN is up, `--listen tcp:<vpn-ip>:<portB>`.
-11. App verifies loopback (and the VPN listener when the firewall is off).
+11. App verifies loopback through the pinned channel (and the VPN port when the
+    firewall is off).
 12. With the firewall on, the app starts the relay on `<vpn-ip>:<portB>`, verifies
     it and publishes its state.
 13. App sets `ADB_WIFI_ENABLED=0` to stop the system TLS server. This is the last
@@ -452,27 +522,26 @@ system adbd has no TCP listener, so there is nothing to monitor or turn off.
 
 - Primary: `NsdManager` discovery of `_adb-tls-connect._tcp`; the host `adb`
   uses the same advertisement.
-- Fallback: the shell-owned listening ports probed with the app key; only the
-  system adbd's TLS listener answers the handshake.
-- Last fallback: the port from the last successful bootstrap, which the app
-  connects to before it trusts it. There is no manual port entry: Android's
+- Hint: the port from the last verified bootstrap. There is no manual port entry: Android's
   pairing dialog closes when the user leaves Settings, so the code:port reply
   in the notification is the only reliable user-supplied input.
 - `getprop service.adb.tls.port` is not app-readable: `adbd_prop` is
   `system_internal_prop`, so only `coredomain` reads it. The property and the
   auth socket are internal to adbd and `system_server`.
-- Every candidate is verified with the TLS handshake, so a stale advertisement or
-  a plain listener is never reported as the system TLS port.
-- The plain target port is chosen by the app and set with `tcpip:<port>`;
-  it is stored in prefs and re-applied after boot.
+- Every candidate must answer `A_STLS`; a plain token is refused unsigned. A
+  candidate is used only after the shell proof, so an advertisement or a
+  listener from another app is never trusted. The status card's port probe only
+  looks for `A_STLS` and never signs.
+- The only plain candidate is 5555, the system adbd's own `adb tcpip` port. The
+  app never sets `tcpip:<port>`.
 
 ### Boot
 
 1. `BootReceiver` starts the service on `BOOT_COMPLETED` and
    `LOCKED_BOOT_COMPLETED`, but only when the user last started it.
-2. Service enables ADB when it reads 0, then probes the system adbd's existing
-   TCP listeners: the TLS property, the last known port, the shell-owned listening
-   ports, `5555` and mDNS.
+2. The service re-checks; it never writes `ADB_ENABLED` (D5). With ADB off it
+   fails and waits for Start. It probes the system adbd's existing TCP
+   listeners: the TLS property, the last known port, `5555` and mDNS.
 3. If one answers, start the patched adbd, verify, then set `ADB_WIFI_ENABLED=0`.
 4. If none answers and Wi-Fi is up, write `adb_wifi_enabled=1` (even when it
    already reads 1), wait 900 ms, resolve the TLS port over mDNS and retry. This is
@@ -480,7 +549,8 @@ system adbd has no TCP listener, so there is nothing to monitor or turn off.
 5. On mobile data with no plain listener, fail with the explicit instruction:
    connect Wi-Fi once, or run `adb tcpip 5555` over USB.
 6. `adb_allowed_connection_time=0` is applied with the bootstrap and every
-   watchdog tick.
+   watchdog tick, so the system key does not expire between reboots (§8 residual).
+7. A Legacy daemon left by an update is migrated in place (Key provisioning).
 
 ### Network change
 
@@ -511,8 +581,8 @@ system adbd has no TCP listener, so there is nothing to monitor or turn off.
 ### USB
 
 1. `ACTION_USB_STATE` fires.
-2. If the system adbd is on USB, it is not a network listener; the app records
-   this state and the patched adbd is unaffected.
+2. The service re-reads the system ADB state. If the system adbd is on USB, it
+   is not a network listener; the patched adbd is unaffected.
 3. If the system adbd returns to TCP, the app shows an explicit warning that the
    plain listener is back. It never sets `ADB_ENABLED=0`.
 
@@ -524,7 +594,16 @@ system adbd has no TCP listener, so there is nothing to monitor or turn off.
   is the only inbound TCP endpoint and the IP allowlist is the first gate.
 - **Inner boundary**: the patched adbd key file. Only the app and explicitly paired
   developer machines are accepted.
-- **App channel**: loopback, independent of the VPN.
+- **App channel**: loopback TLS with the pinned daemon key (D20). A local app can
+  connect to the port, but cannot finish the handshake (only the daemon key is in
+  `--tls-clients`), cannot pose as the daemon (pin) and gets no replayable
+  signature (I15).
+- **Local apps**: a third-party app can bind loopback ports, advertise mDNS
+  services and draw overlays. It cannot hold a port the daemon holds, cannot pass
+  the pin or the shell proof, cannot reach the DUMP-protected receivers, and
+  cannot cover the approval activity (`FIREWALL.md` §7.5). It can deny service by
+  holding the daemon's ports first; the daemon then refuses to start and the app
+  reports the port.
 - **Relay**: byte-transparent, no second authentication, no sandbox. ADB key auth
   stays between the developer machine and `adbd`. The relay is a policy enforcement
   point, not a boundary against a determined shell user.
@@ -539,8 +618,18 @@ system adbd has no TCP listener, so there is nothing to monitor or turn off.
 - **Pairing**: QR is out-of-band, one-time, fingerprint-confirmed. No listener.
 - **Keys**: app key is ephemeral; developer keys are public only; private keys
   never leave their owners.
-- **Revocation**: app removes a key from the key file and restarts the patched adbd
-  if needed. "Remove all" rewrites the file with the app key only.
+- **Revocation**: app removes a key from the key file and restarts the patched adbd,
+  which ends the sessions that key authenticated. "Remove all" rewrites the file
+  with the daemon key only. Revocation stops a lost key; it cannot undo what a
+  holder already did as `shell` (a detached process, an installed app, a changed
+  setting). Recovery from a malicious holder is reboot, check, reinstall.
+- **`adb reverse`**: the daemon binds the device side of a reverse forward to
+  `127.0.0.1` only, so a developer's local service is never exposed on Wi-Fi or
+  cellular.
+- **Authorization expiry**: `adb_allowed_connection_time=0` disables expiry for
+  every key the system adbd trusts, not only the app's. Accepted residual: the
+  system key is used only to bootstrap and would otherwise expire between
+  reboots.
 - **No root**: the patched adbd runs as `shell`, same as the system adbd. It gives
   a shell, not root.
 
@@ -554,13 +643,16 @@ system adbd has no TCP listener, so there is nothing to monitor or turn off.
 | System adbd is off | Start writes `ADB_ENABLED=1` when it reads 0; if the write is unavailable or the system adbd still has no TCP listener, fail with explicit recovery steps |
 | VPN address changes | Firewall off: restart the patched adbd with the new address. Firewall on: rebind the relay. Loopback stays |
 | VPN down | Remove VPN listener; app still controls via loopback |
-| Relay bind fails | Setup waits for the port, closes Android's legacy plain listener with `usb:` when it owns the port, and retries; if the port stays busy, fail with the port and the recovery step |
+| Relay bind fails | Setup waits for the port, closes Android's legacy plain listener with `usb:` when the system adbd says it owns the port, and retries; if the port stays busy, fail with the port and the recovery step. A verified daemon keeps running |
+| Another process holds a daemon port | The daemon refuses to start; the pinned channel fails; setup reports the port and the recovery step (change the ports or reboot). Nothing is signed for or sent to the holder |
+| A pre-TLS daemon after an update | Migrated once through its own shell, only with 5555 closed and after the shell proof; otherwise redeployed through the system adbd |
+| Daemon key files changed on the device | Watchdog restores them, restarts the daemon and warns |
 | Relay dies | Watchdog restarts it and reports Error if it cannot; active sessions drop |
 | Setup fails after the Wi-Fi bootstrap | The bootstrap this attempt opened is closed and the TLS port is verified closed; a bootstrap that was already on before the attempt is left as it was, and a failure to close is reported with the manual step |
 | VPN excludes the app | Setup fails with an instruction to include ADB Anywhere in the VPN; no fallback listener |
 | App process is killed | Service restart starts the relay again; prompts are lost and denied |
 | Prompt not answered | 30 s timeout, deny, audit; a cancelled prompt releases its slot without suspending |
-| Prompt is covered by a malicious overlay | `filterTouchesWhenObscured` refuses the obscured touch; the prompt cannot be approved through it |
+| Prompt is covered by a malicious overlay | The floating card offers only Review and Block. Allowing happens in the approval activity, which hides every non-system overlay while visible and refuses obscured touches in every window |
 | Malformed ADB frame | Close the connection, audit, never crash the service |
 | `UsageStats` missing | App allowlist cannot be enabled; the UI shows the grant action |
 | App key lost | Re-pair via notification; regenerate key; rewrite key file |
@@ -577,12 +669,15 @@ a different mode.
 
 ## 10. Testing
 
-- Unit: QR payload parser and public-key validation, key file writer, address
-  selection, watchdog state machine, `ControlState.firewallDown`, the port guard,
-  `AppKeyStore` concurrent first use of several instances, relay frame parsing,
-  prompt state and audit ring.
-- Integration: the vendored adbd's shared-core suite (`ADBD_TESTS=1`), two
-  listeners, auth with two keys, `shell:`/`sync:`/`tcp:`/`reverse:`, key reload.
+- Unit: QR payload parser and public-key validation, key file writer, label
+  sanitizing, address selection, the VPN routing check, watchdog state machine,
+  `ControlState.firewallDown`, the port guard, `AppKeyStore` concurrent first use
+  of several instances, the ADB client (plain signing, TLS-only refusal, pin,
+  tunnel, `offersTls`), relay frame parsing, the sync stream parser, the relay's
+  fail-closed stream rules and key attribution, prompt state and audit ring.
+- Integration: the vendored adbd's shared-core suite (`ADBD_TESTS=1`), the host
+  TLS smoke test (`adbd/tests`), two listeners, auth with two keys,
+  `shell:`/`sync:`/`tcp:`/`reverse:`, key reload, strict `--listen`.
 - Device matrix: Pixel, Samsung, OnePlus; Tailscale and WireGuard; reboot,
   Wi-Fi↔cellular, USB attach/detach, Doze.
 - Device, firewall: toggle with a live session, `TIME_WAIT` rebind, mode change with
@@ -610,7 +705,9 @@ a different mode.
   Wi-Fi connection to bootstrap. This is a manual recovery step, not a blocker.
 - OEM blocks `pm grant WRITE_SECURE_SETTINGS`.
 - Plain listener remains when `is_usb=false` or `service.adb.tcp.port` is set;
-  the app shows an explicit warning.
+  the app shows an explicit warning for 5555 only. An `adb tcpip <other port>`
+  listener is not detected, and a signature the app gives a squatter on a free
+  5555 could be replayed to it.
 - The system adbd is off and the app cannot write `ADB_ENABLED` (no
   `WRITE_SECURE_SETTINGS`): bootstrap fails until the user turns USB debugging on.
 - Patched adbd is killed by LMK/Doze; no restart path if the system adbd is
@@ -631,9 +728,14 @@ port.
   pending prompt is lost and denied. The loopback channel and the recovery steps are
   unaffected.
 - QR pairing needs a QR generator on the developer machine; `qrencode` is enough.
-- Hardening on a release that no longer publishes the TLS port has only the
-  setting as evidence that the system TLS listener is closed; the app cannot verify
-  the listener itself there.
+- The system TLS listener is checked on its last verified port only; a listener
+  that came up on a new random port is seen through mDNS on the status card, not
+  by the guard.
+- With the firewall off, the daemon's VPN listener accepts a LAN host that
+  addresses the VPN IP; key auth is the only boundary there. The firewall's
+  routing check closes it for the relay.
+- A failed legacy migration (the new daemon does not verify) leaves no daemon;
+  on cellular that needs the Wi-Fi or USB recovery step.
 
 ## 13. Provenance
 

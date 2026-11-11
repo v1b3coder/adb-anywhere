@@ -32,12 +32,17 @@ import androidx.core.content.ContextCompat
 import cz.slush.adbanywhere.BuildConfig
 import cz.slush.adbanywhere.MainActivity
 import cz.slush.adbanywhere.R
-import cz.slush.adbanywhere.adb.AdbManager
+import cz.slush.adbanywhere.adb.AdbClient
+import cz.slush.adbanywhere.adb.AdbMode
+import cz.slush.adbanywhere.adb.AdbPlainTokenRefusedException
+import cz.slush.adbanywhere.adb.DaemonChannel
 import cz.slush.adbanywhere.adb.DaemonManager
+import cz.slush.adbanywhere.adb.DaemonTunnel
 import cz.slush.adbanywhere.adb.Shell
 import cz.slush.adbanywhere.adb.SystemAdb
 import cz.slush.adbanywhere.data.AndroidPubKey
 import cz.slush.adbanywhere.data.AppKeyStore
+import cz.slush.adbanywhere.data.DaemonTlsKey
 import cz.slush.adbanywhere.data.DeveloperKey
 import cz.slush.adbanywhere.data.Endpoint
 import cz.slush.adbanywhere.data.PairingCode
@@ -50,6 +55,8 @@ import cz.slush.adbanywhere.firewall.FirewallConfigStore
 import cz.slush.adbanywhere.firewall.FirewallPolicy
 import cz.slush.adbanywhere.firewall.FirewallProxy
 import cz.slush.adbanywhere.firewall.FirewallState
+import cz.slush.adbanywhere.firewall.KnownKey
+import cz.slush.adbanywhere.firewall.Protected
 import cz.slush.adbanywhere.firewall.ForegroundAppMonitor
 import cz.slush.adbanywhere.firewall.PromptDecision
 import cz.slush.adbanywhere.firewall.PromptRequest
@@ -89,6 +96,8 @@ class ControlService : Service() {
     private val promptMutex = Mutex()
     @Volatile
     private var watchdogBackoffMs = 0L
+    @Volatile
+    private var lastFailureRetryable = true
 
     // The relay is mutated by setup(), the watchdog and the network callback on
     // different threads.  Binding a port and publishing the proxy must be one critical
@@ -96,7 +105,11 @@ class ControlService : Service() {
     private val relayLock = Any()
     private var relayEpoch = 0
     private lateinit var prefs: Prefs
+    // The system key bootstraps through Android's adbd; the daemon key and the
+    // pinned TLS key are the only identities the patched daemon trusts (D20).
     private lateinit var keys: AppKeyStore
+    private lateinit var daemonKeys: AppKeyStore
+    private lateinit var tlsKey: DaemonTlsKey
     private lateinit var system: SystemAdb
     private lateinit var daemon: DaemonManager
     private lateinit var firewallStore: FirewallConfigStore
@@ -112,6 +125,7 @@ class ControlService : Service() {
     private var watchdogJob: Job? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var defaultCallback: ConnectivityManager.NetworkCallback? = null
+    private var usbReceiver: android.content.BroadcastReceiver? = null
     private var foregroundStarted = false
     private val networkChanges = MutableStateFlow(0)
 
@@ -120,6 +134,8 @@ class ControlService : Service() {
         AppLog.info("service", "created")
         prefs = Prefs(this)
         keys = AppKeyStore(this)
+        daemonKeys = AppKeyStore(this, AppKeyStore.DAEMON)
+        tlsKey = DaemonTlsKey(this)
         system = SystemAdb(this, keys, prefs)
         daemon = DaemonManager(this, prefs)
         firewallStore = FirewallConfigStore(prefs)
@@ -175,6 +191,7 @@ class ControlService : Service() {
                 // An explicit Start is the user's retry: give it a fresh
                 // retry budget instead of the cap a previous failure set.
                 resetBackoff()
+                prefs.failureNeedsUser = false
                 // A Stop followed immediately by a Start must not lose the new
                 // start.  promoteForeground() and the stop cleanup share
                 // lifecycleLock and the stop checks userWantsRunning under it.
@@ -184,7 +201,23 @@ class ControlService : Service() {
                 // running daemon is already ours and is only re-checked.
                 val forceRestart = ControlBus.state.value.phase in
                     setOf(Phase.Idle, Phase.Stopped, Phase.Error)
-                scope.launch { setup(forceRestart = forceRestart) }
+                scope.launch { setup(forceRestart = forceRestart, userInitiated = true) }
+            }
+            // Opening the app re-checks a daemon the user wants running. It is not
+            // a Start: it never writes ADB_ENABLED and never clears a failure
+            // that waits for the user.
+            ACTION_RECHECK -> {
+                if (!prefs.userWantsRunning) {
+                    AppLog.info("service", "recheck skipped; the user stopped adb")
+                } else if (prefs.failureNeedsUser && ControlBus.state.value.phase in setOf(Phase.Idle, Phase.Error)) {
+                    promoteForeground()
+                    ControlBus.update { it.copy(phase = Phase.Error, error = prefs.lastError, message = "") }
+                } else {
+                    promoteForeground()
+                    val forceRestart = ControlBus.state.value.phase in
+                        setOf(Phase.Idle, Phase.Stopped, Phase.Error)
+                    scope.launch { setup(forceRestart = forceRestart) }
+                }
             }
             // Keys and settings are persisted either way; a stopped app applies them
             // on the next start instead of deploying a daemon the user turned off.
@@ -200,8 +233,9 @@ class ControlService : Service() {
                 prefs.userWantsRunning = true
                 AppLog.info("service", "restart requested")
                 resetBackoff()
+                prefs.failureNeedsUser = false
                 promoteForeground()
-                scope.launch { setup(forceRestart = true) }
+                scope.launch { setup(forceRestart = true, userInitiated = true) }
             }
             // A revocation must terminate sessions that were authenticated with the
             // removed key, so it restarts the daemon like an explicit restart. The UI
@@ -300,6 +334,7 @@ class ControlService : Service() {
         defaultCallback?.let {
             runCatching { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(it) }
         }
+        usbReceiver?.let { runCatching { unregisterReceiver(it) } }
         super.onDestroy()
     }
 
@@ -319,6 +354,15 @@ class ControlService : Service() {
             AppLog.info("service", "not resumed; phase=${ControlBus.state.value.phase}")
             return false
         }
+        // D6: a failure that needs the user waits for Try again, across a
+        // process restart too; only a transient failure is retried on its own.
+        if (prefs.failureNeedsUser) {
+            AppLog.info("service", "not resumed; the last failure needs the user")
+            ControlBus.update {
+                it.copy(phase = Phase.Error, error = prefs.lastError, message = "")
+            }
+            return false
+        }
         AppLog.info("service", "resuming after a process restart")
         // The daemon that survived the process kill is not this process's own.
         // awaitRestartScripts() makes the forced restart safe by waiting for a
@@ -327,7 +371,12 @@ class ControlService : Service() {
         return true
     }
 
-    private suspend fun setup(forceRestart: Boolean = false) {
+    /**
+     * [userInitiated] is an explicit Start, Restart or pairing. Only such a setup
+     * may write ADB_ENABLED=1 (D5, I12): the watchdog, a reboot, a sticky restart
+     * and a network change never turn the system adb back on behind the user.
+     */
+    private suspend fun setup(forceRestart: Boolean = false, userInitiated: Boolean = false) {
         setupMutex.withLock {
             // The last explicit user intent wins.  A setup that was queued
             // behind a Stop must not start a daemon after the user stopped.
@@ -373,6 +422,9 @@ class ControlService : Service() {
             // rewritten must survive a later failure: killing it would drop the
             // loopback channel the user still has.
             var daemonStarted = false
+            // Once the daemon is verified it is the user's channel: a later
+            // failure (the relay cannot bind) must not kill it (§6 Listener modes 5).
+            var daemonVerified = false
             var relayTouched = false
             val firewallConfig = firewallStore.load()
             // What the setup is allowed to change, so a failed attempt can put
@@ -380,12 +432,15 @@ class ControlService : Service() {
             val adbStateBefore = withContext(Dispatchers.IO) {
                 SystemSettings.state(this@ControlService)
             }
+            // A pre-TLS daemon's migration channel; closed in the finally below.
+            var legacyShell: Shell? = null
             try {
                 val vpnIp = VpnDetector.currentVpnAddress(this)
                 val exposeVpn = !firewallConfig.enabled
                 prefs.lastVpnIp = vpnIp ?: ""
                 val developers = DeveloperKey.list(prefs.developerKeysJson)
                 val appKey = keys.publicKey
+                val material = daemonMaterial()
                 ControlBus.update {
                     it.copy(
                         vpnIp = vpnIp,
@@ -397,8 +452,17 @@ class ControlService : Service() {
                 }
 
                 step(0, StepStatus.Active, "Connecting to Android's adb")
-                var daemonAlive = withContext(Dispatchers.IO) { probeDaemon() }
-                AppLog.info("setup", "custom adb alive=$daemonAlive dir=${prefs.remoteDir}")
+                val probe = withContext(Dispatchers.IO) { probeDaemon() }
+                // A daemon from a build before the TLS channel speaks plain ADB on
+                // loopback. It is migrated once through its own verified shell, so
+                // an update over the relay does not cut the phone off.
+                legacyShell = if (probe == DaemonProbe.Legacy) {
+                    withContext(Dispatchers.IO) { legacyDaemonShell() }
+                } else {
+                    null
+                }
+                var daemonAlive = probe == DaemonProbe.Verified || legacyShell != null
+                AppLog.info("setup", "custom adb probe=$probe alive=$daemonAlive dir=${prefs.remoteDir}")
                 val canWriteSettings = ContextCompat.checkSelfPermission(
                     this,
                     android.Manifest.permission.WRITE_SECURE_SETTINGS,
@@ -409,9 +473,20 @@ class ControlService : Service() {
                 // is safe; it does not delete the paired key.  The opt-in switch
                 // only controls whether Stop turns ADB off again.
                 if (!daemonAlive && canWriteSettings && SystemSettings.adbEnabled(this) == 0) {
-                    AppLog.info("setup", "system adb is off; enabling it")
-                    SystemSettings.setAdbEnabled(this, true)
-                    delay(500)
+                    if (userInitiated) {
+                        AppLog.info("setup", "system adb is off; enabling it")
+                        SystemSettings.setAdbEnabled(this, true)
+                        delay(500)
+                    } else {
+                        // The user may have turned USB debugging off on purpose;
+                        // only an explicit Start turns it back on.
+                        fail(
+                            "USB debugging is off and the custom adb is down. " +
+                                "Press Start to turn it back on.",
+                            retryable = false,
+                        )
+                        return@withLock
+                    }
                 }
                 // Try the system adbd's existing listeners first.  The plain 5555
                 // listener and the TLS property both work on mobile data; wireless
@@ -435,8 +510,11 @@ class ControlService : Service() {
                     // the paired keys on some devices.
                     SystemSettings.setAdbWifiEnabled(this, true)
                     AppLog.info("setup", "bootstrap: adb_wifi_enabled=1")
-                    // The framework disables wireless debugging on its timeout;
-                    // 0 keeps the bootstrap path open after the app backgrounds.
+                    // adb_allowed_connection_time is the authorization expiry
+                    // (default 7 days) of every key the system adbd trusts. The
+                    // app's system key is used only to bootstrap, so it would
+                    // expire between reboots; 0 keeps it, for every key. This is
+                    // a documented residual (docs/DESIGN.md §8).
                     if (!SystemSettings.ensureNoAdbConnectionTimeout(this)) {
                         AppLog.warn("setup", "adb_allowed_connection_time=0 was not accepted")
                     }
@@ -458,19 +536,34 @@ class ControlService : Service() {
                     SystemSettings.isPortOpen(vpnIp, prefs.vpnPort) &&
                     firewallProxy?.isListening != true
                 ) {
-                    // The firewall needs the VPN port, but Android's legacy plain
-                    // listener still owns it. `usb:` clears service.adb.tcp.port
-                    // and restarts the system adbd; the app reconnects to it.
-                    AppLog.info(
-                        "firewall",
-                        "port ${prefs.vpnPort} is busy; closing the system plain listener",
-                    )
-                    if (system.ensureConnected() && system.closePlainListener()) {
-                        Thread.sleep(500)
-                        daemonAlive = withContext(Dispatchers.IO) { probeDaemon() }
-                        systemAlive = if (daemonAlive) false else system.ensureConnected()
+                    // The firewall needs the VPN port. Close the system plain
+                    // listener only when the system adbd itself says it owns the
+                    // port (I2); our own daemon is restarted loopback-only below,
+                    // and anything else is a foreign listener the relay reports.
+                    // `usb:` keeps the system adbd on USB, so the recovery path
+                    // stays (I1).
+                    val systemOwnsPort = system.ensureConnected() &&
+                        system.plainTcpPort() == prefs.vpnPort
+                    if (systemOwnsPort) {
+                        AppLog.info(
+                            "firewall",
+                            "port ${prefs.vpnPort} is the system plain listener; closing it",
+                        )
+                        if (system.closePlainListener()) {
+                            Thread.sleep(500)
+                            legacyShell?.close()
+                            legacyShell = null
+                            val again = withContext(Dispatchers.IO) { probeDaemon() }
+                            if (again == DaemonProbe.Legacy) {
+                                legacyShell = withContext(Dispatchers.IO) { legacyDaemonShell() }
+                            }
+                            daemonAlive = again == DaemonProbe.Verified || legacyShell != null
+                            systemAlive = if (daemonAlive) false else system.ensureConnected()
+                        } else {
+                            AppLog.warn("firewall", "could not close the system plain listener")
+                        }
                     } else {
-                        AppLog.warn("firewall", "could not close the system plain listener")
+                        AppLog.info("firewall", "port ${prefs.vpnPort} is not the system plain listener")
                     }
                 }
                 AppLog.info("setup", "system adb alive=$systemAlive")
@@ -532,16 +625,17 @@ class ControlService : Service() {
                 }
 
                 step(1, StepStatus.Active, "Deploying the custom adb")
-                val shell = if (daemonAlive) {
-                    withContext(Dispatchers.IO) { daemonShell() }
-                } else {
-                    system.shell
+                val shell = when {
+                    legacyShell != null -> legacyShell
+                    daemonAlive -> withContext(Dispatchers.IO) { daemonShell() }
+                    else -> system.shell
                 }
                 val vpnChanged = vpnIp != previous.vpnIp
                 val portsChanged = prefs.loopbackPort != previous.loopbackPort ||
                     prefs.vpnPort != previous.vpnPort
                 val restart = forceRestart || !daemonAlive || portsChanged ||
-                    (exposeVpn && vpnChanged) || firewallChanged || vpnPortBusy
+                    (exposeVpn && vpnChanged) || firewallChanged || vpnPortBusy ||
+                    legacyShell != null
                 // What this attempt starts or restarts is what a later failure
                 // may stop; a daemon it leaves untouched stays.
                 daemonStarted = !daemonAlive || restart
@@ -556,13 +650,12 @@ class ControlService : Service() {
                     // next auth. Revocation sends ACTION_REVOKE_KEYS instead, so
                     // the restart above kills the sessions the key authenticated.
                     AppLog.info("adb", "rewriting keys; no restart")
-                    daemon.writeKeys(shell, appKey, developers)
+                    daemon.writeKeys(shell, material)
                 } else if (daemonAlive) {
                     AppLog.info("adb", "restarting with the new keys and listeners")
                     daemon.restartDetached(
                         shell,
-                        appKey,
-                        developers,
+                        material,
                         vpnIp,
                         prefs.loopbackPort,
                         prefs.vpnPort,
@@ -572,8 +665,7 @@ class ControlService : Service() {
                     AppLog.info("adb", "deploying and starting")
                     daemon.deployAndStart(
                         shell,
-                        appKey,
-                        developers,
+                        material,
                         vpnIp,
                         prefs.loopbackPort,
                         prefs.vpnPort,
@@ -585,6 +677,8 @@ class ControlService : Service() {
 
                 step(2, StepStatus.Active, "Verifying the listeners")
                 verifyDaemon(vpnIp, exposeVpn)
+                daemonVerified = true
+                prefs.tlsDaemonDeployed = true
                 AppLog.info("setup", "listeners verified")
                 step(
                     2,
@@ -672,8 +766,9 @@ class ControlService : Service() {
                 AppLog.error("setup", "failed: ${e.message}", e)
                 fail(e.message ?: "Setup failed")
             } finally {
+                legacyShell?.close()
                 if (cleanupRequired && ControlBus.state.value.phase != Phase.Running) {
-                    abortSetup(adbStateBefore, daemonStarted, relayTouched)?.let { warning ->
+                    abortSetup(adbStateBefore, daemonStarted && !daemonVerified, relayTouched)?.let { warning ->
                         val error = ControlBus.state.value.error
                         fail(
                             if (error.isEmpty()) warning else "$error $warning",
@@ -730,13 +825,8 @@ class ControlService : Service() {
                         writeDisabled = {
                             SystemSettings.setAdbWifiEnabled(this@ControlService, false)
                         },
-                        readTlsPort = { SystemAdb.systemTlsPort() },
-                        isPortOpen = { port ->
-                            runCatching {
-                                Socket().use { it.connect(InetSocketAddress("127.0.0.1", port), 300) }
-                                true
-                            }.getOrDefault(false)
-                        },
+                        readTlsPort = ::wirelessDebuggingPort,
+                        isPortOpen = { port -> AdbClient.offersTls(Endpoint.LOOPBACK, port) },
                         pause = { Thread.sleep(WirelessDebuggingGuard.RETRY_DELAY_MS) },
                     ).ensureOff()
                 }.onFailure {
@@ -829,7 +919,7 @@ class ControlService : Service() {
         ControlBus.update {
             it.copy(steps = listOf(SetupStep("Pair with Android's wireless debugging", StepStatus.Done, "Paired")))
         }
-        setup()
+        setup(userInitiated = true)
     }
 
     private fun needsPairing() {
@@ -848,59 +938,83 @@ class ControlService : Service() {
         postPairingNotification()
     }
 
-    private suspend fun probeDaemon(): Boolean = withContext(Dispatchers.IO) {
-        val manager = AdbManager(this@ControlService, keys)
-        val ok = manager.connectTo("127.0.0.1", prefs.loopbackPort)
-        manager.disconnectQuietly()
-        if (!ok) return@withContext false
-        // The app's own channel must be the daemon this app started, not a
-        // malicious local app that bound the port first.
-        runCatching {
-            val shell = daemonShell()
-            try {
-                daemon.identity(shell)
-            } finally {
-                shell.close()
+    private enum class DaemonProbe { Verified, Legacy, Absent, Foreign }
+
+    /**
+     * Who holds the loopback port. Verified: the TLS handshake matched the
+     * pinned daemon key and ADB auth succeeded inside it. Legacy: a plain-ADB
+     * daemon from a build before the TLS channel, never seen since this build
+     * deployed one. Foreign: something else; it is never trusted or signed for.
+     */
+    private suspend fun probeDaemon(): DaemonProbe = withContext(Dispatchers.IO) {
+        if (!SystemSettings.isLocalPortOpen(prefs.loopbackPort)) return@withContext DaemonProbe.Absent
+        try {
+            DaemonChannel.connect(this@ControlService, prefs.loopbackPort).close()
+            DaemonProbe.Verified
+        } catch (e: AdbPlainTokenRefusedException) {
+            if (prefs.tlsDaemonDeployed) {
+                AppLog.warn("setup", "a plain listener holds 127.0.0.1:${prefs.loopbackPort}; not trusted")
+                DaemonProbe.Foreign
+            } else {
+                DaemonProbe.Legacy
             }
-        }.getOrDefault(false)
+        } catch (e: Exception) {
+            AppLog.warn("setup", "127.0.0.1:${prefs.loopbackPort} is not the app's daemon: ${e.message}")
+            DaemonProbe.Foreign
+        }
+    }
+
+    /**
+     * The one-time migration channel to a pre-TLS daemon, which trusts the old
+     * single app key (now the system key). It signs a plain token only when no
+     * plain system listener exists to relay it to (127.0.0.1:5555 closed), and
+     * the endpoint must then prove it runs as shell, so a squatter gets neither
+     * a usable signature nor the deployment.
+     */
+    private fun legacyDaemonShell(): Shell? {
+        if (SystemSettings.isLocalPortOpen(Prefs.PLAIN_ADB_PORT)) {
+            AppLog.warn("setup", "legacy daemon not migrated in place: 5555 is open")
+            return null
+        }
+        val client = runCatching {
+            AdbClient.connect(Endpoint.LOOPBACK, prefs.loopbackPort, keys.adbIdentity, AdbMode.Plain)
+        }.getOrElse {
+            AppLog.warn("setup", "legacy daemon connect failed: ${it.message}")
+            return null
+        }
+        val shell = Shell(client)
+        if (!ShellProof.verify(this, shell)) {
+            shell.close()
+            return null
+        }
+        AppLog.info("setup", "migrating the pre-TLS daemon through its own shell")
+        return shell
     }
 
     private suspend fun verifyDaemon(vpnIp: String?, exposeVpn: Boolean) = withContext(Dispatchers.IO) {
-        val loopback = AdbManager(this@ControlService, keys)
-        if (!loopback.connectTo("127.0.0.1", prefs.loopbackPort)) {
+        val shell = try {
+            daemonShell()
+        } catch (e: Exception) {
             throw IOException(
-                "The custom adb did not accept the app key on 127.0.0.1:${prefs.loopbackPort}.",
+                "The custom adb on 127.0.0.1:${prefs.loopbackPort} did not present the app's " +
+                    "pinned key (${e.message}). Another process may hold the port; " +
+                    "change the ports in Settings or reboot.",
+                e,
             )
         }
         try {
-            val shell = Shell(loopback)
             val identity = shell.exec("id")
             if (!identity.stdout.contains("uid=2000") && !identity.stdout.contains("uid=0")) {
                 throw IOException("The custom adb returned an unexpected identity: ${identity.stdout.trim()}")
             }
-            if (!daemon.identity(shell)) {
-                throw IOException(
-                    "The custom adb did not prove it is the app's daemon on " +
-                        "127.0.0.1:${prefs.loopbackPort}.",
-                )
-            }
         } finally {
-            loopback.disconnectQuietly()
+            shell.close()
         }
-
-        if (exposeVpn && vpnIp != null) {
-            val vpn = AdbManager(this@ControlService, keys)
-            if (!vpn.connectTo(vpnIp, prefs.vpnPort)) {
-                throw IOException("The custom adb did not bind $vpnIp:${prefs.vpnPort}.")
-            }
-            try {
-                val identity = Shell(vpn).exec("id")
-                if (!identity.stdout.contains("uid=")) {
-                    throw IOException("The custom adb on $vpnIp did not answer.")
-                }
-            } finally {
-                vpn.disconnectQuietly()
-            }
+        // The daemon binds every listener or exits, so the verified daemon holds
+        // the VPN port too. The probe only confirms the port is reachable; it
+        // never signs a token on the VPN address.
+        if (exposeVpn && vpnIp != null && !SystemSettings.isPortOpen(vpnIp, prefs.vpnPort)) {
+            throw IOException("The custom adb did not bind $vpnIp:${prefs.vpnPort}.")
         }
     }
 
@@ -949,6 +1063,12 @@ class ControlService : Service() {
                 foregroundMonitor?.start()
                 val policy = FirewallPolicy(
                     config = { firewallStore.load() },
+                    protected = {
+                        Protected(
+                            ports = setOf(prefs.loopbackPort, prefs.vpnPort, Prefs.PLAIN_ADB_PORT),
+                            directory = prefs.remoteDir,
+                        )
+                    },
                     prompt = ::promptForCall,
                     pending = { prompts.isNotEmpty() },
                     saveRule = {
@@ -972,6 +1092,13 @@ class ControlService : Service() {
                     onAppUsed = { packageName ->
                         ControlBus.firewallConfig.value = firewallStore.markAppUsed(packageName)
                     },
+                    upstream = { port, cnxn -> DaemonTunnel.open(this, port, cnxn) },
+                    knownKeys = {
+                        DeveloperKey.list(prefs.developerKeysJson).map {
+                            KnownKey(it.fingerprint, it.key.toPublicKey())
+                        }
+                    },
+                    peerRouted = { peer -> VpnDetector.routesPeer(this, peer) },
                     onState = { state ->
                         ControlBus.update { current ->
                             current.copy(firewall = current.firewall.withRelayState(state))
@@ -1016,9 +1143,20 @@ class ControlService : Service() {
 
     /** Rebinds the relay without letting a concurrent stop or setup interleave. */
     private fun rebindFirewall(vpnIp: String) {
-        synchronized(relayLock) {
-            val proxy = firewallProxy
-            if (proxy != null) proxy.rebind(vpnIp) else startFirewall(vpnIp)
+        // One bind attempt under the lock; the retrying start sleeps outside it,
+        // so a stop from onDestroy never waits for the retry loop.
+        val proxy = synchronized(relayLock) { firewallProxy }
+        if (proxy == null) {
+            startFirewall(vpnIp)
+            return
+        }
+        try {
+            synchronized(relayLock) {
+                if (firewallProxy === proxy) proxy.rebind(vpnIp)
+            }
+        } catch (e: BindException) {
+            synchronized(relayLock) { if (firewallProxy === proxy) firewallProxy = null }
+            startFirewall(vpnIp)
         }
     }
 
@@ -1115,10 +1253,26 @@ class ControlService : Service() {
         prompts[request.id] = deferred
         try {
             // One card at a time: a second unmatched call waits for the first
-            // to be answered instead of silently replacing it.
-            return promptMutex.withLock {
-                showAndAwait(request.copy(label = label), timeoutMs, deferred)
+            // to be answered instead of silently replacing it. The deadline is
+            // the request's, so waiting in the queue counts against it and the
+            // card's countdown is the real one.
+            val remaining = request.deadline - System.currentTimeMillis()
+            val response = if (remaining <= 0) null else withTimeoutOrNull(remaining) {
+                promptMutex.withLock {
+                    showAndAwait(request.copy(label = label), deferred)
+                }
             }
+            if (response == null && !deferred.isCompleted) {
+                auditLog.record(
+                    AuditEvent(
+                        event = "call_timeout",
+                        peer = request.peer,
+                        service = request.call.service,
+                        fields = request.call.fields,
+                    ),
+                )
+            }
+            return response
         } finally {
             // A timeout, a cancelled relay or a stop must release the slot and
             // the single pending-prompt slot. Nothing here may suspend: a
@@ -1139,7 +1293,6 @@ class ControlService : Service() {
 
     private suspend fun showAndAwait(
         request: PromptRequest,
-        timeoutMs: Long,
         deferred: CompletableDeferred<PromptResponse?>,
     ): PromptResponse? {
         ControlBus.pendingPrompt.value = request
@@ -1161,18 +1314,8 @@ class ControlService : Service() {
                 )
             }
         }
-        val response = withTimeoutOrNull(timeoutMs) { deferred.await() }
-        if (response == null) {
-            auditLog.record(
-                AuditEvent(
-                    event = "call_timeout",
-                    peer = request.peer,
-                    service = request.call.service,
-                    fields = request.call.fields,
-                ),
-            )
-        }
-        return response
+        // The caller's deadline bounds the wait and audits the timeout.
+        return deferred.await()
     }
 
     private fun postPromptNotification(request: PromptRequest) {
@@ -1208,16 +1351,22 @@ class ControlService : Service() {
         WirelessDebuggingGuard(
             readSetting = { SystemSettings.adbWifiEnabled(context) },
             writeDisabled = { SystemSettings.setAdbWifiEnabled(context, false) },
-            readTlsPort = { SystemAdb.systemTlsPort() },
-            isPortOpen = { port ->
-                runCatching {
-                    Socket().use { it.connect(InetSocketAddress("127.0.0.1", port), 300) }
-                    true
-                }.getOrDefault(false)
-            },
+            readTlsPort = ::wirelessDebuggingPort,
+            isPortOpen = { port -> AdbClient.offersTls(Endpoint.LOOPBACK, port) },
             pause = { Thread.sleep(WirelessDebuggingGuard.RETRY_DELAY_MS) },
         ).ensureOff()
     }
+
+    /**
+     * The port the system TLS listener last used. The property is coredomain-only
+     * on most releases, so the port remembered from the last verified bootstrap
+     * is the evidence; the guard then checks that nothing there still answers
+     * with A_STLS, which an unrelated socket that reused the port does not.
+     */
+    private fun wirelessDebuggingPort(): Int? =
+        SystemAdb.systemTlsPort() ?: prefs.lastTlsPort.takeIf {
+            it > 0 && it != prefs.loopbackPort && it != prefs.vpnPort
+        }
 
     /**
      * D5: turns the system wireless debugging off after the patched adbd is
@@ -1248,12 +1397,15 @@ class ControlService : Service() {
         ControlBus.update { it.copy(adbStatus = status) }
     }
 
+    private fun daemonMaterial() = DaemonManager.Material(
+        daemonKeys.publicKey,
+        DeveloperKey.list(prefs.developerKeysJson),
+        tlsKey,
+    )
+
+    /** The pinned TLS channel to the daemon; throws when the port holder is not ours. */
     private suspend fun daemonShell(): Shell = withContext(Dispatchers.IO) {
-        val manager = AdbManager(this@ControlService, keys)
-        if (!manager.connectTo("127.0.0.1", prefs.loopbackPort)) {
-            throw IOException("The custom adb is not reachable on 127.0.0.1:${prefs.loopbackPort}.")
-        }
-        Shell(manager)
+        DaemonChannel.shell(this@ControlService, prefs.loopbackPort)
     }
 
     private fun startWatchdogLoop() {
@@ -1269,7 +1421,9 @@ class ControlService : Service() {
                 when (ControlBus.state.value.phase) {
                     Phase.Running -> watchdog()
                     Phase.Error -> {
-                        if (prefs.setupComplete && watchdogBackoffMs < MAX_BACKOFF_MS) {
+                        // D6: a transient failure keeps retrying at the capped
+                        // backoff; one that needs the user waits for Try again.
+                        if (lastFailureRetryable && prefs.userWantsRunning) {
                             scope.launch { setup() }
                         } else {
                             AppLog.info("watchdog", "setup failed; waiting for the user")
@@ -1288,7 +1442,7 @@ class ControlService : Service() {
         scheduleWatchdog()
         val state = ControlBus.state.value
         if (state.phase != Phase.Running) return
-        val alive = probeDaemon()
+        val alive = probeDaemon() == DaemonProbe.Verified
         if (!alive) {
             AppLog.warn("watchdog", "custom adb is down; restarting")
             ControlBus.update { it.copy(message = "The custom adb is down. Restarting…") }
@@ -1302,6 +1456,27 @@ class ControlService : Service() {
             networkChanged()
             return
         }
+        // Any process running as shell can edit the daemon's key files. The
+        // device copy is never trusted: a mismatch is rewritten, the daemon is
+        // restarted so sessions of an injected key end, and the user is told.
+        val intact = withContext(Dispatchers.IO) {
+            runCatching {
+                val shell = daemonShell()
+                try {
+                    daemon.keysIntact(shell, daemonMaterial())
+                } finally {
+                    shell.close()
+                }
+            }.getOrDefault(true)
+        }
+        if (!intact) {
+            AppLog.error("watchdog", "the daemon key files were changed on the device; restoring them")
+            ControlBus.update {
+                it.copy(message = "The custom adb's key files were changed on the device. Restored them and restarted.")
+            }
+            scope.launch { setup(forceRestart = true) }
+            return
+        }
         // D6: every tick keeps D5, not only the first setup.
         try {
             ensureWifiDebuggingOff()
@@ -1313,6 +1488,15 @@ class ControlService : Service() {
         if (!SystemSettings.ensureNoAdbConnectionTimeout(this)) {
             AppLog.warn("watchdog", "adb_allowed_connection_time=0 was not accepted")
         }
+        // The relay is only touched under the setup mutex and only while the user
+        // wants adb running, so a Stop that ran meanwhile cannot be undone (I6, I11).
+        setupMutex.withLock { if (prefs.userWantsRunning) watchdogRelay() }
+        resetBackoff()
+        refreshAdbStatus()
+        AppLog.info("watchdog", "ok")
+    }
+
+    private suspend fun watchdogRelay() {
         val firewall = firewallStore.load()
         if (firewall.enabled) {
             val vpnIp = withContext(Dispatchers.IO) {
@@ -1361,9 +1545,6 @@ class ControlService : Service() {
         } else if (firewallProxy != null) {
             stopFirewall()
         }
-        resetBackoff()
-        refreshAdbStatus()
-        AppLog.info("watchdog", "ok")
     }
 
     /** A repeated failure backs off exponentially, capped at 15 minutes. */
@@ -1398,6 +1579,17 @@ class ControlService : Service() {
         AppLog.info("network", "settled; vpn address changed=$changed")
         if (!changed) return
         if (firewallStore.load().enabled) {
+            setupMutex.withLock {
+                if (prefs.userWantsRunning) networkChangedFirewall()
+            }
+        } else {
+            setup()
+        }
+    }
+
+    /** The firewall-on network change: the daemon stays, the relay follows the VPN. */
+    private suspend fun networkChangedFirewall() {
+        run {
             val vpnIp = withContext(Dispatchers.IO) {
                 VpnDetector.currentVpnAddress(this@ControlService)
             }
@@ -1446,8 +1638,6 @@ class ControlService : Service() {
                     }
                 }
             }
-        } else {
-            setup()
         }
     }
 
@@ -1491,6 +1681,12 @@ class ControlService : Service() {
         AppLog.info("service", "stopping adb and the service")
         scope.launch {
             setupMutex.withLock {
+                // A Start that arrived before this stop took the mutex wins: its
+                // setup already ran or will run, and must keep its daemon.
+                if (prefs.userWantsRunning) {
+                    AppLog.info("service", "stop superseded by a newer start")
+                    return@withLock
+                }
                 stopFirewall("Stopped")
                 withContext(Dispatchers.IO) {
                     runCatching {
@@ -1590,9 +1786,14 @@ class ControlService : Service() {
         // missing permission) must not retry on a timer: the watchdog retries
         // only a transient failure, with a backoff capped at 15 minutes.
         if (retryable) nextBackoff() else watchdogBackoffMs = MAX_BACKOFF_MS
+        lastFailureRetryable = retryable
+        prefs.failureNeedsUser = !retryable
         // A failure must not lose the 15-minute wakeup: the watchdog loop may
         // be gone with the process, and an Error phase returns early.
         scheduleWatchdog()
+        // A transient failure is retried in this process too, even when the
+        // setup that failed never reached Running and started no loop.
+        if (retryable && prefs.userWantsRunning && watchdogJob?.isActive != true) startWatchdogLoop()
         ControlBus.update {
             it.copy(
                 phase = Phase.Error,
@@ -1813,6 +2014,24 @@ class ControlService : Service() {
         }
         defaultCallback = default
         runCatching { manager.registerDefaultNetworkCallback(default) }
+
+        // §7 USB: a cable change can bring the system adbd back to TCP; re-read
+        // its state so the 5555 warning appears without waiting for the tick.
+        val usb = object : android.content.BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                AppLog.info("usb", "usb state changed")
+                scope.launch { refreshAdbStatus() }
+            }
+        }
+        usbReceiver = usb
+        runCatching {
+            ContextCompat.registerReceiver(
+                this,
+                usb,
+                android.content.IntentFilter(USB_STATE),
+                ContextCompat.RECEIVER_NOT_EXPORTED,
+            )
+        }
     }
 
     private fun notifyNetworkChange(event: String) {
@@ -1852,6 +2071,7 @@ class ControlService : Service() {
 
     companion object {
         const val ACTION_START = "cz.slush.adbanywhere.START"
+        const val ACTION_RECHECK = "cz.slush.adbanywhere.RECHECK"
         const val ACTION_PAIR = "cz.slush.adbanywhere.PAIR"
         private const val ACTION_PAIR_REPLY = "cz.slush.adbanywhere.PAIR_REPLY"
         const val ACTION_RESTART = "cz.slush.adbanywhere.RESTART"
@@ -1866,6 +2086,7 @@ class ControlService : Service() {
         const val ACTION_APPLY_FIREWALL = "cz.slush.adbanywhere.APPLY_FIREWALL"
         const val ACTION_STOP = "cz.slush.adbanywhere.STOP"
         private const val NETWORK_SETTLE_MS = 1_500L
+        private const val USB_STATE = "android.hardware.usb.action.USB_STATE"
         private const val SYSTEM_ADB_WAIT_MS = 30_000L
         private const val MDNS_RETRY_MS = 5_000L
         private const val MDNS_TIMEOUT_MS = 2_000L

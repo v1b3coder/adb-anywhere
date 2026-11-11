@@ -11,6 +11,8 @@ import cz.slush.adbanywhere.BuildConfig
 import cz.slush.adbanywhere.data.Endpoint
 import cz.slush.adbanywhere.data.Prefs
 import cz.slush.adbanywhere.data.VpnInterface
+import java.net.Inet4Address
+import java.net.InetAddress
 
 object VpnDetector {
     /**
@@ -45,5 +47,43 @@ object VpnDetector {
             interfaces += VpnInterface(name, addresses)
         }
         return Endpoint.chooseVpnAddress(interfaces)
+    }
+
+    /**
+     * The relay's source check (docs/FIREWALL.md §5): the peer must be a host the
+     * phone reaches through the VPN, not a LAN host that sent to the VPN address.
+     */
+    fun routesPeer(context: Context, peer: InetAddress): Boolean {
+        if (BuildConfig.DEBUG && runCatching { Prefs(context).debugVpnIp }.getOrNull().orEmpty().isNotBlank()) {
+            return true
+        }
+        if (peer !is Inet4Address) return false
+        val manager = context.getSystemService(ConnectivityManager::class.java) ?: return false
+        val vpnRoutes = mutableListOf<Endpoint.Prefix>()
+        val localSubnets = mutableListOf<Endpoint.Prefix>()
+        var vpnSeen = false
+        for (network in manager.allNetworks) {
+            val capabilities = manager.getNetworkCapabilities(network) ?: continue
+            val properties = manager.getLinkProperties(network) ?: continue
+            if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
+                vpnSeen = true
+                properties.routes.forEach { route ->
+                    val destination = route.destination
+                    val address = destination.address
+                    if (address is Inet4Address) {
+                        vpnRoutes += Endpoint.Prefix(Endpoint.ipv4(address.address), destination.prefixLength)
+                    }
+                }
+            } else {
+                properties.linkAddresses.forEach { link ->
+                    val address = link.address
+                    if (address is Inet4Address && link.prefixLength in 1..32) {
+                        localSubnets += Endpoint.Prefix(Endpoint.ipv4(address.address), link.prefixLength)
+                    }
+                }
+            }
+        }
+        if (!vpnSeen) return false
+        return Endpoint.peerRoutedThroughVpn(Endpoint.ipv4(peer.address), vpnRoutes, localSubnets)
     }
 }

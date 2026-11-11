@@ -52,6 +52,7 @@ fun RuleEditorDialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
     ) {
+        RefuseObscuredTouches()
         Surface(
             modifier = Modifier.fillMaxWidth().padding(24.dp),
             shape = RoundedCornerShape(24.dp),

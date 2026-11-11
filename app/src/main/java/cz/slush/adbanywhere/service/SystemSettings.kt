@@ -13,7 +13,7 @@ import android.net.NetworkCapabilities
 import android.provider.Settings
 import cz.slush.adbanywhere.adb.SystemAdb
 import cz.slush.adbanywhere.data.AdbStatus
-import cz.slush.adbanywhere.data.AppKeyStore
+import cz.slush.adbanywhere.adb.AdbClient
 import cz.slush.adbanywhere.data.Prefs
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -85,10 +85,10 @@ object SystemSettings {
      * never reported: it is our listener, not the system one.
      */
     private suspend fun systemWirelessPort(context: Context, prefs: Prefs): Int {
-        val port = SystemAdb.detectTlsPort(context, AppKeyStore(context), prefs)
+        val port = SystemAdb.detectTlsPort(context, prefs)
             ?: prefs.lastTlsPort
         if (port <= 0 || port == prefs.loopbackPort || port == prefs.vpnPort) return 0
-        return if (isLocalPortOpen(port)) port else 0
+        return if (AdbClient.offersTls("127.0.0.1", port)) port else 0
     }
 
     /** A connect is enough: adbd listens on 5555 and never answers a probe. */

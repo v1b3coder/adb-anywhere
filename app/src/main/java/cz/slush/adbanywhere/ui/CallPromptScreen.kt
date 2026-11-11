@@ -1,8 +1,13 @@
 /*
  * CallPrompt - the approval card for one pending ADB call. It is either a dialog
- * (the activity/notification path) or an inline card hosted by the floating
- * overlay. It never shows over the keyguard and always resolves to Block when
- * dismissed.
+ * in CallPromptActivity or an inline card hosted by the floating overlay. It
+ * never shows over the keyguard and always resolves to Block when dismissed.
+ *
+ * Only the activity can allow a call (docs/DESIGN.md §9). The activity hides
+ * every non-system overlay while it is visible, so another app cannot cover the
+ * command text or forward a tap. The floating card is itself an app overlay and
+ * cannot hide other overlays, so it offers only Review (which opens the
+ * activity) and Block: a covered card can at worst deny a call.
  */
 package cz.slush.adbanywhere.ui
 
@@ -18,12 +23,14 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -54,26 +61,12 @@ fun CallPrompt(
     // A truncated service string cannot be pinned exactly, so "Always allow"
     // would create a rule that matches more calls than the one shown.
     val canSaveRule = !request.call.truncated
-    if (custom) {
-        if (inline) {
-            Surface(
-                modifier = Modifier.fillMaxWidth().padding(16.dp),
-                shape = RoundedCornerShape(24.dp),
-                tonalElevation = 6.dp,
-            ) {
-                RuleEditorContent(
-                    call = request.call,
-                    onDismiss = { custom = false },
-                    onSave = { rule -> onDecision("custom", rule) },
-                )
-            }
-        } else {
-            RuleEditorDialog(
-                call = request.call,
-                onDismiss = { custom = false },
-                onSave = { rule -> onDecision("custom", rule) },
-            )
-        }
+    if (custom && !inline) {
+        RuleEditorDialog(
+            call = request.call,
+            onDismiss = { custom = false },
+            onSave = { rule -> onDecision("custom", rule) },
+        )
         return
     }
     val card: @Composable () -> Unit = {
@@ -121,6 +114,17 @@ fun CallPrompt(
                     "Denies in ${remaining}s",
                     style = MaterialTheme.typography.labelLarge,
                 )
+                if (inline) {
+                    Button(
+                        onClick = { onDecision("review", null) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Review") }
+                    OutlinedButton(
+                        onClick = { onDecision("block", null) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Block") }
+                    return@Column
+                }
                 Button(
                     onClick = { onDecision("once", null) },
                     modifier = Modifier.fillMaxWidth(),
@@ -153,7 +157,23 @@ fun CallPrompt(
             onDismissRequest = { onDecision("block", null) },
             properties = DialogProperties(usePlatformDefaultWidth = false),
         ) {
+            RefuseObscuredTouches()
             card()
         }
+    }
+}
+
+/**
+ * A Compose Dialog is its own window, so the activity's decor-view filter does
+ * not cover it. This sets the filter on the dialog's own views: a touch that
+ * passed through another app's window is dropped.
+ */
+@Composable
+fun RefuseObscuredTouches() {
+    val view = LocalView.current
+    DisposableEffect(view) {
+        view.filterTouchesWhenObscured = true
+        view.rootView?.filterTouchesWhenObscured = true
+        onDispose { }
     }
 }

@@ -21,12 +21,14 @@
 # holds it for approval on the phone.
 #
 # Whitelisting install calls (once):
-#   1. When the `abb_exec` card appears, tap Custom filter.
+#   1. When the `abb_exec` card appears, tap Review, then Custom filter.
 #   2. Keep argv[0]=package and argv[1]=install checked.
 #   3. Uncheck argv[2] and later; -S, size and path vary per install.
 #   4. Tap Save rule. Future `adb install` calls match the rule.
 #
-# If the card is a notification instead of the overlay, tap Review first.
+# The floating card only offers Review and Block; the answer is given in the
+# review screen, which hides other apps' overlays while it is shown. If the card
+# is a notification instead of the overlay, tap its Review action.
 # The overlay cannot show over the keyguard: keep the phone unlocked and the app
 # in the foreground.
 #

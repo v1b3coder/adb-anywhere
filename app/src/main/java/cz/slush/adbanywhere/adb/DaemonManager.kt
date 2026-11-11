@@ -1,12 +1,20 @@
 /*
- * DaemonManager - deploys the AOSP adbd, writes its key file, starts it
+ * DaemonManager - deploys the AOSP adbd, writes its key files, starts it
  * with the exact listener list and verifies the listeners.
+ *
+ * The daemon's files (docs/DESIGN.md D20):
+ * - adb_keys: the daemon key and the developer keys (--keys); ADB key auth.
+ * - tls_clients: the daemon key only (--tls-clients); the only client allowed
+ *   to finish the TLS handshake on the loopback listener.
+ * - tls_key.pem: the TLS server key (--tls-key) whose public key the app pins.
+ * Every file is written atomically with mode 600.
  */
 package cz.slush.adbanywhere.adb
 
 import android.content.Context
 import android.os.Build
 import cz.slush.adbanywhere.data.AndroidPubKey
+import cz.slush.adbanywhere.data.DaemonTlsKey
 import cz.slush.adbanywhere.data.DeveloperKey
 import cz.slush.adbanywhere.data.Endpoint
 import cz.slush.adbanywhere.data.KeyFiles
@@ -19,6 +27,8 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
     val remoteDir: String get() = prefs.remoteDir
     val binaryPath: String get() = "$remoteDir/adbd"
     val keysPath: String get() = "$remoteDir/adb_keys"
+    val tlsClientsPath: String get() = "$remoteDir/tls_clients"
+    val tlsKeyPath: String get() = "$remoteDir/tls_key.pem"
     val logPath: String get() = "$remoteDir/adbd.log"
     val pidPath: String get() = "$remoteDir/adbd.pid"
 
@@ -54,32 +64,47 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
         AppLog.info("adb", "binary installed (abi=$abi, ${bytes.size} bytes)")
     }
 
-    fun writeKeys(
-        shell: Shell,
-        appKey: AndroidPubKey.Key,
-        developers: List<DeveloperKey>,
+    /** What the daemon must be started with; built by the service from its keys. */
+    class Material(
+        val daemonKey: AndroidPubKey.Key,
+        val developers: List<DeveloperKey>,
+        val tlsKey: DaemonTlsKey,
     ) {
-        shell.mkdirs(remoteDir)
-        shell.writeTextFile(keysPath, KeyFiles.keysFile(appKey, developers))
-        shell.chmod(keysPath, "600")
-        AppLog.info("adb", "keys written (app key + ${developers.size} developer keys)")
+        val keysFile: String get() = KeyFiles.keysFile(daemonKey, developers)
+        val tlsClientsFile: String get() = KeyFiles.tlsClientsFile(daemonKey)
     }
+
+    fun writeKeys(shell: Shell, material: Material) {
+        shell.mkdirs(remoteDir)
+        shell.writeTextFile(keysPath, material.keysFile)
+        shell.writeTextFile(tlsClientsPath, material.tlsClientsFile)
+        shell.writeTextFile(tlsKeyPath, material.tlsKey.pem)
+        AppLog.info("adb", "keys written (daemon key + ${material.developers.size} developer keys)")
+    }
+
+    /**
+     * True when the key files on the device are exactly what the app wrote. Any
+     * process running as shell can edit them; the watchdog rewrites them and
+     * reports the tampering instead of trusting the device copy.
+     */
+    fun keysIntact(shell: Shell, material: Material): Boolean =
+        shell.sha256(keysPath) == sha256(material.keysFile.toByteArray()) &&
+            shell.sha256(tlsClientsPath) == sha256(material.tlsClientsFile.toByteArray())
 
     fun deployAndStart(
         shell: Shell,
-        appKey: AndroidPubKey.Key,
-        developers: List<DeveloperKey>,
+        material: Material,
         vpnIp: String?,
         loopbackPort: Int,
         vpnPort: Int,
         exposeVpn: Boolean = true,
     ) {
         writeBinary(shell)
-        writeKeys(shell, appKey, developers)
+        writeKeys(shell, material)
         stop(shell)
         trimLogs(shell)
         val command = startCommand(shell, vpnIp, loopbackPort, vpnPort, exposeVpn)
-        AppLog.info("adb", "starting ${Endpoint.listenSpec(loopbackPort, vpnIp, vpnPort, exposeVpn)}")
+        AppLog.info("adb", "starting ${Endpoint.listeners(loopbackPort, vpnIp, vpnPort, exposeVpn)}")
         val result = shell.exec(command, 10_000)
         if (!result.ok) {
             throw IOException("cannot start daemon: ${result.stderr.ifBlank { result.stdout }.trim()}")
@@ -101,8 +126,7 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
      */
     fun restartDetached(
         shell: Shell,
-        appKey: AndroidPubKey.Key,
-        developers: List<DeveloperKey>,
+        material: Material,
         vpnIp: String?,
         loopbackPort: Int,
         vpnPort: Int,
@@ -110,13 +134,13 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
     ) {
         awaitRestartScripts(shell)
         writeBinary(shell)
-        writeKeys(shell, appKey, developers)
+        writeKeys(shell, material)
         trimLogs(shell)
         Thread.sleep(200)
         val start = startCommand(shell, vpnIp, loopbackPort, vpnPort, exposeVpn)
         AppLog.info(
             "adb",
-            "restarting detached on ${Endpoint.listenSpec(loopbackPort, vpnIp, vpnPort, exposeVpn)}",
+            "restarting detached on ${Endpoint.listeners(loopbackPort, vpnIp, vpnPort, exposeVpn)}",
         )
         val pids = daemonPids(shell)
         val scriptPath = "$remoteDir/adbd.restart.${System.nanoTime()}.sh"
@@ -167,13 +191,20 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
         vpnPort: Int,
         exposeVpn: Boolean,
     ): String {
-        val spec = Endpoint.listenSpec(loopbackPort, vpnIp, vpnPort, exposeVpn)
-        return "setsid ${shell.quote(binaryPath)}" +
-            " --listen ${shell.quote(spec)}" +
+        val listeners = Endpoint.listeners(loopbackPort, vpnIp, vpnPort, exposeVpn)
+        // The daemon refuses to start unless every listener binds, so a port held
+        // by another process is an explicit error, never a partial start.
+        val stderr = shell.quote("$remoteDir/adbd.stderr")
+        // A file left by an older build keeps its mode across the redirect.
+        return "umask 077; rm -f $stderr; setsid ${shell.quote(binaryPath)}" +
+            " --tls-listen ${shell.quote(listeners.tls)}" +
+            (listeners.plain?.let { " --listen ${shell.quote(it)}" } ?: "") +
+            " --tls-key ${shell.quote(tlsKeyPath)}" +
+            " --tls-clients ${shell.quote(tlsClientsPath)}" +
             " --keys ${shell.quote(keysPath)}" +
             " --log ${shell.quote(logPath)}" +
             " --pid-file ${shell.quote(pidPath)}" +
-            " </dev/null >/dev/null 2>${shell.quote(remoteDir + "/adbd.stderr")} &"
+            " </dev/null >/dev/null 2>$stderr &"
     }
 
     fun stop(shell: Shell) {
@@ -190,23 +221,6 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
             waitForPids(shell, pids)
         }
         shell.exec("rm -f ${shell.quote(pidPath)}")
-    }
-
-    /**
-     * Proves that the process on the loopback port is the daemon this app
-     * started. The pid file and the key file are shell-owned, and a malicious
-     * local app cannot run as the shell uid or bind the port the real daemon
-     * already holds, so the pid, the uid and the command line identify it.
-     */
-    fun identity(shell: Shell): Boolean {
-        val pid = shell.exec("cat ${shell.quote(pidPath)} 2>/dev/null")
-            .stdout.trim().toIntOrNull() ?: return false
-        val status = shell.exec("cat /proc/$pid/status 2>/dev/null").stdout
-        val uid = Regex("^Uid:\\s+(\\d+)", RegexOption.MULTILINE)
-            .find(status)?.groupValues?.get(1)?.toIntOrNull()
-        if (uid != SHELL_UID) return false
-        val cmdline = shell.exec("tr '\\0' ' ' < /proc/$pid/cmdline 2>/dev/null").stdout
-        return cmdline.contains("--listen") && cmdline.contains(binaryPath)
     }
 
     /**
@@ -236,7 +250,7 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
         if (!result.ok) return null
         return result.stdout.lineSequence().mapNotNull { line ->
             val parts = line.trim().split(Regex("\\s+"), limit = 3)
-            if (parts.size == 3 && parts[1] == "adbd" && parts[2].contains("--listen")) {
+            if (parts.size == 3 && parts[1] == "adbd" && StaleDaemon.isOurs(parts[2])) {
                 parts[0].toIntOrNull()
             } else {
                 null
@@ -325,7 +339,6 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
         MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
     private companion object {
-        const val SHELL_UID = 2000
         const val MAX_LOG_BYTES = 256 * 1024
     }
 }

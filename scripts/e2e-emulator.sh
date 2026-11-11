@@ -7,7 +7,9 @@ cd "$(dirname "$0")/.."
 serial=${E2E_SERIAL:-emulator-5556}
 pkg=cz.slush.adbanywhere
 apk=app/build/outputs/apk/debug/app-debug.apk
-host_port=15037
+# The loopback listener (15037) is TLS for the app's own key only. A developer
+# machine uses the plain listener, which the debug VPN override puts on loopback.
+host_port=15038
 host_key=$(cut -d' ' -f1 "$HOME/.android/adbkey.pub")
 
 ./gradlew :app:assembleDebug --no-daemon -q
@@ -31,12 +33,20 @@ sleep 2
 # the previous run was left. The app key is in files/, not in this file.
 adb -s "$serial" shell "rm -f /data/user_de/0/$pkg/shared_prefs/adb-anywhere.xml"
 
-adb -s "$serial" shell "am start -n $pkg/.MainActivity --ez start true" >/dev/null
+# Android does not let a background receiver start a foreground service, so the
+# app is brought to the front before each command.
+debug() {
+    adb -s "$serial" shell "am start -n $pkg/.MainActivity" >/dev/null 2>&1
+    adb -s "$serial" shell "am broadcast -n $pkg/.service.DebugReceiver -a cz.slush.adbanywhere.DEBUG $*" >/dev/null
+}
+
+debug "--es vpnIp 127.0.0.1"
+debug "--ez start true"
 sleep 6
 
-# Give the app the host key through its debug-only intent, then let the service
-# rewrite the key file without restarting the daemon.
-adb -s "$serial" shell "am start -n $pkg/.MainActivity --es addkey '$host_key' --es addlabel e2e-laptop" >/dev/null
+# Give the app the host key through the DUMP-protected debug receiver, then let
+# the service rewrite the key file without restarting the daemon.
+debug "--es addkey '$host_key' --es addlabel e2e-laptop"
 sleep 4
 
 # The real host path: forward the app's loopback port through the system
@@ -53,10 +63,13 @@ echo "host adb path ok"
 # exercised above; the app-side shell is exercised below.  The phone VPN path is
 # in docs/E2E.md.
 adb -s "$serial" shell "cat /data/local/tmp/adb-anywhere/adbd.log" | grep -q "adbd started"
-adb -s "$serial" shell "am start -n $pkg/.MainActivity --es shellcmd 'id; echo e2e-daemon-ok'" >/dev/null
+debug "--es shellcmd 'id; echo e2e-daemon-ok'"
 sleep 2
 adb -s "$serial" logcat -d -s AdbAnywhere | grep -q "e2e-daemon-ok"
 adb -s "$serial" shell "cat /data/local/tmp/adb-anywhere/adb_keys" | grep -q "$host_key"
+# The debug receiver does not open the UI; open the app for the screen check.
+adb -s "$serial" shell "am start -n $pkg/.MainActivity" >/dev/null
+sleep 3
 adb -s "$serial" shell 'cmd statusbar collapse' >/dev/null 2>&1 || true
 adb -s "$serial" shell "uiautomator dump /sdcard/e2e.xml >/dev/null 2>&1"
 adb -s "$serial" shell "cat /sdcard/e2e.xml" | grep -q 'ADB is reachable'
@@ -90,7 +103,7 @@ echo "sticky restart ok"
 
 # A stop is remembered: after the process is killed and the app is reopened the
 # daemon must stay down until an explicit start, and then start again.
-adb -s "$serial" shell "am start -n $pkg/.MainActivity --ez stop true" >/dev/null
+debug "--ez stop true"
 i=0
 while [ "$i" -lt 30 ]; do
     adb -s "$serial" shell 'dumpsys notification --noredact' |
@@ -106,7 +119,7 @@ sleep 5
 adb -s "$serial" shell "am start -n $pkg/.MainActivity" >/dev/null
 sleep 6
 ! adb -s "$serial" shell 'dumpsys notification --noredact' | grep -q 'android.title=String (ADB Anywhere'
-adb -s "$serial" shell "am start -n $pkg/.MainActivity --ez start true" >/dev/null
+debug "--ez start true"
 i=0
 while [ "$i" -lt 60 ]; do
     adb -s "$serial" shell 'dumpsys notification --noredact' |

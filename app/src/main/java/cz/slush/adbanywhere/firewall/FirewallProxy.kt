@@ -24,6 +24,18 @@ class FirewallProxy(
     private val audit: AuditLog,
     private val onIpUsed: (String) -> Unit = {},
     private val onAppUsed: (String) -> Unit = {},
+    /**
+     * Opens the daemon side for one session from the client's first A_CNXN. The
+     * service passes the pinned TLS tunnel; tests pass a plain socket.
+     */
+    private val upstream: (loopbackPort: Int, clientCnxn: ByteArray) -> Socket = ::plainUpstream,
+    /** The paired keys, so the relay can attribute a verified signature. */
+    private val knownKeys: () -> List<KnownKey> = { emptyList() },
+    /**
+     * False for a peer the VPN does not route: binding the VPN address does not
+     * stop a LAN host from sending to it, so the source must be a VPN source.
+     */
+    private val peerRouted: (InetAddress) -> Boolean = { true },
     private val onState: (FirewallState) -> Unit,
 ) {
     private val lock = Any()
@@ -150,6 +162,17 @@ class FirewallProxy(
                 runCatching { client.close() }
                 continue
             }
+            if (!localListener && !peerRouted(peer)) {
+                audit.record(
+                    AuditEvent(
+                        event = "ip_denied",
+                        peer = peer.hostAddress ?: "",
+                        detail = "not routed through the VPN",
+                    ),
+                )
+                runCatching { client.close() }
+                continue
+            }
             val config = config()
             if (config.ipAllowlistEnabled) {
                 val allowlist = IpAllowlist(config.ipAllowlist)
@@ -189,23 +212,11 @@ class FirewallProxy(
                 runCatching { client.close() }
                 continue
             }
-            // An unauthenticated peer must not hold a slot forever: the socket
-            // read times out until the server's A_CNXN proves the transport is
-            // authenticated, then the timeout is cleared for the session.
+            // An unauthenticated peer must not hold a slot forever: every read
+            // times out, and the relay closes the transport when it has not
+            // authenticated by an absolute deadline, so trickled bytes do not help.
             runCatching { client.soTimeout = PRE_AUTH_TIMEOUT_MS }
-            val connection = try {
-                Connection(client, peer)
-            } catch (e: Exception) {
-                runCatching { client.close() }
-                audit.record(
-                    AuditEvent(
-                        event = "proxy_error",
-                        peer = peer.hostAddress ?: "",
-                        detail = e.message ?: "upstream failed",
-                    ),
-                )
-                null
-            } ?: continue
+            val connection = Connection(client, peer)
             synchronized(lock) {
                 connections.add(connection)
                 perPeer[peerKey] = (perPeer[peerKey] ?: 0) + 1
@@ -226,21 +237,14 @@ class FirewallProxy(
             graceJob = null
             return
         }
-        if (policy.promptPending()) {
-            graceJob?.cancel()
-            graceJob = null
-            return
-        }
         if (config().appGraceMs <= 0) {
-            closeAll()
+            closeIdle()
             return
         }
         if (graceJob?.isActive == true) return
         graceJob = scope.launch {
             delay(config().appGraceMs)
-            if (config().appAllowlistEnabled && !appAllowed() && !policy.promptPending()) {
-                closeAll()
-            }
+            if (config().appAllowlistEnabled && !appAllowed()) closeIdle()
         }
     }
 
@@ -255,6 +259,18 @@ class FirewallProxy(
 
     private fun ownVpn(): InetAddress? =
         vpnIp?.let { runCatching { InetAddress.getByName(it) }.getOrNull() }
+
+    /**
+     * The grace close. A connection with a visible prompt stays until the prompt
+     * is answered, otherwise answering it would close the call; its own
+     * prompt's end re-runs this check. Other connections close now, so another
+     * peer's prompt cannot keep them alive.
+     */
+    private fun closeIdle() {
+        val snapshot = synchronized(lock) { connections.toList() }
+        snapshot.filter { it.pendingPrompts == 0 }.forEach { it.close() }
+        publish()
+    }
 
     private fun closeAll() {
         val snapshot = synchronized(lock) { connections.toList() }
@@ -288,37 +304,72 @@ class FirewallProxy(
         private val client: Socket,
         private val peer: InetAddress,
     ) {
-        private val upstream = Socket()
-        private val relay: AdbRelay
         private val closed = AtomicBoolean(false)
+        private val started = System.currentTimeMillis()
+        @Volatile
+        private var upstreamSocket: Socket? = null
+        @Volatile
+        private var relay: AdbRelay? = null
 
-        init {
-            runCatching { upstream.tcpNoDelay = true }
-            upstream.connect(InetSocketAddress("127.0.0.1", loopbackPort), 3000)
-            relay = AdbRelay(
-                client.getInputStream(),
-                client.getOutputStream(),
-                upstream.getInputStream(),
-                upstream.getOutputStream(),
-                policy,
-                audit,
-                peer.hostAddress ?: "",
-                { !config().appAllowlistEnabled || appAllowed() },
-                { runCatching { client.soTimeout = 0 } },
-                { close() },
-            )
-        }
+        val pendingPrompts: Int get() = relay?.pendingPrompts ?: 0
 
         fun start() {
             audit.record(AuditEvent(event = "connection_open", peer = peer.hostAddress ?: ""))
-            relay.start()
+            scope.launch(kotlinx.coroutines.Dispatchers.IO) { open() }
+        }
+
+        /**
+         * The client speaks first. Its A_CNXN opens the daemon side, so the
+         * daemon sees the developer's own banner and the TLS upgrade happens on
+         * the relay's hop only.
+         */
+        private fun open() {
+            try {
+                val first = AdbFrameCodec.read(client.getInputStream(), AdbFrameCodec.PRE_AUTH_MAX_PAYLOAD)
+                if (first == null || first.command != AdbFrameCodec.A_CNXN) {
+                    audit.record(
+                        AuditEvent(event = "proxy_error", peer = peer.hostAddress ?: "", detail = "the client did not start with A_CNXN"),
+                    )
+                    close()
+                    return
+                }
+                val server = upstream(loopbackPort, first.raw)
+                upstreamSocket = server
+                if (closed.get()) {
+                    runCatching { server.close() }
+                    return
+                }
+                val remaining = (PRE_AUTH_TIMEOUT_MS - (System.currentTimeMillis() - started)).coerceAtLeast(1)
+                val relay = AdbRelay(
+                    client.getInputStream(),
+                    client.getOutputStream(),
+                    server.getInputStream(),
+                    server.getOutputStream(),
+                    policy,
+                    audit,
+                    peer.hostAddress ?: "",
+                    connectionAllowed = { !config().appAllowlistEnabled || appAllowed() },
+                    onAuthenticated = { runCatching { client.soTimeout = 0 } },
+                    knownKeys = knownKeys,
+                    authTimeoutMs = remaining,
+                    onPromptFinished = { onPromptFinished() },
+                    onClose = { close() },
+                )
+                this.relay = relay
+                relay.start()
+            } catch (e: Exception) {
+                audit.record(
+                    AuditEvent(event = "proxy_error", peer = peer.hostAddress ?: "", detail = e.message ?: "upstream failed"),
+                )
+                close()
+            }
         }
 
         fun close() {
             if (!closed.compareAndSet(false, true)) return
-            relay.close()
+            relay?.close()
             runCatching { client.close() }
-            runCatching { upstream.close() }
+            runCatching { upstreamSocket?.close() }
             synchronized(lock) {
                 connections.remove(this)
                 val count = (perPeer[peer.hostAddress ?: ""] ?: 1) - 1
@@ -336,5 +387,17 @@ class FirewallProxy(
         private const val MAX_CONNECTIONS = 8
         private const val MAX_PER_PEER = 2
         private const val PRE_AUTH_TIMEOUT_MS = 10_000
+
+        /** A plain upstream for tests: connect and forward the client's A_CNXN. */
+        fun plainUpstream(loopbackPort: Int, clientCnxn: ByteArray): Socket {
+            val socket = Socket()
+            socket.tcpNoDelay = true
+            socket.connect(InetSocketAddress("127.0.0.1", loopbackPort), 3000)
+            socket.getOutputStream().apply {
+                write(clientCnxn)
+                flush()
+            }
+            return socket
+        }
     }
 }

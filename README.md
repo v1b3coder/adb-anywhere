@@ -104,8 +104,9 @@ The Firewall tab has:
   foreground. A configurable grace period covers a short switch. Usage access is
   required.
 - **Call policy**: rules for ADB service calls. An unmatched call asks for approval
-  on the phone; the default is deny. You can allow once, always allow that call,
-  block it, or pin fields with a custom filter.
+  on the phone; the default is deny. The floating card offers Review and Block;
+  Review opens the approval screen, where you can allow once, always allow that
+  call, block it, or pin fields with a custom filter.
 - **Audit log**: recent firewall decisions on the device and in the UI.
 
 Each entry and rule shows when it last matched. The app's own loopback channel is
@@ -118,15 +119,29 @@ not isolated. The full design and its limits are in
 ## Security
 
 - The daemon binds loopback and, by default, the VPN address. With the firewall
-  on it binds only loopback and the app owns the VPN port.
+  on it binds only loopback and the app owns the VPN port. The daemon refuses to
+  start if it cannot bind exactly those addresses.
+- The loopback listener is TLS with a key the app generated and pins, and only
+  the app's own key may connect to it. Other apps on the phone cannot use it or
+  pose as the daemon.
+- The app uses separate keys for Android's adb and for its own daemon, and signs
+  an ADB login challenge only on a channel it has verified.
+- The app's keys never leave the phone: they are excluded from backup and from
+  device-to-device transfer.
 - Only keys in the daemon key file are accepted. Unknown keys are never
   auto-accepted.
 - Removing a key restarts the daemon and ends the sessions that key
-  authenticated. Per-key policy is not implemented yet.
+  authenticated. It cannot undo what that machine already did as `shell`; if you
+  suspect misuse, reboot and check the phone. Per-key policy is not implemented
+  yet.
 - The firewall does not add authentication. ADB key authentication stays
-  end-to-end. The approval card ignores taps that pass through another window.
-- Start can re-enable Android's ADB and wireless debugging after the one-time
-  permission grant. Stop leaves them alone unless you opt in.
+  end-to-end. Calls are allowed only in the approval screen, which hides other
+  apps' overlays while it is shown.
+- `adb reverse` ports are bound to the phone's loopback only.
+- Only an explicit Start can re-enable Android's ADB, after the one-time
+  permission grant; a reboot or the watchdog never does. Wireless debugging is
+  re-enabled only for the Wi-Fi bootstrap. Stop leaves both alone unless you opt
+  in.
 - The app does not stop Android's ADB while it needs the daemon.
 - If Android's ADB is reachable over the network anyway, the app warns you in the
   UI and in the notification.
@@ -152,6 +167,11 @@ not isolated. The full design and its limits are in
 - The firewall relay runs in the app process. If Android kills it, external
   sessions drop until the service restarts.
 - If an OEM blocks the permission grant, the app shows the manual command and stops.
+- Updating from a version before the TLS loopback channel migrates the running
+  daemon in place when Android's plain 5555 listener is closed; otherwise the app
+  needs Android's adb once to redeploy it.
+- Another app can keep the daemon from starting by holding its ports. The app
+  reports the port; change the ports in Settings or reboot.
 
 ## License
 

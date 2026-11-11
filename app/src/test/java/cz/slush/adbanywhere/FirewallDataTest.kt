@@ -468,13 +468,6 @@ class FirewallDataTest {
         assertEquals("com.example.app", tracker.state().foreground)
     }
 
-    @Test
-    fun syncParserRecognizesTheDoneFrame() {
-        assertTrue(SyncParser.isDone(syncPayload(0x454e4f44, "")))
-        assertFalse(SyncParser.isDone(syncPayload(0x444e4553, "/sdcard/a")))
-        assertFalse(SyncParser.isDone(ByteArray(4)))
-    }
-
     private fun ip(text: String): Int =
         IpNetwork.parse("$text/32")!!.address
 

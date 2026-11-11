@@ -1,8 +1,16 @@
 /*
- * SystemAdb - connects to the system adbd for bootstrap. Tries the published
- * TLS port, the last known port, listening shell sockets, plain 5555 and mDNS.
- * The Settings status finds the TLS port live from the socket when the release
- * does not publish it.
+ * SystemAdb - connects to the system adbd for bootstrap with the app's system
+ * key (AppKeyStore "app"), which the patched daemon never trusts.
+ *
+ * The app signs only where a signature cannot be replayed (docs/DESIGN.md I15):
+ * - Every candidate port except 5555 must speak TLS. A plain AUTH token there is
+ *   refused unsigned, because a local app can advertise or squat such a port and
+ *   relay the token from a real plain listener.
+ * - 5555 is plain ADB. The system adbd owns it whenever it listens there, so a
+ *   squatter on 5555 has no plain system listener behind it to relay to.
+ *
+ * A connected endpoint is trusted only after [ShellProof] shows that it runs
+ * commands as the shell user; a squatter cannot deliver that broadcast.
  */
 package cz.slush.adbanywhere.adb
 
@@ -12,18 +20,26 @@ import cz.slush.adbanywhere.data.PairingCode
 import cz.slush.adbanywhere.data.Prefs
 import cz.slush.adbanywhere.data.WirelessDebuggingGuard
 import cz.slush.adbanywhere.service.AppLog
+import cz.slush.adbanywhere.service.ShellProof
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.io.File
-import java.util.concurrent.TimeUnit
+import java.io.IOException
 
 class SystemAdb(
     private val context: Context,
-    keys: AppKeyStore,
+    private val keys: AppKeyStore,
     private val prefs: Prefs,
 ) {
-    val manager = AdbManager(context, keys)
-    val shell: Shell get() = Shell(manager)
+    // libadb only pairs: SPAKE2 with the code the user read from Settings
+    // authenticates that exchange. Every connection goes through AdbClient.
+    private val pairing = AdbManager(context, keys)
+
+    @Volatile
+    private var client: AdbClient? = null
+
+    /** The verified system shell. Throws when [ensureConnected] did not succeed. */
+    val shell: Shell
+        get() = Shell(client?.takeIf { it.isConnected } ?: throw IOException("Android's adb is not connected"))
 
     /** True when the last [ensureConnected] reached a listener that needs a pair. */
     @Volatile
@@ -31,63 +47,60 @@ class SystemAdb(
         private set
 
     suspend fun pair(code: PairingCode): Boolean = withContext(Dispatchers.IO) {
-        manager.pairTo("127.0.0.1", code.port, code.code)
+        pairing.pairTo("127.0.0.1", code.port, code.code)
+    }
+
+    fun disconnect() {
+        client?.close()
+        client = null
     }
 
     suspend fun ensureConnected(): Boolean = withContext(Dispatchers.IO) {
         pairingRequired = false
-        if (manager.isConnected) return@withContext true
+        if (client?.isConnected == true) return@withContext true
 
-        // A previously authorized ADB channel can bootstrap the app when the
-        // system wireless debugging UI is not reachable. This is the same path
-        // as USB `adb tcpip` followed by `adb connect`, but the address is
-        // supplied by the debug-only intent used in the end-to-end test. It is
-        // one-shot: a stale forward must not be retried on every later setup.
-        if (prefs.bootstrapHost.isNotBlank() && prefs.bootstrapPort > 0) {
-            val host = prefs.bootstrapHost
-            val port = prefs.bootstrapPort
-            prefs.bootstrapHost = ""
-            prefs.bootstrapPort = 0
-            AppLog.info("system", "bootstrap $host:$port")
-            if (manager.connectTo(host, port)) {
-                AppLog.info("system", "bootstrap connected")
-                return@withContext true
-            }
-            pairingRequired = pairingRequired || manager.pairingRequired
-            AppLog.warn("system", "bootstrap failed")
+        val tlsCandidates = LinkedHashSet<Int>()
+        systemTlsPort()?.let(tlsCandidates::add)
+        prefs.lastTlsPort.takeIf { it > 0 }?.let(tlsCandidates::add)
+        // 5555 is the plain listener; an older build may have remembered it.
+        tlsCandidates.remove(Prefs.PLAIN_ADB_PORT)
+        for (port in tlsCandidates) {
+            if (tryConnect(port, AdbMode.Tls())) return@withContext true
         }
+        if (tryConnect(Prefs.PLAIN_ADB_PORT, AdbMode.Plain)) return@withContext true
 
-        val candidates = LinkedHashSet<Int>()
-        systemTlsPort()?.let(candidates::add)
-        prefs.lastTlsPort.takeIf { it > 0 }?.let(candidates::add)
-        candidates += listeningShellPorts()
-        candidates += 5555
-
-        for (port in candidates) {
-            if (port == prefs.loopbackPort || port == prefs.vpnPort) continue
-            if (manager.connectTo("127.0.0.1", port)) {
-                prefs.lastTlsPort = port
-                AppLog.info("system", "connected on 127.0.0.1:$port")
-                return@withContext true
-            }
-            pairingRequired = pairingRequired || manager.pairingRequired
-        }
-
-        // Android 11-16 publish service.adb.tls.port; AOSP main after Android 16
-        // delivers the port to the framework over the auth socket instead. Keep
-        // mDNS as a fallback: the settings write above is the primary bootstrap
-        // and refreshes the advertisement.
+        // Android 11-16 publish service.adb.tls.port to coredomain only; AOSP main
+        // after Android 16 does not publish it at all. mDNS is the client path,
+        // and every advertised port must speak TLS.
         for (port in discoverTlsPorts()) {
-            if (port == prefs.loopbackPort || port == prefs.vpnPort) continue
-            if (manager.connectTo("127.0.0.1", port)) {
-                prefs.lastTlsPort = port
-                AppLog.info("system", "connected via mDNS on 127.0.0.1:$port")
-                return@withContext true
-            }
-            pairingRequired = pairingRequired || manager.pairingRequired
+            if (port in tlsCandidates) continue
+            if (tryConnect(port, AdbMode.Tls())) return@withContext true
         }
-        AppLog.info("system", "no listener found on ports $candidates")
+        AppLog.info("system", "no verified listener found")
         false
+    }
+
+    private fun tryConnect(port: Int, mode: AdbMode): Boolean {
+        if (port == prefs.loopbackPort || port == prefs.vpnPort) return false
+        val connected = try {
+            AdbClient.connect("127.0.0.1", port, keys.adbIdentity, mode)
+        } catch (e: AdbPairingRequiredException) {
+            pairingRequired = true
+            AppLog.warn("system", "127.0.0.1:$port requires pairing")
+            return false
+        } catch (e: Exception) {
+            AppLog.warn("system", "connect 127.0.0.1:$port failed: ${e.message}")
+            return false
+        }
+        if (!ShellProof.verify(context, Shell(connected))) {
+            AppLog.warn("system", "127.0.0.1:$port is not Android's adb; ignored")
+            connected.close()
+            return false
+        }
+        client = connected
+        if (mode is AdbMode.Tls) prefs.lastTlsPort = port
+        AppLog.info("system", "verified Android's adb on 127.0.0.1:$port")
+        return true
     }
 
     suspend fun discoverTlsPorts(timeoutMs: Long = MDNS_TIMEOUT_MS): List<Int> =
@@ -100,12 +113,17 @@ class SystemAdb(
      * except that the restart may kill it, so the caller re-probes it.
      */
     suspend fun closePlainListener(): Boolean = withContext(Dispatchers.IO) {
+        val current = client ?: return@withContext false
         runCatching {
-            val stream = manager.openStream("usb:")
-            stream.close()
+            current.openStream("usb:").close()
             true
-        }.getOrDefault(false)
+        }.getOrDefault(false).also { disconnect() }
     }
+
+    /** The system adbd's own plain TCP port, read through the verified shell. */
+    fun plainTcpPort(): Int? =
+        runCatching { shell.exec("getprop service.adb.tcp.port").stdout.trim().toIntOrNull() }
+            .getOrNull()?.takeIf { it in 1..65535 }
 
     fun settingsGet(key: String): String? {
         val result = shell.exec("settings get global $key")
@@ -133,50 +151,33 @@ class SystemAdb(
     companion object {
         /**
          * The system wireless debugging TLS port, read from the property adbd
-         * publishes on Android 11-16; null when the release does not publish it
-         * or when adbd does not listen.
+         * publishes on Android 11-16. The property is coredomain-only, so an app
+         * usually reads null; it stays a cheap candidate on relaxed builds.
          */
         fun systemTlsPort(): Int? =
             WirelessDebuggingGuard.parseTlsPort(readProp("service.adb.tls.port"))
 
         /**
-         * The system adbd's TLS port, live. The client path is mDNS, the same
-         * advertisement the host `adb` uses. A release that does not advertise
-         * it is probed on the socket: every shell-owned listening port is probed
-         * with the app key, and the system adbd's TLS listener answers (or asks
-         * to pair). The app's own ports and the plain 5555 are excluded by
-         * port, so a plain listener is never reported as the system one.
+         * The system adbd's TLS port for the status card. mDNS is the client path;
+         * every candidate must offer TLS. The probe never signs anything: it
+         * sends CNXN and only looks for A_STLS. The result is display-only.
          */
         suspend fun detectTlsPort(
             context: Context,
-            keys: AppKeyStore,
             prefs: Prefs,
         ): Int? = withContext(Dispatchers.IO) {
-            // mDNS is the client discovery path, the property is the cheap
-            // candidate a relaxed build still publishes, and the shell-owned
-            // listening ports are the socket fallback. Every candidate is
-            // verified with the TLS handshake, so a stale advertisement or a
-            // plain listener cannot be reported as the system TLS port.
             val candidates = LinkedHashSet<Int>()
             candidates += discoverTlsPorts(context, STATUS_MDNS_TIMEOUT_MS)
             systemTlsPort()?.let(candidates::add)
-            candidates += listeningShellPorts()
             candidates.remove(prefs.loopbackPort)
             candidates.remove(prefs.vpnPort)
-            // The plain 5555 listener is not the TLS server, and a probe of it
-            // succeeds without TLS. Reporting it as the wireless port would show
-            // the app's own endpoint as the system one.
             candidates.remove(Prefs.PLAIN_ADB_PORT)
-            val manager = AdbManager(context, keys)
-            manager.setTimeout(2, TimeUnit.SECONDS)
             for (port in candidates) {
-                if (manager.connectTo("127.0.0.1", port) || manager.pairingRequired) {
-                    manager.disconnectQuietly()
+                if (AdbClient.offersTls("127.0.0.1", port)) {
                     AppLog.info("system", "wireless port $port")
                     return@withContext port
                 }
             }
-            AppLog.info("system", "wireless port not found")
             null
         }
 
@@ -187,22 +188,6 @@ class SystemAdb(
 
         private const val MDNS_TIMEOUT_MS = 4_000L
         private const val STATUS_MDNS_TIMEOUT_MS = 2_000L
-
-        private fun listeningShellPorts(): List<Int> {
-            val ports = mutableListOf<Int>()
-            for (file in listOf("/proc/net/tcp6", "/proc/net/tcp")) {
-                val lines = runCatching { File(file).readLines() }.getOrNull() ?: continue
-                for (line in lines.drop(1)) {
-                    val parts = line.trim().split(Regex("\\s+"))
-                    if (parts.size < 10 || parts[3] != "0A") continue
-                    val port = parts[1].substringAfterLast(':').toIntOrNull(16) ?: continue
-                    val uid = parts[7].toIntOrNull() ?: continue
-                    if (uid != 2000) continue
-                    if (port in 1024..65535) ports += port
-                }
-            }
-            return ports.distinct()
-        }
 
         private fun readProp(name: String): String? {
             val fromBinary = runCatching {

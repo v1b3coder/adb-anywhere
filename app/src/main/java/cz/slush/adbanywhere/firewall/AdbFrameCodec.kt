@@ -38,7 +38,7 @@ object AdbFrameCodec {
     const val A_AUTH = 0x48545541
     const val A_STLS = 0x534c5453
 
-    /** A_AUTH types, little-endian in the first payload word. */
+    /** A_AUTH types; ADB carries the type in arg0, not in the payload. */
     const val ADB_AUTH_TOKEN = 1
     const val ADB_AUTH_SIGNATURE = 2
     const val ADB_AUTH_RSAPUBLICKEY = 3
@@ -81,18 +81,6 @@ object AdbFrameCodec {
 
     fun service(frame: AdbFrame): String =
         String(frame.payload, Charsets.UTF_8).trimEnd('\u0000')
-
-    /** The A_AUTH type in the first payload word, or 0 when absent. */
-    fun authType(frame: AdbFrame): Int {
-        val payload = frame.payload
-        return if (payload.size < 4) 0 else le32(payload, 0)
-    }
-
-    /** The A_AUTH public key that follows the type word. */
-    fun authKey(frame: AdbFrame): ByteArray {
-        val payload = frame.payload
-        return if (payload.size <= 4) ByteArray(0) else payload.copyOfRange(4, payload.size)
-    }
 
     private fun readFully(input: InputStream, size: Int): ByteArray? {
         if (size == 0) return ByteArray(0)

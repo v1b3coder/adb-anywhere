@@ -63,13 +63,20 @@ class Prefs(context: Context) {
         get() = prefs.getBoolean("diagnostic_log", false)
         set(value) = prefs.edit().putBoolean("diagnostic_log", value).apply()
 
-    var bootstrapHost: String
-        get() = prefs.getString("bootstrap_host", "") ?: ""
-        set(value) = prefs.edit().putString("bootstrap_host", value).apply()
+    /**
+     * True once this build deployed the TLS daemon. A plain-ADB listener on the
+     * loopback port is then never treated as a pre-TLS daemon to migrate.
+     */
+    var tlsDaemonDeployed: Boolean
+        get() = prefs.getBoolean("tls_daemon_deployed", false)
+        set(value) {
+            prefs.edit().putBoolean("tls_daemon_deployed", value).commit()
+        }
 
-    var bootstrapPort: Int
-        get() = prefs.getInt("bootstrap_port", 0)
-        set(value) = prefs.edit().putInt("bootstrap_port", value).apply()
+    /** D6: the last failure needs the user; a process restart does not retry it. */
+    var failureNeedsUser: Boolean
+        get() = prefs.getBoolean("failure_needs_user", false)
+        set(value) = prefs.edit().putBoolean("failure_needs_user", value).apply()
 
     var remoteDir: String
         get() = prefs.getString("remote_dir", "/data/local/tmp/adb-anywhere") ?: "/data/local/tmp/adb-anywhere"

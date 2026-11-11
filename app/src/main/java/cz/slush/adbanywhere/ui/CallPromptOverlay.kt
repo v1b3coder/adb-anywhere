@@ -57,12 +57,19 @@ class CallPromptOverlay(private val context: Context) {
                     CallPrompt(
                         request,
                         onDecision = { decision, rule ->
-                            ControlService.startPromptResponse(
-                                context,
-                                request.id,
-                                decision,
-                                rule?.toJson()?.toString(),
-                            )
+                            if (decision == "review") {
+                                // Allowing happens only in the activity, which
+                                // hides every other overlay while it is shown.
+                                hide()
+                                openReview(request)
+                            } else {
+                                ControlService.startPromptResponse(
+                                    context,
+                                    request.id,
+                                    decision,
+                                    rule?.toJson()?.toString(),
+                                )
+                            }
                         },
                         inline = true,
                     )
@@ -113,6 +120,16 @@ class CallPromptOverlay(private val context: Context) {
         }.onFailure {
             AppLog.warn("firewall", "overlay saved state: ${it.message}")
         }
+    }
+
+    private fun openReview(request: PromptRequest) {
+        runCatching {
+            context.startActivity(
+                android.content.Intent(context, CallPromptActivity::class.java)
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    .putExtra(CallPromptActivity.EXTRA_PROMPT_ID, request.id),
+            )
+        }.onFailure { AppLog.warn("firewall", "review activity: ${it.message}") }
     }
 
     fun hide() {

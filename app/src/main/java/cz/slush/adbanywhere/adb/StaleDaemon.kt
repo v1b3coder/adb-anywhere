@@ -6,6 +6,12 @@ package cz.slush.adbanywhere.adb
 
 object StaleDaemon {
     /**
+     * Our daemon always has --tls-listen or --listen; Android's system adbd has
+     * neither. "-listen" matches both spellings.
+     */
+    fun isOurs(arguments: String): Boolean = arguments.contains("-listen")
+
+    /**
      * Shell function that SIGKILLs every vendored adbd and waits for it to
      * disappear. Returns 0 when none remain, 1 when a process survives.
      *
@@ -17,7 +23,7 @@ object StaleDaemon {
      */
     fun killFunction(): String = """
         kill_stale_adbd() {
-          l=--lis
+          l=-lis
           t=ten
           for d in /proc/[0-9]*; do
             p=${'$'}{d#/proc/}

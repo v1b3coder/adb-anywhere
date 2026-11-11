@@ -16,7 +16,7 @@ tmp=$(mktemp -d)
 failures=0
 
 cleanup() {
-    adb -s "$serial" shell "am start -n $pkg/.MainActivity --ez stop true" >/dev/null 2>&1 || true
+    adb -s "$serial" shell "am broadcast -n $pkg/.service.DebugReceiver -a cz.slush.adbanywhere.DEBUG --ez stop true" >/dev/null 2>&1 || true
     adb disconnect "$relay" >/dev/null 2>&1 || true
     adb -s "$serial" forward --remove tcp:$relay_port >/dev/null 2>&1 || true
     rm -rf "$tmp"
@@ -27,8 +27,17 @@ say() { printf '\n== %s ==\n' "$*"; }
 ok() { printf 'ok   %s\n' "$*"; }
 bad() { printf 'FAIL %s\n' "$*" >&2; failures=$((failures + 1)); }
 
+# Opens the app (foreground for the app allowlist); it reads no extras.
 intent() {
     adb -s "$serial" shell "am start -n $pkg/.MainActivity $*" >/dev/null 2>&1
+}
+
+# The debug hooks: a DUMP-protected receiver only the shell user can reach.
+# Android does not let a background receiver start a foreground service, so the
+# app is brought to the front before each command.
+debug() {
+    adb -s "$serial" shell "am start -n $pkg/.MainActivity" >/dev/null 2>&1
+    adb -s "$serial" shell "am broadcast -n $pkg/.service.DebugReceiver -a cz.slush.adbanywhere.DEBUG $*" >/dev/null 2>&1
 }
 
 prefs() {
@@ -184,7 +193,13 @@ prompt_call() {
     return 1
 }
 
+# The floating card only offers Review and Block; every other answer is given
+# in the review activity, which hides other overlays while it is shown.
 prompt_tap() {
+    if [ "$1" != "Block" ] && ui_dump | grep -q 'text="Review"'; then
+        tap_text "Review" || bad "could not tap Review"
+        wait_for_text "Allow once" >/dev/null 2>&1 || true
+    fi
     tap_text "$1" || bad "could not tap $1"
     sleep 1
 }
@@ -217,13 +232,13 @@ adb -s "$serial" shell "ip link set tun0 up 2>/dev/null || true"
 ok "emulator prepared"
 
 say "start the app with the debug VPN"
-intent "--ez start true"
+debug "--ez start true"
 sleep 6
-intent "--es addkey '$host_key' --es addlabel e2e-laptop"
+debug "--es addkey '$host_key' --es addlabel e2e-laptop"
 sleep 4
-intent "--es vpnIp 127.0.0.1"
+debug "--es vpnIp 127.0.0.1"
 sleep 3
-intent "--ez firewall true"
+debug "--ez firewall true"
 sleep 8
 adb -s "$serial" shell "netstat -ltn 2>/dev/null" | grep -q "127.0.0.1:$relay_port" && ok "relay listening" || bad "relay not listening"
 adb -s "$serial" forward tcp:$relay_port tcp:$relay_port >/dev/null
@@ -250,20 +265,20 @@ grep -q e2e-push "$tmp/pull.txt" 2>/dev/null && ok "pull content" || bad "pull c
 printf 'id\nexit\n' | adb -s "$relay" shell 2>/dev/null | grep -q "uid=" && ok "interactive shell" || bad "interactive shell"
 
 say "IP allowlist"
-intent "--es firewallIp 10.9.9.2/32"
-intent "--ez firewallIpAllowlist true"
+debug "--es firewallIp 10.9.9.2/32"
+debug "--ez firewallIpAllowlist true"
 sleep 2
 relay_connect
 adb -s "$relay" shell id >/dev/null 2>&1 && bad "IP allowlist did not deny" || ok "IP allowlist denied"
 audit_has ip_denied && ok "ip_denied audit" || bad "ip_denied audit"
-intent "--ez firewallIpAllowlist false"
+debug "--ez firewallIpAllowlist false"
 sleep 2
 relay_connect
 adb -s "$relay" shell id 2>/dev/null | grep -q "uid=" && ok "IP allowlist disabled" || bad "IP allowlist disabled"
 
 say "app allowlist"
-intent "--es firewallApp $pkg"
-intent "--ez firewallAppAllowlist true"
+debug "--es firewallApp $pkg"
+debug "--ez firewallAppAllowlist true"
 sleep 6
 relay_connect
 adb -s "$relay" shell id 2>/dev/null | grep -q "uid=" && ok "app allowlist foreground" || bad "app allowlist foreground"
@@ -276,11 +291,11 @@ intent ""
 sleep 6
 relay_connect
 adb -s "$relay" shell id 2>/dev/null | grep -q "uid=" && ok "app allowlist re-entered" || bad "app allowlist re-entered"
-intent "--ez firewallAppAllowlist false"
+debug "--ez firewallAppAllowlist false"
 sleep 2
 
 say "call policy"
-intent "--ez firewallCallPolicy true"
+debug "--ez firewallCallPolicy true"
 sleep 2
 if prompt_call "allow once" shell id; then
     prompt_tap "Allow once"
@@ -373,7 +388,13 @@ say "sync path"
 (adb -s "$relay" push "$tmp/push.txt" /data/local/tmp/e2e-sync.txt >"$tmp/call.out" 2>&1; echo $? >"$tmp/call.rc") &
 CALL_PID=$!
 if wait_for_text "ADB call needs approval"; then
+    # Every sync request is its own call: push asks for STAT, then SEND.
     prompt_tap "Allow once"
+    rounds=0
+    while kill -0 "$CALL_PID" 2>/dev/null && [ "$rounds" -lt 5 ]; do
+        wait_for_text "ADB call needs approval" >/dev/null 2>&1 && prompt_tap "Allow once"
+        rounds=$((rounds + 1))
+    done
     finish_call
     audit_has call_allowed && ok "sync audit" || bad "sync audit"
 else
@@ -406,17 +427,17 @@ sleep 2
 adb -s "$serial" shell input keyevent 82
 sleep 2
 
-intent "--ez firewallCallPolicy false"
+debug "--ez firewallCallPolicy false"
 sleep 2
 
 say "firewall off"
-intent "--ez firewall false"
+debug "--ez firewall false"
 sleep 6
 prefs | grep -q 'firewall_enabled" value="false"' && ok "firewall off stored" || bad "firewall off stored"
 prefs | grep -q 'daemon_firewall_mode" value="false"' && ok "daemon returns to legacy" || bad "daemon returns to legacy"
 
 say "firewall on"
-intent "--ez firewall true"
+debug "--ez firewall true"
 sleep 8
 prefs | grep -q 'firewall_enabled" value="true"' && ok "firewall on stored" || bad "firewall on stored"
 relay_connect

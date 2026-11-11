@@ -310,41 +310,6 @@ class AdbRelayTest {
     }
 
     @Test
-    fun authKeyAndCnxnRecordTheFingerprint() = runBlocking {
-        val pipes = pipes()
-        val audit = AuditLog(null) { false }
-        val relay = AdbRelay(
-            pipes.clientIn, pipes.relayToClient,
-            pipes.serverIn, pipes.relayToServer,
-            FakePolicy(),
-            audit,
-            "peer",
-        ) {}
-        relay.start()
-        val publicKey = AndroidPubKey.encode(
-            KeyPairGenerator.getInstance("RSA")
-                .apply { initialize(2048) }
-                .generateKeyPair()
-                .public as RSAPublicKey,
-        )
-        val payload = ByteBuffer.allocate(4 + publicKey.size)
-            .order(ByteOrder.LITTLE_ENDIAN)
-            .putInt(AdbFrameCodec.ADB_AUTH_RSAPUBLICKEY)
-            .put(publicKey)
-            .array()
-        pipes.clientToRelay.write(frame(AdbFrameCodec.A_AUTH, 0, 0, payload))
-        assertNotNull(withTimeout(3_000) { AdbFrameCodec.read(pipes.serverReader) })
-
-        pipes.serverToRelay.write(frame(AdbFrameCodec.A_CNXN, 0, 0, ByteArray(0)))
-        assertNotNull(withTimeout(3_000) { AdbFrameCodec.read(pipes.clientReader) })
-
-        val events = audit.entries.value
-        assertTrue(events.any { it.event == "auth_unknown" && it.fingerprint.isNotEmpty() })
-        assertTrue(events.any { it.event == "auth_ok" && it.fingerprint.isNotEmpty() })
-        relay.close()
-    }
-
-    @Test
     fun preAuthPayloadIsCappedAndAuthenticatedPayloadIsNot() = runBlocking {
         val pipes = pipes()
         val relay = AdbRelay(

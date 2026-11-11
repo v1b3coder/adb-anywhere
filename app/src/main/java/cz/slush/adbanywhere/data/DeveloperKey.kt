@@ -28,8 +28,21 @@ data class DeveloperKey(
     }
 
     companion object {
+        /**
+         * A label is a comment in a line-based key file written through a shell
+         * command, so every control character (NUL, newline, tab, escape) becomes
+         * a space and the length is bounded. A NUL would truncate the command in
+         * adbd and break every later key-file write.
+         */
         fun sanitize(label: String): String =
-            label.replace('\n', ' ').replace('\r', ' ').trim().ifEmpty { "developer" }
+            label.map { if (it.isISOControl() || it == '\u2028' || it == '\u2029') ' ' else it }
+                .joinToString("")
+                .replace(Regex("\\s+"), " ")
+                .trim()
+                .take(MAX_LABEL)
+                .ifEmpty { "developer" }
+
+        const val MAX_LABEL = 64
 
         fun fromJson(json: JSONObject): DeveloperKey? {
             return try {

@@ -5,6 +5,14 @@
 package cz.slush.adbanywhere.data
 
 object KeyFiles {
+    /**
+     * The --tls-clients file: only the app's daemon key may complete the TLS
+     * handshake on the loopback listener, so no other local app can even reach
+     * ADB auth there. Developer keys authenticate inside that channel (relay)
+     * or on the plain VPN listener.
+     */
+    fun tlsClientsFile(app: AndroidPubKey.Key): String = app.keyLine() + "\n"
+
     fun keysFile(app: AndroidPubKey.Key, developers: List<DeveloperKey>): String {
         val lines = mutableListOf(app.keyLine())
         val seen = mutableSetOf(app.fingerprint)

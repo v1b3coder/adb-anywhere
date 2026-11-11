@@ -34,7 +34,7 @@ object AdbCallParser {
 
         return when (base) {
             "shell" -> shell(base, rest, fields, interactive = rest.isEmpty(), raw = raw)
-            "exec" -> shell(base, rest, fields, interactive = false, raw = raw)
+            "exec" -> shell(base, rest, fields, interactive = rest.isEmpty(), raw = raw)
             "abb_exec" -> {
                 val argv = rest.split('\u0000').filter { it.isNotEmpty() }
                 argv.take(MAX_FIELDS).forEachIndexed { index, value ->
@@ -55,7 +55,10 @@ object AdbCallParser {
                 truncated = fields.truncated,
             )
             "tcp" -> {
-                val port = rest.toIntOrNull()
+                // tcp:<port> or tcp:<host>:<port>; adbd connects to loopback only.
+                val host = if (rest.contains(':')) rest.substringBeforeLast(':') else ""
+                val port = rest.substringAfterLast(':').toIntOrNull()
+                if (host.isNotEmpty()) fields.put("host", host)
                 if (port != null) fields.put("port", port.toString())
                 AdbCall(
                     service = base,
@@ -113,6 +116,10 @@ object AdbCallParser {
         val full = ShellLexer.lex(command)
         val argv = full.take(MAX_FIELDS)
         val metacharacters = ShellLexer.hasMetacharacters(command)
+        // `shell:sh` or `exec:sh -i` reads commands from stdin: it is the same
+        // full shell as `shell:` and must be the same capability, not a command.
+        @Suppress("NAME_SHADOWING")
+        val interactive = interactive || (!metacharacters && isShellLauncher(full))
         fields.put("command", command)
         fields.put("interactive", interactive.toString())
         fields.put("metacharacters", metacharacters.toString())
@@ -126,6 +133,22 @@ object AdbCallParser {
             metacharacters = metacharacters,
             truncated = fields.truncated || full.size > MAX_FIELDS,
         )
+    }
+
+    private val shells = setOf("sh", "bash", "mksh", "ash", "dash", "zsh", "su")
+
+    /** A shell binary with no script argument reads its commands from stdin. */
+    internal fun isShellLauncher(argv: List<String>): Boolean {
+        val first = argv.firstOrNull() ?: return false
+        var rest = argv.drop(1)
+        if (first.substringAfterLast('/') == "toybox" || first.substringAfterLast('/') == "busybox") {
+            if (rest.firstOrNull()?.let { it in shells } != true) return false
+            rest = rest.drop(1)
+        } else if (first.substringAfterLast('/') !in shells) {
+            return false
+        }
+        return rest.none { it == "-c" || (it.startsWith("-") && it.contains('c') && !it.startsWith("--")) } &&
+            rest.none { !it.startsWith("-") }
     }
 
     private class Fields {

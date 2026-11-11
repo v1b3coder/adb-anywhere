@@ -54,8 +54,10 @@ fun KeysScreen(
     onRemove: (String) -> Unit,
     onRename: (String, String) -> Unit,
     onAdd: (String, String) -> String?,
+    onRemoveAll: () -> Unit = {},
 ) {
     var addOpen by remember { mutableStateOf(false) }
+    var removeAll by remember { mutableStateOf(false) }
     var removeTarget by remember { mutableStateOf<DeveloperKey?>(null) }
     var renameTarget by remember { mutableStateOf<DeveloperKey?>(null) }
 
@@ -98,6 +100,12 @@ fun KeysScreen(
                         onRemove = { removeTarget = key },
                     )
                 }
+                item {
+                    TextButton(
+                        onClick = { removeAll = true },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Remove all developer keys") }
+                }
             }
             ExtendedFloatingActionButton(
                 onClick = { addOpen = true },
@@ -127,6 +135,28 @@ fun KeysScreen(
             onSave = { label ->
                 onRename(target.fingerprint, label)
                 renameTarget = null
+            },
+        )
+    }
+
+    if (removeAll) {
+        AlertDialog(
+            onDismissRequest = { removeAll = false },
+            title = { Text("Remove every developer key?") },
+            text = {
+                Text(
+                    "Only the app's own key stays in the custom adb. Every machine must be " +
+                        "paired again. The custom adb restarts, so open connections drop.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onRemoveAll()
+                    removeAll = false
+                }) { Text("Remove all") }
+            },
+            dismissButton = {
+                TextButton(onClick = { removeAll = false }) { Text("Cancel") }
             },
         )
     }

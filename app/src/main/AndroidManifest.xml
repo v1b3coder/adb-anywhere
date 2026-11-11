@@ -13,6 +13,8 @@
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- The approval prompt hides other apps' overlays while it is shown. -->
+    <uses-permission android:name="android.permission.HIDE_OVERLAY_WINDOWS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -39,6 +41,7 @@
     <application
         android:name=".AdbAnywhereApp"
         android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:directBootAware="true"
         android:fullBackupContent="false"
         android:icon="@mipmap/ic_launcher"
@@ -89,16 +92,35 @@
             android:enabled="true"
             android:exported="false" />
 
+        <!--
+          Debug builds only. android.permission.DUMP is held by the shell user
+          (`adb shell am broadcast`) and never by a third-party app, so no
+          installed app can drive these hooks.
+        -->
         <receiver
             android:name=".service.DebugReceiver"
             android:enabled="${debugReceiverEnabled}"
-            android:exported="true">
+            android:exported="true"
+            android:permission="android.permission.DUMP">
             <intent-filter>
                 <action android:name="cz.slush.adbanywhere.DEBUG_PAIR" />
                 <action android:name="cz.slush.adbanywhere.DEBUG_NOTIFY_PAIR" />
                 <action android:name="cz.slush.adbanywhere.DEBUG_PAIR_REPLY" />
+                <action android:name="cz.slush.adbanywhere.DEBUG" />
             </intent-filter>
         </receiver>
+
+        <!--
+          ShellProof: an ADB endpoint proves it runs commands as the shell user by
+          delivering a nonce here with `am broadcast`. DUMP keeps every
+          third-party app out (docs/DESIGN.md I16).
+        -->
+        <receiver
+            android:name=".service.ShellProofReceiver"
+            android:directBootAware="true"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
 
         <receiver
             android:name=".service.WatchdogReceiver"

@@ -48,6 +48,7 @@ interface RelayPolicy {
 
 class FirewallPolicy(
     private val config: () -> FirewallConfig,
+    private val protected: () -> Protected = { Protected() },
     private val prompt: suspend (PromptRequest, Long) -> PromptResponse?,
     private val pending: () -> Boolean,
     private val saveRule: (CallRule) -> Unit,
@@ -56,7 +57,7 @@ class FirewallPolicy(
 ) : RelayPolicy {
     override fun evaluate(call: AdbCall): CallVerdict {
         val config = config()
-        val verdict = CallRules.evaluate(call, config)
+        val verdict = CallRules.evaluate(call, config, protected())
         verdict.ruleId
             ?.takeIf { id -> config.callRules.any { it.id == id } }
             ?.let(onRuleUsed)

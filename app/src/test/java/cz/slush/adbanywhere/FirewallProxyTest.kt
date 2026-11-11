@@ -67,7 +67,15 @@ class FirewallProxyTest {
         assertEquals(0, states.last().activeSessions)
         try {
             Socket("127.0.0.1", proxyPort).use { client ->
+                // The client speaks first: its A_CNXN opens the daemon side, and
+                // the daemon sees the developer's own banner.
+                val hello = ByteArrayOutputStream()
+                AdbFrameCodec.write(hello, AdbFrameCodec.A_CNXN, 0x01000001, 4096, "host::".toByteArray())
+                client.getOutputStream().write(hello.toByteArray())
+                client.getOutputStream().flush()
                 val server = withTimeout(3_000) { accepted.await() }
+                val forwarded = AdbFrameCodec.read(server.getInputStream())
+                assertEquals(AdbFrameCodec.A_CNXN, forwarded!!.command)
                 // The server sends A_CNXN only after the ADB handshake; the relay
                 // then accepts the client's A_OPEN.
                 val cnxn = ByteArrayOutputStream()

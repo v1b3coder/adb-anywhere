@@ -23,7 +23,8 @@ class BootReceiver : BroadcastReceiver() {
             return
         }
         AppLog.info("boot", "starting the control service")
-        ControlService.start(context, ControlService.ACTION_START)
+        // A boot or an update is not a Start: it never turns the system adb on.
+        ControlService.start(context, ControlService.ACTION_RECHECK)
     }
 
     private companion object {

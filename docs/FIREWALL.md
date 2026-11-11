@@ -1,7 +1,7 @@
 # adb-anywhere — Firewall design
 
 Status: v1 implemented
-Date: 2026-11-05
+Date: 2026-11-10
 Scope: optional firewall mode, IP allowlist, foreground-app allowlist, call
 policy with custom filters, audit log
 
@@ -12,8 +12,8 @@ Add an optional firewall that sits between developer machines and the custom
 
 - `adbd` stops listening on the VPN address and keeps only
   `127.0.0.1:<loopbackPort>`.
-- The app accepts TCP on `<vpn-ip>:<vpnPort>` and relays the ADB byte stream to
-  `127.0.0.1:<loopbackPort>`.
+- The app accepts TCP on `<vpn-ip>:<vpnPort>` and tunnels the ADB byte stream to
+  the daemon's TLS listener on `127.0.0.1:<loopbackPort>` (`DESIGN.md` D20).
 - The relay parses the ADB framing far enough to apply three modules: IP allowlist,
   foreground-app allowlist and call policy. It records an audit log.
 
@@ -32,13 +32,19 @@ Non-goals:
 
 | Firewall | `adbd` listens on | App listens on | Developer machine connects to |
 |---|---|---|---|
-| off | `127.0.0.1:<loopback>`, `<vpn-ip>:<vpn-port>` | nothing | `adbd` |
-| on | `127.0.0.1:<loopback>` only | `<vpn-ip>:<vpn-port>` | app relay, which connects to `adbd` loopback |
+| off | TLS `127.0.0.1:<loopback>`, plain `<vpn-ip>:<vpn-port>` | nothing | `adbd` |
+| on | TLS `127.0.0.1:<loopback>` only | `<vpn-ip>:<vpn-port>` | app relay, which tunnels to `adbd` loopback |
 
-The relay is byte-transparent. It never authenticates, never decrypts and never
-rewrites ADB payloads. ADB key authentication stays end-to-end between the
-developer machine and `adbd`. The relay only parses the framing, evaluates policy
-and forwards the original bytes.
+The relay is byte-transparent at the ADB layer. It never authenticates a
+developer, never signs a token and never rewrites ADB payloads. ADB key
+authentication stays end-to-end between the developer machine and `adbd`.
+
+The hop from the relay to `adbd` is TLS. The developer's first `A_CNXN` opens it:
+the relay forwards that frame, consumes the daemon's `A_STLS`, completes the TLS
+handshake with the app's daemon key and the pinned server key, and then relays
+every further frame inside TLS. The daemon runs ADB key auth inside the tunnel,
+so the developer signs the daemon's token. A process that holds the loopback
+port without the pinned key fails the handshake, and the session is closed.
 
 The app's own channel is unchanged: it still connects directly to
 `127.0.0.1:<loopbackPort>` with the app key and is never filtered by the
@@ -101,6 +107,13 @@ instead.
   record the same connection. The UI shows the age as `2 hours ago` or `never`.
 - The peer address is the VPN source address. A NAT or a VPN that rewrites source
   addresses must whitelist the rewritten address. This is documented in the UI.
+- The relay accepts only a peer whose replies the phone routes into the tunnel:
+  the longest VPN route that contains the peer must be more specific than every
+  directly connected non-VPN subnet that contains it. Binding the VPN address
+  does not stop a LAN host from addressing it, but such a host never completes
+  the TCP handshake through the tunnel, and a LAN source is rejected
+  (`ip_denied`, "not routed through the VPN"). This check runs whether or not
+  the allowlist is on.
 - The relay rejects loopback, link-local and the phone's own VPN address as peers.
   A local app that connects to the VPN address has the VPN address as its source;
   the only legitimate local client is the app's own loopback channel, which the
@@ -146,6 +159,10 @@ instead.
   for the decision for the lifetime of that prompt.
 - The monitor polls every 1 s while an external session or a prompt exists, and every
   5 s otherwise. The relay never polls on the main thread.
+- A pending prompt defers the close only for its own connection: when the grace
+  timer fires, connections without a visible prompt close at once, and a
+  connection with one is re-checked when its prompt ends. Another peer's prompts
+  cannot keep a session open.
 - On a foreground change away from the allowed set, the relay starts a grace timer
   (default 15 s, configurable, `0` means immediate). If the target app returns
   before it expires, nothing happens; otherwise the relay closes live sessions.
@@ -191,8 +208,8 @@ same close a device sends for an unknown service. The relay does not forward the
 | `exec:<cmd>` | `command`, `argv[]` | Same as shell |
 | `abb_exec:<argv\0...>` | NUL-separated `argv[]` | Used by `adb install` / `uninstall` |
 | `sync:` | v1 and v2 `direction`, `path`, `mode`, `size` from sync frames | File contents are opaque |
-| `tcp:<port>` | `port` | Device port for `adb forward` |
-| `reverse:forward:<remote>;<local>` | `remote`, `local` specs | Both are `tcp:` / `local*:` specs |
+| `tcp:<port>`, `tcp:<host>:<port>` | `port`, `host` | Device port for `adb forward`; adbd connects to loopback only |
+| `reverse:forward:<remote>;<local>` | `remote`, `local` specs | adbd binds the device side to `127.0.0.1` only |
 | `framebuffer:` | none | Screen stream is opaque |
 | `jdwp:<pid>` | `pid` | Daemon rejects it |
 | `root:`, `remount:`, `reboot:`, `usb:`, `tcpip:` | none | Daemon rejects them |
@@ -241,12 +258,24 @@ globs or command substitutions. `metacharacters` is set when the raw command
 contains shell operators outside quotes; those calls are treated as raw shell, not as
 a normal argv match.
 
-`sync:` is parsed as a per-stream state machine:
+A shell binary with no script (`shell:sh`, `exec:sh -i`, `shell:toybox sh`) reads
+its commands from stdin, so it is the same full shell as an empty `shell:` and is
+parsed as `interactive`.
 
-- First client frame is a sync v1 or v2 `STAT`, `LSTAT`, `LIST`, `SEND` or
-  `RECV` (`STA2`, `LST2`, `LIS2`, `SND2`, `RCV2`).
-- `SEND` and `RECV` carry the device path; `SEND` v2 adds mode and flags.
-- `DATA` frames carry file bytes and are forwarded without inspection.
+`sync:` is parsed as a byte stream per stream (`SyncStream`). ADB `A_WRTE` frame
+boundaries do not line up with sync requests: `adb push` of small files writes
+`SEND`, `DATA` and `DONE` at once, and a request can be split across frames.
+
+- Every request that carries a path (`STAT`, `LIST`, `SEND`, `RECV` and the v2
+  `STA2`, `LST2`, `LIS2`, `SND2`, `RCV2`) is reported, however the frames pack
+  them, and evaluated before the frame that completes it is forwarded.
+- The v2 setup messages (`SND2` mode and flags, `RCV2` flags) are consumed.
+- `DATA` chunks are skipped by their exact length (at most 64 KiB) without
+  inspection; bytes inside file data are never read as requests. `DONE` ends
+  the data phase.
+- `QUIT` ends the stream. An unknown request, a chunk outside a data phase, an
+  oversized chunk or anything after `QUIT` is malformed: the stream is closed.
+- A `SEND` v1 path drops its `,mode` suffix before matching.
 - A path rule matches the normalized lexical path. Symlinks and `..` are not
   resolved; the UI labels path rules as advisory.
 
@@ -293,8 +322,13 @@ matched a call, whether the action was allow or deny; the UI shows the age as
 Built-in rules, before user rules:
 
 1. Deny every service the patched `adbd` rejects (`jdwp:`, `root:`, `remount:`,
-   `reboot:`, `usb:`, `tcpip:`, `abb:`, `restore:`, `disable-verity:`,
-   `enable-verity:` and the test services).
+   `reboot:`, `usb:`, `tcpip:`, `abb:`, `backup:`, `restore:`, `disable-verity:`,
+   `enable-verity:`, `dev-raw:` and the test services).
+1a. Deny `tcp:` to the app's own ports and 5555, and a `tcp:` port that does not
+   parse: a peer limited by the call policy must not reach adbd past the relay.
+1b. Deny sync paths under the daemon directory after lexical normalization
+   (`//`, `/./`, `..`): a limited peer must not rewrite the daemon's key files or
+   scripts. Symlinks are not resolved, so this is advisory like every path rule.
 2. An interactive `shell:` / `shell,v2:` with no command is a capability. It
    prompts unless the user has created an explicit interactive-shell rule; when
    prompts are disabled it is denied. That rule allows the session as a whole, not
@@ -313,8 +347,15 @@ policy is off, every parsed call is allowed; the IP and app allowlists still app
    upstream yet.
 3. If the app can draw overlays (`SYSTEM_ALERT_WINDOW`), a non-modal floating
    card appears above the current app, whether or not ADB Anywhere is foreground.
-   Without the overlay permission, the prompt falls back to the activity and a
-   high-priority notification with a `Review` action; the call waits. If the screen
+   The card shows the call and offers only **Review** and **Block**: it is itself
+   an app overlay and cannot hide other apps' overlays, so a covered card can at
+   worst deny. **Review** opens the approval activity. Without the overlay
+   permission, the prompt opens the activity directly and posts a high-priority
+   notification with a `Review` action; the call waits.
+   The approval activity hides every non-system overlay while it is visible
+   (`setHideOverlayWindows`), drops touches flagged as obscured or partially
+   obscured, and sets `filterTouchesWhenObscured` on its own window and on every
+   dialog window it opens. If the screen
    is off or locked, the call is denied without a prompt. The screen-off rule is separate from the app allowlist: an
    `A_OPEN` that arrived while the target app was foreground is still decided by
    the prompt, even if the screen turns off while the prompt is open.
@@ -331,15 +372,19 @@ policy is off, every parsed call is allowed; the IP and app allowlists still app
    - **Allow once**: allow this call; no rule.
    - **Always allow**: create an `ALLOW` rule with every field fixed, then allow.
    - **Custom filter**: open the editor; apply its rule, then allow or deny.
-7. Timeout is 30 s and defaults to deny. A closed prompt, a dismissed overlay, or a
+7. A prompt holds only its own stream. The relay keeps relaying the
+   connection's other streams; a held sync stream queues its later frames in
+   order until the answer.
+8. Timeout is 30 s and defaults to deny. The deadline is set when the call
+   arrives, so time spent waiting behind another card counts against it. A closed prompt, a dismissed overlay, or a
    lost connection also denies, and the cleanup runs without suspending so a
    cancelled relay cannot leak the prompt slot. The ADB client has no
    application-level timeout for an `A_OPEN`, so the prompt timeout is the
    bound; the prompt shows a countdown. One card is shown at a time; a second
    unmatched call waits for the first to be answered.
-8. Pending prompts are capped at 8; excess calls are denied and audited as
+9. Pending prompts are capped at 8; excess calls are denied and audited as
    `call_denied` with `rule=prompt-cap`.
-9. A `once` grant is bound to the connection and stream id, not to "the next
+10. A `once` grant is bound to the connection and stream id, not to "the next
    call". It cannot be replayed by another connection.
 
 `Block` means "deny this call"; "always deny" is a custom filter with the `DENY`
@@ -430,7 +475,7 @@ Every event is a JSON line:
 | `connection_open` | TCP accepted |
 | `ip_denied` | Peer outside the allowlist |
 | `app_denied` | Target app not foreground, or screen off |
-| `auth_ok` / `auth_unknown` | The server accepted the transport (`auth_ok`) or the client offered a key (`auth_unknown`) |
+| `auth_ok` / `auth_unknown` | The server accepted the transport (`auth_ok`, with the fingerprint of the paired key whose signature the relay verified over the server's token, or empty) or the client offered an unlisted public key (`auth_unknown`) |
 | `call_open` | `A_OPEN` parsed |
 | `call_allowed` / `call_denied` / `call_prompted` / `call_timeout` | Decision |
 | `stream_closed` | Both sides closed; bytes and duration |
@@ -477,8 +522,9 @@ Lifecycle changes:
 - `setup()` reads `firewallEnabled` and passes `exposeVpn = !firewallEnabled` to
   `DaemonManager`. With the firewall on, the daemon restarts only for a port change,
   not for a VPN address change; the relay rebinds instead.
-- `verifyDaemon()` verifies loopback and, with the firewall on, verifies that the
-  relay is bound; it does not dial the VPN address.
+- `verifyDaemon()` verifies loopback through the pinned channel and, with the
+  firewall on, verifies that the relay is bound; it never signs on the VPN address.
+- The relay's upstream is the pinned TLS tunnel (`DaemonTunnel`).
 - `watchdog()` checks the relay with the daemon and restarts it if it is down.
 - `networkChanged()` rebinds the relay when the VPN address changes and stops it
   when the VPN is gone.
@@ -520,8 +566,10 @@ calls `adb tcpip` and never moves to another port silently.
   `ControlService`. It is non-modal (`FLAG_NOT_TOUCH_MODAL`), shows the same card,
   and is reachable only after the user grants Display over other apps. It cannot show
   over the keyguard; a locked phone gets a denial instead.
-- `CallPromptActivity` remains the fallback when the overlay permission is missing.
-  It uses `setShowWhenLocked(false)` and refuses to show over the keyguard.
+- `CallPromptActivity` is where a call is allowed: from the card's Review, from
+  the notification, or directly when the overlay permission is missing. It uses
+  `setShowWhenLocked(false)`, refuses to show over the keyguard, and hides other
+  overlays while visible.
 - `RuleEditor` is a modal screen with field rows, lock toggles, action selector,
   preview and save.
 - The ongoing notification adds one line: `Firewall: 1 session`,
@@ -574,11 +622,13 @@ It does not add:
   tap. The card sets `filterTouchesWhenObscured`, so an obscured touch does not
   approve the call.
 - A second factor for an unauthenticated peer. The relay refuses an `A_OPEN`
-  before the server's `A_CNXN`, and the prompt shows the key when one was
-  offered; ADB key auth is still the only authentication.
-- Protection from a local app that can reach `127.0.0.1:<loopback>` and has the
-  app key. The app key stays in app-private storage; the loopback channel is
-  unchanged.
+  before the server's `A_CNXN`, and the prompt names a key only when the relay
+  verified that key's signature over the server's own token; a public key the
+  client merely offers is never shown as its identity. ADB key auth is still the
+  only authentication. Rules are global, not per key.
+- Protection from a local app that has the app's daemon key. The key stays in
+  app-private storage and is excluded from backup and device transfer; without
+  it a local app cannot finish the loopback TLS handshake.
 - Protection from a malicious local app that binds the relay address before the
   relay starts. The relay sets `SO_REUSEADDR` so a `TIME_WAIT` socket from its own
   previous instance does not block the bind, but a live listener still does; it reports
@@ -590,8 +640,11 @@ It does not add:
   to another port or to the direct VPN listener.
 
 The relay caps connections at 8 total and 2 per peer, caps a pre-`A_CNXN` payload
-at 4 KiB and any payload at 1 MiB, times out a pre-auth read after 10 s, and
-closes a connection on a malformed frame. The parsed service string is capped at
+at 4 KiB and any payload at 1 MiB, closes a transport that has not authenticated
+10 s after accept (an absolute deadline, so trickled bytes do not extend it),
+and closes a connection on a malformed frame, a reused stream id or a client
+that does not start with `A_CNXN`. A frame for a stream the relay does not
+track, or with a device id that does not match the tracked stream, is dropped. The parsed service string is capped at
 32 fields and 512 characters per field, so the audit ring and a saved rule stay
 bounded. That is DoS resistance for the app's own listener, not a general network
 firewall.
@@ -728,6 +781,13 @@ Tests:
 - `FirewallDataTest`: IPv4/CIDR, lexer, service parser, rules, sync parser,
   frame codec, foreground tracker, config JSON.
 - `AdbRelayTest`: allow, deny, prompt, sync path deny, malformed frame.
+- `AdbRelaySecurityTest`: requests packed after an allowed one, a close naming
+  another device stream, a request inside a data phase, unknown streams, a prompt
+  holding only its stream, signature-verified attribution, the absolute
+  authentication deadline.
+- `SyncStreamTest`: packed, split and v2 requests, data skipping, malformed input.
+- `HardeningDataTest`: protected ports and paths, interactive shell launchers,
+  label sanitizing, the VPN routing check.
 - `FirewallProxyTest`: accept and relay, IP deny, app deny.
 - `AuditLogTest`: ring, file, redaction, clear.
 - `ControlDataTest`: `Endpoint.listenSpec` with the VPN listener hidden.

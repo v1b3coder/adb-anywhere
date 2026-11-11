@@ -131,7 +131,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (parsed.bits != 2048) return "Only RSA-2048 keys are supported."
         val current = _keys.value
         if (current.any { it.fingerprint == parsed.fingerprint }) return "That key is already paired."
-        val key = DeveloperKey(parsed, label.ifBlank { parsed.label.ifBlank { "developer" } })
+        val key = DeveloperKey(parsed, DeveloperKey.sanitize(label.ifBlank { parsed.label }))
         val updated = current + key
         prefs.developerKeysJson = DeveloperKey.store(updated)
         _keys.value = updated
@@ -162,6 +162,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         applyIfRunning(ControlService.ACTION_REVOKE_KEYS)
     }
 
+    /** DESIGN §8 Revocation: the key file keeps only the app's own daemon key. */
+    fun removeAllDeveloperKeys() {
+        prefs.developerKeysJson = DeveloperKey.store(emptyList())
+        _keys.value = emptyList()
+        AppLog.info("keys", "removed every developer key; restarting to close sessions")
+        applyIfRunning(ControlService.ACTION_REVOKE_KEYS)
+    }
+
     fun setPorts(loopback: Int, vpn: Int): String? {
         Prefs.validatePorts(loopback, vpn)?.let { return it }
         prefs.loopbackPort = loopback
@@ -181,31 +189,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         AppLog.info("settings", "remote dir=$path")
     }
 
-    fun setDebugBootstrap(
-        host: String,
-        bootstrapPort: Int,
-        remoteDir: String,
-        loopbackPort: Int,
-        vpnPort: Int,
-    ) {
-        if (host.isBlank() || bootstrapPort !in 1024..65535) return
-        if (remoteDir.startsWith("/data/local/tmp/")) prefs.remoteDir = remoteDir
-        if (loopbackPort in 1024..65535 && vpnPort in 1024..65535 &&
-            loopbackPort != vpnPort
-        ) {
-            prefs.loopbackPort = loopbackPort
-            prefs.vpnPort = vpnPort
-        }
-        prefs.bootstrapHost = host
-        prefs.bootstrapPort = bootstrapPort
-        AppLog.info(
-            "debug",
-            "bootstrap host=$host port=$bootstrapPort dir=${prefs.remoteDir} " +
-                "loop=${prefs.loopbackPort} vpn=${prefs.vpnPort}",
-        )
-        ControlService.start(getApplication(), ControlService.ACTION_START)
-    }
-
     fun setDebugVpnIp(ip: String) {
         AppLog.info("debug", "vpn ip override=${ip.ifBlank { "cleared" }}")
         prefs.debugVpnIp = ip.trim()
@@ -214,31 +197,23 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun setBootstrap(host: String, port: Int) {
-        if (host.isBlank() || port !in 1024..65535) return
-        prefs.bootstrapHost = host
-        prefs.bootstrapPort = port
-        AppLog.info("debug", "bootstrap host=$host port=$port")
-        ControlService.start(getApplication(), ControlService.ACTION_START)
-    }
-
-    fun appKeyText(): String = keyStore.publicKeyB64
-
+    /** Debug builds only, through the DUMP-protected DebugReceiver. */
     fun runDebugShell(command: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            val manager = cz.slush.adbanywhere.adb.AdbManager(getApplication(), keyStore)
-            if (!manager.connectTo("127.0.0.1", prefs.loopbackPort)) {
-                AppLog.error("debug", "shell connect to 127.0.0.1:${prefs.loopbackPort} failed")
+            val shell = runCatching {
+                cz.slush.adbanywhere.adb.DaemonChannel.shell(getApplication(), prefs.loopbackPort)
+            }.getOrElse {
+                AppLog.error("debug", "shell connect to 127.0.0.1:${prefs.loopbackPort} failed: ${it.message}")
                 return@launch
             }
             try {
-                val result = cz.slush.adbanywhere.adb.Shell(manager).exec(command)
+                val result = shell.exec(command)
                 AppLog.info(
                     "debug",
                     "shell rc=${result.exitCode} out=${result.stdout.trim()} err=${result.stderr.trim()}",
                 )
             } finally {
-                manager.disconnectQuietly()
+                shell.close()
             }
         }
     }
@@ -366,18 +341,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun grantUsageAccess() {
         viewModelScope.launch(Dispatchers.IO) {
-            val manager = cz.slush.adbanywhere.adb.AdbManager(getApplication(), keyStore)
-            if (!manager.connectTo("127.0.0.1", prefs.loopbackPort)) {
-                AppLog.error("firewall", "usage access: loopback unavailable")
+            val shell = runCatching {
+                cz.slush.adbanywhere.adb.DaemonChannel.shell(getApplication(), prefs.loopbackPort)
+            }.getOrElse {
+                AppLog.error("firewall", "usage access: loopback unavailable: ${it.message}")
                 return@launch
             }
             try {
-                val result = cz.slush.adbanywhere.adb.Shell(manager).exec(
+                val result = shell.exec(
                     "appops set ${getApplication<Application>().packageName} GET_USAGE_STATS allow",
                 )
                 AppLog.info("firewall", "usage access rc=${result.exitCode}")
             } finally {
-                manager.disconnectQuietly()
+                shell.close()
             }
         }
     }

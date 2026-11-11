@@ -28,7 +28,7 @@ data class ShellResult(
     }
 }
 
-class Shell(private val manager: AdbManager) {
+class Shell(private val manager: AdbChannel) {
     fun exec(command: String, timeoutMs: Long = 20_000): ShellResult {
         return try {
             execV2(command, timeoutMs)
@@ -114,23 +114,33 @@ class Shell(private val manager: AdbManager) {
         return ShellResult(text.substring(0, index), "", exit)
     }
 
-    fun writeTextFile(path: String, text: String) {
-        val quoted = quote(path)
+    /**
+     * Writes [text] to [path] atomically: a private temporary file in the same
+     * directory, then `mv` over the target. A failed write leaves the previous
+     * file in place instead of a deleted or truncated one, and the file is never
+     * readable by another uid, not even between the write and the chmod.
+     */
+    fun writeTextFile(path: String, text: String, mode: String = "600") {
         val bytes = text.toByteArray(StandardCharsets.UTF_8)
-        // Replace instead of truncating: a file left by a different uid (for
-        // example a root adbd during an emulator test) is not writable in place,
-        // but the directory is.
-        exec("rm -f $quoted").requireOk("remove $path")
-        exec("printf '%s' ${quote(text)} > $quoted").requireOk("write $path")
-        val size = exec("wc -c < $quoted").stdout.trim().toLongOrNull()
-        if (size != bytes.size.toLong()) {
-            throw IOException("short write to $path: ${size ?: -1} != ${bytes.size}")
+        require(text.none { it == '\u0000' }) { "text for $path contains a NUL byte" }
+        val temporary = "$path.tmp.${System.nanoTime()}"
+        val quotedTemp = quote(temporary)
+        try {
+            exec("umask 077; printf '%s' ${quote(text)} > $quotedTemp").requireOk("write $path")
+            val size = exec("wc -c < $quotedTemp").stdout.trim().toLongOrNull()
+            if (size != bytes.size.toLong()) {
+                throw IOException("short write to $path: ${size ?: -1} != ${bytes.size}")
+            }
+            exec("chmod $mode $quotedTemp && mv -f $quotedTemp ${quote(path)}")
+                .requireOk("replace $path")
+        } finally {
+            exec("rm -f $quotedTemp")
         }
     }
 
     fun writeFile(path: String, data: ByteArray) {
         val quoted = quote(path)
-        val stream = manager.openStream("shell,v2,raw:cat > $quoted")
+        val stream = manager.openStream("shell,v2,raw:umask 077; cat > $quoted")
         try {
             val out = stream.openOutputStream()
             var offset = 0
@@ -197,13 +207,13 @@ class Shell(private val manager: AdbManager) {
     }
 
     fun mkdirs(path: String) {
-        exec("mkdir -p ${quote(path)}").requireOk("mkdir $path")
+        exec("umask 077; mkdir -p ${quote(path)} && (chmod 700 ${quote(path)} 2>/dev/null || true)").requireOk("mkdir $path")
     }
 
     fun quote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
 
     fun close() {
-        manager.disconnectQuietly()
+        runCatching { manager.close() }
     }
 
     fun probe(host: String, port: Int, timeoutMs: Int = 400): Boolean {

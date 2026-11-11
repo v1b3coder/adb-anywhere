@@ -136,17 +136,19 @@ class ControlDataTest {
     }
 
     @Test
-    fun endpointBuildsListenSpec() {
+    fun endpointBuildsTheListenerSet() {
+        // The loopback listener is always the TLS one; the VPN listener is plain
+        // and exists only when the daemon exposes the VPN (firewall off).
         assertEquals(
-            "tcp:127.0.0.1:15037,tcp:100.64.0.10:15038",
-            Endpoint.listenSpec(15037, "100.64.0.10", 15038),
+            Endpoint.Listeners("tcp:127.0.0.1:15037", "tcp:100.64.0.10:15038"),
+            Endpoint.listeners(15037, "100.64.0.10", 15038),
         )
-        assertEquals("tcp:127.0.0.1:15037", Endpoint.listenSpec(15037, null, 15038))
+        assertEquals(Endpoint.Listeners("tcp:127.0.0.1:15037", null), Endpoint.listeners(15037, null, 15038))
         assertEquals(
-            "tcp:127.0.0.1:15037",
-            Endpoint.listenSpec(15037, "100.64.0.10", 15038, exposeVpn = false),
+            Endpoint.Listeners("tcp:127.0.0.1:15037", null),
+            Endpoint.listeners(15037, "100.64.0.10", 15038, exposeVpn = false),
         )
-        assertEquals("tcp:127.0.0.1:15037", Endpoint.listenSpec(15037, "", 15038))
+        assertEquals(Endpoint.Listeners("tcp:127.0.0.1:15037", null), Endpoint.listeners(15037, "", 15038))
     }
 
     @Test
