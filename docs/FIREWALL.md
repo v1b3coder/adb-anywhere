@@ -190,7 +190,8 @@ the service's own payload semantics.
 | `A_CNXN` | both | version, maxdata, banner/features | Audit only |
 | `A_AUTH` | both | token, signature, public key | Optional key fingerprint |
 | `A_OPEN` | client → device | local id, send buffer, service string | **Policy decision point** |
-| `A_OKAY` | both | stream accepted / delayed-ack credit | Forward only |
+| `A_OPEN` | device → client | `adb reverse` connection to the host | Forward; tracked once the host accepts it |
+| `A_OKAY` | both | stream accepted / delayed-ack credit | Binds the device id to the stream; a retired device id never binds again |
 | `A_WRTE` | both | stream data | Forward, parse for `sync:` and shell-v2 |
 | `A_CLSE` | both | stream closed | Close both sides, audit |
 | `A_STLS` | both | TLS upgrade | Reject: plain ADB only |
@@ -198,6 +199,23 @@ the service's own payload semantics.
 A denied `A_OPEN` is answered with `A_CLSE(0, client-local-id)`, which is the
 same close a device sends for an unknown service. The relay does not forward the
 `A_OPEN` upstream.
+
+Stream identity rules (I17):
+
+- A client `A_CLSE` before the device's `A_OKAY` is not forwarded: adbd ignores a
+  close without its id and keeps its stream open. The stream stays as a
+  tombstone, its id cannot be reused (a reuse closes the connection), and when
+  the device's `A_OKAY` arrives the relay sends `A_CLSE` for it.
+- A device id that belonged to a closed stream is retired; a late `A_OKAY`
+  naming it never binds a new stream that reuses the client id.
+- A device-opened stream (`adb reverse`) is tracked by both ids once the host
+  answers it with `A_OKAY(host-id, device-id)`. Only a device id the device
+  opened can be accepted, and a host id that a forward stream uses cannot. Its
+  data goes to the phone-side socket of the reverse listener, not to a service,
+  so it carries no call policy; `reverse:forward` itself is policed at `A_OPEN`.
+- A service string with a NUL inside is denied (`builtin:nul`), except
+  `abb_exec:`, which separates its arguments with NUL: adbd ends the name at
+  the NUL, so the relay would judge more than adbd runs.
 
 ### 7.2 Parsing depth per service
 
@@ -276,8 +294,15 @@ boundaries do not line up with sync requests: `adb push` of small files writes
 - `QUIT` ends the stream. An unknown request, a chunk outside a data phase, an
   oversized chunk or anything after `QUIT` is malformed: the stream is closed.
 - A `SEND` v1 path drops its `,mode` suffix before matching.
-- A path rule matches the normalized lexical path. Symlinks and `..` are not
-  resolved; the UI labels path rules as advisory.
+- A path is decoded strictly: a NUL or bytes that are not UTF-8 make the stream
+  malformed. adbd uses the path as a C string, so `/protected/key\0/../..` would
+  open the key while the relay judged `/`.
+- `path` is the normalized lexical path (`//`, `/./` and `..` resolved), and the
+  built-in protection, every user rule, the prompt and the audit see that one
+  value; `raw_path` keeps what the client sent when it differs. A relative path
+  is denied (`builtin:relative-path`): adbd resolves it against a working
+  directory the relay cannot see. Symlinks are not resolved; the UI labels path
+  rules as advisory.
 
 ### 7.4 Rules
 
@@ -311,6 +336,15 @@ tokens are not predicates. A call with `&&`, `;`, `|`, `$()` or redirections is
 matched only by an exact rule (every field fixed, including
 `metacharacters = true`). Quoted `sh -c '...'` has no top-level operators, so the
 prefix capability still matches it and the quoted script runs as the app's UID.
+
+A `Prefix` on `command` or `raw` covers whole words: `run-as com.foo` matches
+`run-as com.foo id`, never `run-as com.foobar id`. A prefix that ends in a space
+or `:` already ends a word. Other fields keep a plain string prefix.
+
+A call the parser truncated (more than 32 fields or a value over 512 characters)
+is never matched by an `ALLOW` rule with field predicates: the predicates would
+compare only the kept part and admit whatever followed the cut. A `DENY` rule
+still matches, and a service-wide allow (no field predicates) does too.
 
 Evaluation is first match wins. A rule with fewer predicates is broader; a rule
 with no predicates matches every call of its service. The editor warns before
@@ -374,7 +408,8 @@ policy is off, every parsed call is allowed; the IP and app allowlists still app
    - **Custom filter**: open the editor; apply its rule, then allow or deny.
 7. A prompt holds only its own stream. The relay keeps relaying the
    connection's other streams; a held sync stream queues its later frames in
-   order until the answer.
+   order until the answer, at most 4 MiB. A client that ignores flow control past
+   that has the stream closed and audited (`held stream overflow`).
 8. Timeout is 30 s and defaults to deny. The deadline is set when the call
    arrives, so time spent waiting behind another card counts against it. A closed prompt, a dismissed overlay, or a
    lost connection also denies, and the cleanup runs without suspending so a
@@ -483,7 +518,13 @@ Every event is a JSON line:
 
 Storage is an append-only `audit.jsonl` in device-protected storage, rotated at
 256 KiB with four files. The UI keeps the last 500 events in memory and exposes a
-`StateFlow`. The audit log is always on while the firewall is on; it is separate
+`StateFlow`. Events a peer causes before ADB key auth (`connection_open`,
+`ip_denied`, `app_denied`, pre-auth `call_open`/`call_denied`, `auth_unknown`,
+pre-auth `proxy_error`) share a token bucket of 50 events refilled at one per
+6 s; the rest are counted and the count is recorded as `audit_suppressed` with
+the next event. Anyone the VPN routes can connect, so without the limit an
+unauthenticated peer could rotate every earlier entry out of the log.
+Authenticated events are never limited. The audit log is always on while the firewall is on; it is separate
 from the diagnostic log, which stays off by default.
 
 Arguments can contain secrets (`adb shell` passwords, tokens, paths). The log stores
@@ -641,9 +682,10 @@ It does not add:
 
 The relay caps connections at 8 total and 2 per peer, caps a pre-`A_CNXN` payload
 at 4 KiB and any payload at 1 MiB, closes a transport that has not authenticated
-10 s after accept (an absolute deadline, so trickled bytes do not extend it),
-and closes a connection on a malformed frame, a reused stream id or a client
-that does not start with `A_CNXN`. A frame for a stream the relay does not
+10 s after accept (an absolute deadline that starts at `accept()`, before the
+first frame, so trickled bytes do not extend it), caps a held stream's queue at
+4 MiB, rate-limits pre-auth audit events, and closes a connection on a malformed
+frame, a reused stream id or a client that does not start with `A_CNXN`. A frame for a stream the relay does not
 track, or with a device id that does not match the tracked stream, is dropped. The parsed service string is capped at
 32 fields and 512 characters per field, so the audit ring and a saved rule stay
 bounded. That is DoS resistance for the app's own listener, not a general network
@@ -671,6 +713,17 @@ JVM unit tests:
 - Last-use timestamps round-trip in the configuration JSON and relative ages
   format as `just now`, `2 hours ago`, `3 days ago` or `never`.
 - Relay with in-memory sockets: allow, deny, hold, timeout, close, oversized frame.
+- Relay stream identity and resource bounds (`AdbRelaySecurityTest`): a close
+  before the device's `A_OKAY` keeps the id taken and the relay closes the
+  device stream itself; a stale `A_OKAY` never binds a retired device id; a NUL
+  or non-UTF-8 sync path and a NUL service are refused; a held stream is closed
+  at the 4 MiB cap; a reverse stream carries data both ways and a host cannot
+  accept a stream the device never opened; pre-auth opens cannot flood the audit.
+- Path, prefix and truncation rules (`CallPolicyHardeningTest`): every spelling of
+  a path matches the same rule, a traversal escapes no allow, relative paths are
+  denied, prefixes cover whole words, an allow never matches a truncated call.
+- Audit rate limit with a fake clock; the proxy's pre-auth deadline against a
+  peer that trickles its first frame (`FirewallProxyTest`).
 - Prefix capability: a `rawShell` rule with `Prefix("command", ...)` matches a
   quoted `run-as <package> sh -c 'id && uname'`; it does not match
   `run-as <package> id && run-as evil`; a different package does not match; an

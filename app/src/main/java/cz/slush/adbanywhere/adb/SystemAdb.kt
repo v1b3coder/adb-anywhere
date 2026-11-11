@@ -6,8 +6,10 @@
  * - Every candidate port except 5555 must speak TLS. A plain AUTH token there is
  *   refused unsigned, because a local app can advertise or squat such a port and
  *   relay the token from a real plain listener.
- * - 5555 is plain ADB. The system adbd owns it whenever it listens there, so a
- *   squatter on 5555 has no plain system listener behind it to relay to.
+ * - 5555 is plain ADB and the last resort. It is not owned by construction:
+ *   with no `adb tcpip` listener any app can bind it, and a plain signature
+ *   there can be replayed to any plain listener that trusts the system key. The
+ *   caller forbids it while such a listener exists (a pre-TLS daemon).
  *
  * A connected endpoint is trusted only after [ShellProof] shows that it runs
  * commands as the shell user; a squatter cannot deliver that broadcast.
@@ -21,6 +23,7 @@ import cz.slush.adbanywhere.data.Prefs
 import cz.slush.adbanywhere.data.WirelessDebuggingGuard
 import cz.slush.adbanywhere.service.AppLog
 import cz.slush.adbanywhere.service.ShellProof
+import cz.slush.adbanywhere.service.SystemSettings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.IOException
@@ -41,6 +44,9 @@ class SystemAdb(
     val shell: Shell
         get() = Shell(client?.takeIf { it.isConnected } ?: throw IOException("Android's adb is not connected"))
 
+    /** True when the verified system connection runs over the TLS listener. */
+    val connectedOverTls: Boolean get() = client?.takeIf { it.isConnected }?.tls == true
+
     /** True when the last [ensureConnected] reached a listener that needs a pair. */
     @Volatile
     var pairingRequired = false
@@ -55,26 +61,27 @@ class SystemAdb(
         client = null
     }
 
-    suspend fun ensureConnected(): Boolean = withContext(Dispatchers.IO) {
+    /**
+     * Connects to the system adbd and proves it (I16). TLS candidates come first,
+     * mDNS included: a TLS client signature cannot be replayed. The plain 5555
+     * listener is the last resort and only with [allowPlain]: in the default
+     * state (`is_usb=true`, no `adb tcpip`) 5555 is free and any app can bind
+     * it, so a plain signature there goes to whoever holds it and can be
+     * replayed to any plain listener that trusts the system key (I15).
+     */
+    suspend fun ensureConnected(allowPlain: Boolean = true): Boolean = withContext(Dispatchers.IO) {
         pairingRequired = false
         if (client?.isConnected == true) return@withContext true
-
-        val tlsCandidates = LinkedHashSet<Int>()
-        systemTlsPort()?.let(tlsCandidates::add)
-        prefs.lastTlsPort.takeIf { it > 0 }?.let(tlsCandidates::add)
-        // 5555 is the plain listener; an older build may have remembered it.
-        tlsCandidates.remove(Prefs.PLAIN_ADB_PORT)
-        for (port in tlsCandidates) {
-            if (tryConnect(port, AdbMode.Tls())) return@withContext true
-        }
-        if (tryConnect(Prefs.PLAIN_ADB_PORT, AdbMode.Plain)) return@withContext true
-
+        val known = listOfNotNull(systemTlsPort(), prefs.lastTlsPort.takeIf { it > 0 })
         // Android 11-16 publish service.adb.tls.port to coredomain only; AOSP main
         // after Android 16 does not publish it at all. mDNS is the client path,
-        // and every advertised port must speak TLS.
-        for (port in discoverTlsPorts()) {
-            if (port in tlsCandidates) continue
-            if (tryConnect(port, AdbMode.Tls())) return@withContext true
+        // and it runs only when no known port connects.
+        val discover = { kotlinx.coroutines.runBlocking { discoverTlsPorts() } }
+        for ((port, mode) in attempts(known, discover, allowPlain)) {
+            if (tryConnect(port, mode)) return@withContext true
+        }
+        if (!allowPlain && SystemSettings.isLocalPortOpen(Prefs.PLAIN_ADB_PORT)) {
+            AppLog.warn("system", "not signing on 127.0.0.1:5555: a plain listener trusts the system key")
         }
         AppLog.info("system", "no verified listener found")
         false
@@ -185,6 +192,28 @@ class SystemAdb(
             withContext(Dispatchers.IO) {
                 MdnsDiscovery(context).discoverAll("_adb-tls-connect._tcp", timeoutMs)
             }
+
+        /**
+         * The order the bootstrap tries the system adbd in. Every TLS candidate
+         * comes first, the known ports and then the mDNS ones ([discover] runs
+         * only when the known ones are exhausted): a TLS client signature cannot
+         * be replayed. The plain 5555 listener is last and only with
+         * [allowPlain] (I15). 5555 is never a TLS candidate.
+         */
+        internal fun attempts(
+            known: List<Int>,
+            discover: () -> List<Int>,
+            allowPlain: Boolean,
+        ): Sequence<Pair<Int, AdbMode>> = sequence {
+            val tried = LinkedHashSet<Int>()
+            for (port in known) {
+                if (port != Prefs.PLAIN_ADB_PORT && tried.add(port)) yield(port to AdbMode.Tls())
+            }
+            for (port in discover()) {
+                if (port != Prefs.PLAIN_ADB_PORT && tried.add(port)) yield(port to AdbMode.Tls())
+            }
+            if (allowPlain) yield(Prefs.PLAIN_ADB_PORT to AdbMode.Plain)
+        }
 
         private const val MDNS_TIMEOUT_MS = 4_000L
         private const val STATUS_MDNS_TIMEOUT_MS = 2_000L

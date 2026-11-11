@@ -258,6 +258,23 @@ adb -s "$relay" exec-out getprop ro.product.model 2>/dev/null | grep -q "sdk_gph
 run_ok "logcat" logcat -d -t 1
 run_ok "forward" forward tcp:18080 tcp:8080
 run_ok "reverse" reverse tcp:18081 tcp:8080
+# A connection through the reverse forward: the device opens the stream and the
+# host accepts it, so the relay must carry device-opened streams both ways.
+python3 -c '
+import socket, sys
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", 18082)); s.listen(1); s.settimeout(20)
+c, _ = s.accept(); c.settimeout(5)
+data = c.recv(64); c.sendall(b"pong-" + data.strip() + b"\n"); c.close()
+' >"$tmp/reverse.host" 2>&1 &
+reverse_host=$!
+sleep 1
+run_ok "reverse to host" reverse tcp:18083 tcp:18082
+# stdin stays open: nc closes at EOF, before the reverse stream is accepted.
+adb -s "$relay" shell "(echo ping; sleep 2) | toybox nc -w 3 127.0.0.1 18083" >"$tmp/reverse.out" 2>&1
+grep -q "pong-ping" "$tmp/reverse.out" && ok "reverse connection carries data both ways" || bad "reverse connection carries data both ways"
+kill "$reverse_host" 2>/dev/null || true
+adb -s "$relay" reverse --remove tcp:18083 >/dev/null 2>&1 || true
 printf 'e2e-push\n' >"$tmp/push.txt"
 run_ok "push" push "$tmp/push.txt" /data/local/tmp/e2e-push.txt
 run_ok "pull" pull /data/local/tmp/e2e-push.txt "$tmp/pull.txt"

@@ -1,0 +1,228 @@
+--- a/daemon/auth.cpp
++++ b/daemon/auth.cpp
+@@ -317,12 +317,14 @@ static void adb_disconnected(void* unused, atransport* t) {
+ void adbd_auth_confirm_key(atransport* t) {
+     VLOG(AUTH) << "prompting user to authorize key";
+     t->AddDisconnect(&adb_disconnect);
++    // adb-anywhere: the vendored adbd_auth never prompts and never calls back,
++    // so a callback id would stay in |transports| forever: one entry for every
++    // unauthenticated connection that offers a key. Pass no callback argument.
+     if (adbd_auth_prompt_user_with_id) {
+         t->auth_id = adbd_auth_prompt_user_with_id(auth_ctx, t->auth_key.data(), t->auth_key.size(),
+-                                                   transport_to_callback_arg(t));
++                                                   nullptr);
+     } else {
+-        adbd_auth_prompt_user(auth_ctx, t->auth_key.data(), t->auth_key.size(),
+-                              transport_to_callback_arg(t));
++        adbd_auth_prompt_user(auth_ctx, t->auth_key.data(), t->auth_key.size(), nullptr);
+     }
+ }
+ 
+--- a/daemon/file_sync_service.cpp
++++ b/daemon/file_sync_service.cpp
+@@ -533,6 +533,10 @@ static bool send_impl(int s, const std::string& path, mode_t mode, CompressionTy
+         mode &= 0777;
+         mode |= ((mode >> 3) & 0070);
+         mode |= ((mode >> 3) & 0007);
++        // adb-anywhere: upstream copies the owner bits to group and other, and
++        // fchmod() ignores the umask, so a push made world-writable files. Nothing
++        // the daemon creates is world-writable (docs/DESIGN.md Patch set).
++        mode &= ~static_cast<mode_t>(0022);
+ 
+         uid_t uid = -1;
+         gid_t gid = -1;
+--- a/daemon/main.cpp
++++ b/daemon/main.cpp
+@@ -36,6 +36,7 @@
+ #include <unistd.h>
+ 
+ #include <memory>
++#include <thread>
+ #include <vector>
+ 
+ #include <android-base/file.h>
+@@ -71,21 +72,44 @@ static int open_private(const std::string& path, int flags) {
+     return fd;
+ }
+ 
++static constexpr off_t kMaxLogBytes = 1 << 20;
++
++static bool open_log(const std::string& path) {
++    int fd = open_private(path, O_APPEND);
++    if (fd < 0) return false;
++    dup2(fd, STDERR_FILENO);
++    unix_close(fd);
++    return true;
++}
++
++// adb-anywhere: the log is a file, not logd's ring buffer, and peers that never
++// authenticate cause log lines (every accepted connection logs its threads).
++// Rotation therefore runs while the daemon runs, not only at startup: the
++// log and its one predecessor stay near kMaxLogBytes each.
++static void log_rotation_thread(std::string path) {
++    adb_thread_setname("log_rotation");
++    while (true) {
++        std::this_thread::sleep_for(std::chrono::seconds(1));
++        struct stat st;
++        if (fstat(STDERR_FILENO, &st) != 0 || st.st_size <= kMaxLogBytes) continue;
++        rename(path.c_str(), (path + ".1").c_str());
++        open_log(path);
++    }
++}
++
+ static void redirect_log(const std::string& path) {
+     if (path.empty()) return;
+     // Rotate at startup: the app trims the files while the daemon is
+     // stopped, and this bounds a predecessor's log that was not trimmed.
+     struct stat st;
+-    if (lstat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode) && st.st_size > (1 << 20)) {
++    if (lstat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode) && st.st_size > kMaxLogBytes) {
+         rename(path.c_str(), (path + ".1").c_str());
+     }
+-    int fd = open_private(path, O_APPEND);
+-    if (fd < 0) {
++    if (!open_log(path)) {
+         PLOG(ERROR) << "cannot open log " << path;
+         return;
+     }
+-    dup2(fd, STDERR_FILENO);
+-    unix_close(fd);
++    std::thread(log_rotation_thread, path).detach();
+ }
+ 
+ static void write_pid_file(const std::string& path) {
+--- a/daemon/transport_socket_server.cpp
++++ b/daemon/transport_socket_server.cpp
+@@ -20,6 +20,7 @@
+ #include "transport.h"
+ 
+ #include <errno.h>
++#include <fcntl.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -51,6 +52,23 @@
+ // is fatal to the caller. Upstream retried a busy bind every second forever, so a
+ // daemon could run without a listener the app asked for, or take a port later
+ // from whoever held it. The accept loop never gives up on the socket it owns.
++// adb-anywhere: limits for peers that have not authenticated. Any local app can
++// connect to the loopback listener, and every accepted socket costs two threads
++// (three during a TLS handshake) and a few log lines. Without a bound, a peer
++// that opens connections and never finishes the handshake exhausts threads and
++// ends the daemon. A connection over the cap is closed at once; one that has not
++// authenticated by the deadline is shut down by the reaper.
++static constexpr size_t kMaxPreAuthTransports = 32;
++static constexpr std::chrono::milliseconds kPreAuthDeadline = 10s;
++
++static void preauth_reaper_thread() {
++    adb_thread_setname("preauth_reaper");
++    while (true) {
++        std::this_thread::sleep_for(1s);
++        reap_preauth_socket_transports(kPreAuthDeadline);
++    }
++}
++
+ static void server_socket_thread(unique_fd serverfd, std::string addr, bool use_tls) {
+     adb_thread_setname("server_socket");
+ 
+@@ -58,6 +76,10 @@ static void server_socket_thread(unique_fd serverfd, std::string addr, bool use_
+         D("server: trying to get new connection from fd %d", serverfd.get());
+         unique_fd fd(adb_socket_accept(serverfd, nullptr, nullptr));
+         if (fd >= 0) {
++            if (count_preauth_socket_transports() >= kMaxPreAuthTransports) {
++                // Not logged: the log would be the next thing a flood fills.
++                continue;
++            }
+             D("server: new connection on fd %d", fd.get());
+             close_on_exec(fd.get());
+             disable_tcp_nagle(fd.get());
+@@ -83,12 +105,16 @@ bool init_transport_socket_server(const std::string& addr, bool use_tls, std::st
+         return false;
+     }
+     close_on_exec(serverfd.get());
++    static std::once_flag reaper_started;
++    std::call_once(reaper_started, []() { std::thread(preauth_reaper_thread).detach(); });
+     std::thread(server_socket_thread, std::move(serverfd), addr, use_tls).detach();
+     return true;
+ }
+ 
+ int init_socket_transport(atransport* t, unique_fd fd, int, bool) {
+     t->type = kTransportLocal;
++    t->accepted_at = std::chrono::steady_clock::now();
++    t->preauth_fd.reset(fcntl(fd.get(), F_DUPFD_CLOEXEC, 0));
+     auto fd_connection = std::make_unique<FdConnection>(std::move(fd));
+     t->SetConnection(std::make_unique<BlockingConnectionAdapter>(std::move(fd_connection)));
+     return 0;
+--- a/transport.cpp
++++ b/transport.cpp
+@@ -1501,6 +1501,35 @@ bool validate_transport_list(const std::list<atransport*>& list, const std::stri
+     return true;
+ }
+ 
++size_t count_preauth_socket_transports() {
++    std::lock_guard<std::recursive_mutex> lock(transport_lock);
++    size_t count = 0;
++    for (auto* list : {&pending_list, &transport_list}) {
++        for (const auto* t : *list) {
++            if (t->type == kTransportLocal && !t->online && !t->kicked()) ++count;
++        }
++    }
++    return count;
++}
++
++void reap_preauth_socket_transports(std::chrono::milliseconds deadline) {
++    std::lock_guard<std::recursive_mutex> lock(transport_lock);
++    auto now = std::chrono::steady_clock::now();
++    for (auto* list : {&pending_list, &transport_list}) {
++        for (auto* t : *list) {
++            if (t->preauth_fd.get() < 0) continue;
++            if (t->online) {
++                t->preauth_fd.reset();
++            } else if (now - t->accepted_at > deadline) {
++                // The read thread and a pending TLS handshake see EOF and the
++                // transport closes through its normal error path.
++                adb_shutdown(t->preauth_fd, SHUT_RDWR);
++                t->preauth_fd.reset();
++            }
++        }
++    }
++}
++
+ bool register_socket_transport(unique_fd s, std::string serial, int port, bool is_emulator,
+                                atransport::ReconnectCallback reconnect, bool use_tls, int* error) {
+     atransport* t = new atransport(kTransportLocal, std::move(reconnect), kCsOffline);
+--- a/transport.h
++++ b/transport.h
+@@ -316,9 +316,17 @@ class atransport : public enable_weak_from_this<atransport> {
+ 
+     const TransportId id;
+ 
+-    bool online = false;
++    // adb-anywhere: atomic, because the pre-auth reaper reads it off the main loop.
++    std::atomic<bool> online = false;
+     TransportType type = kTransportAny;
+ 
++    // adb-anywhere: a socket transport that has not authenticated keeps a
++    // duplicate of its socket here, so the pre-auth reaper can shut the socket
++    // down (which also unblocks a TLS handshake that holds the connection lock)
++    // without racing the connection's own close. Released once online.
++    unique_fd preauth_fd;
++    std::chrono::steady_clock::time_point accepted_at = std::chrono::steady_clock::now();
++
+     // Used to identify transports for clients.
+     std::string serial;
+     std::string product;
+@@ -530,6 +538,13 @@ void connect_device(const std::string& address, std::string* response);
+ int init_socket_transport(atransport* t, unique_fd s, int port, bool is_emulator);
+ 
+ /* cause new transports to be init'd and added to the list */
++// adb-anywhere: the number of socket transports that have not authenticated.
++size_t count_preauth_socket_transports();
++
++// adb-anywhere: shuts down every socket transport that has not authenticated
++// within |deadline| of its accept, and releases the socket of authenticated ones.
++void reap_preauth_socket_transports(std::chrono::milliseconds deadline);
++
+ bool register_socket_transport(unique_fd s, std::string serial, int port, bool is_emulator,
+                                atransport::ReconnectCallback reconnect, bool use_tls,
+                                int* error = nullptr);

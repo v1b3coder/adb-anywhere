@@ -71,4 +71,26 @@ class AuditLogTest {
         repeat(600) { log.record(AuditEvent(event = "connection_open")) }
         assertEquals(500, log.entries.value.size)
     }
+
+    @Test
+    fun unauthenticatedEventsAreRateLimitedAndCounted() {
+        var now = 1_000_000L
+        val file = File(folder.root, "audit.jsonl")
+        val log = AuditLog(file, clock = { now }) { false }
+        log.record(AuditEvent(event = "auth_ok", peer = "100.64.0.2"))
+        repeat(10_000) { log.record(AuditEvent(event = "ip_denied", peer = "100.64.0.9"), unauthenticated = true) }
+        // The flood cannot rotate earlier entries out of the file.
+        assertTrue(file.readText().contains("auth_ok"))
+        val denied = log.entries.value.count { it.event == "ip_denied" }
+        assertEquals(AuditLog.UNAUTHENTICATED_BURST, denied)
+        // Authenticated events are never limited, and the next one reports the gap.
+        log.record(AuditEvent(event = "call_allowed", peer = "100.64.0.2"))
+        val suppressed = log.entries.value.last { it.event == "audit_suppressed" }
+        assertTrue(suppressed.detail.startsWith("${10_000 - AuditLog.UNAUTHENTICATED_BURST} "))
+        assertEquals("call_allowed", log.entries.value.last().event)
+        // Tokens refill with time.
+        now += AuditLog.UNAUTHENTICATED_REFILL_MS * 3
+        repeat(5) { log.record(AuditEvent(event = "ip_denied", peer = "100.64.0.9"), unauthenticated = true) }
+        assertEquals(3, log.entries.value.takeLastWhile { it.event != "call_allowed" }.count { it.event == "ip_denied" })
+    }
 }

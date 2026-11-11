@@ -19,8 +19,20 @@ flock 9
 
 rm -rf "$src"
 cp -a "$here/vendor/adb" "$src"
+# --fuzz=0 and a refusal of offsets: a hunk that no longer matches the vendored
+# line exactly fails the build instead of landing somewhere else after a
+# re-vendor. The security hunks (STLS/AUTH gate, reverse filter) depend on it.
 for p in "$here"/patches/*.patch; do
-    patch -p1 -s -d "$src" < "$p"
+    if ! out=$(patch -p1 --fuzz=0 --no-backup-if-mismatch -d "$src" < "$p" 2>&1); then
+        printf '%s\n' "$out" >&2
+        echo "patch failed: $p" >&2
+        exit 1
+    fi
+    if printf '%s\n' "$out" | grep -qi 'offset\|fuzz'; then
+        printf '%s\n' "$out" >&2
+        echo "patch $p does not apply exactly; refresh it" >&2
+        exit 1
+    fi
 done
 
 if [ "${ADBD_HOST:-0}" = 1 ]; then

@@ -89,7 +89,8 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
      */
     fun keysIntact(shell: Shell, material: Material): Boolean =
         shell.sha256(keysPath) == sha256(material.keysFile.toByteArray()) &&
-            shell.sha256(tlsClientsPath) == sha256(material.tlsClientsFile.toByteArray())
+            shell.sha256(tlsClientsPath) == sha256(material.tlsClientsFile.toByteArray()) &&
+            shell.sha256(tlsKeyPath) == sha256(material.tlsKey.pem.toByteArray())
 
     fun deployAndStart(
         shell: Shell,
@@ -102,6 +103,10 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
         writeBinary(shell)
         writeKeys(shell, material)
         stop(shell)
+        // Every vendored daemon is gone now, so a listener left on the loopback
+        // port belongs to another process. The daemon would refuse to bind it;
+        // say so instead of retrying a start that cannot succeed (§9).
+        if (shell.probe(Endpoint.LOOPBACK, loopbackPort)) throw DaemonPortHeldException(loopbackPort)
         trimLogs(shell)
         val command = startCommand(shell, vpnIp, loopbackPort, vpnPort, exposeVpn)
         AppLog.info("adb", "starting ${Endpoint.listeners(loopbackPort, vpnIp, vpnPort, exposeVpn)}")
@@ -342,3 +347,13 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
         const val MAX_LOG_BYTES = 256 * 1024
     }
 }
+
+/**
+ * Another process holds a daemon port. Nothing is signed for or sent to it, and
+ * retrying cannot help until the user changes the ports or reboots, so the
+ * failure waits for the user instead of looping through the bootstrap (§9).
+ */
+class DaemonPortHeldException(port: Int) : java.io.IOException(
+    "Another process holds 127.0.0.1:$port, the custom adb's port. Change the ports in " +
+        "Settings or reboot, then press Start again.",
+)

@@ -96,11 +96,21 @@ data class AdbCall(
     /** The service string exceeded the parser's caps; only an exact call is safe. */
     val truncated: Boolean = false,
 ) {
-    fun withSync(path: String, direction: String): AdbCall = copy(
-        path = path,
-        direction = direction,
-        fields = fields + mapOf("path" to path, "direction" to direction),
-    )
+    /**
+     * The sync request as every rule sees it. `path` is the lexically normalized
+     * path, so the built-in protection, user rules, the prompt and the audit all
+     * judge one value (FIREWALL.md §7.3); `raw_path` keeps what the client sent
+     * when it differs, and a relative path is denied by [CallRules].
+     */
+    fun withSync(path: String, direction: String): AdbCall {
+        val normalized = CallRules.normalize(path)
+        val extra = if (normalized != path) mapOf("raw_path" to path) else emptyMap()
+        return copy(
+            path = normalized,
+            direction = direction,
+            fields = fields + mapOf("path" to normalized, "direction" to direction) + extra,
+        )
+    }
 
     fun toJson(): JSONObject = JSONObject().apply {
         put("service", service)
@@ -158,6 +168,12 @@ data class CallRule(
 ) {
     fun matches(call: AdbCall): Boolean {
         if (service != "*" && service != call.service) return false
+        // The parser cut a truncated call's fields, so a predicate compares only
+        // the part it kept: an allow would also admit whatever followed the cut.
+        // Only a service-wide allow, which does not look at the fields, matches.
+        if (call.truncated && action == CallAction.ALLOW && predicates.any { it !is CallPredicate.AnyValue }) {
+            return false
+        }
         // A prefix capability is only sound when the call has no top-level shell
         // operators. Quoted `sh -c '...'` has metacharacters=false and still
         // matches; `id && run-as evil` does not.
@@ -177,11 +193,24 @@ data class CallRule(
             when (predicate) {
                 is CallPredicate.AnyValue -> true
                 is CallPredicate.Exact -> value == predicate.value
-                is CallPredicate.Prefix -> value != null && value.startsWith(predicate.value)
+                is CallPredicate.Prefix -> value != null && prefixMatches(predicate, value)
                 is CallPredicate.Glob -> value != null &&
                     Glob.matches(predicate.pattern, value, predicate.field == "path")
             }
         }
+    }
+
+    /**
+     * A command prefix covers whole words: `run-as com.foo` matches
+     * `run-as com.foo id`, never `run-as com.foobar id`. Other fields keep a
+     * plain string prefix.
+     */
+    private fun prefixMatches(predicate: CallPredicate.Prefix, value: String): Boolean {
+        val prefix = predicate.value
+        if (!value.startsWith(prefix)) return false
+        if (predicate.field != "command" && predicate.field != "raw") return true
+        if (prefix.isEmpty() || prefix.last().isWhitespace() || prefix.last() == ':') return true
+        return value.length == prefix.length || value[prefix.length].isWhitespace()
     }
 
     /** Reconstruct a call for the editor when an old rule has no original. */

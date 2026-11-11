@@ -34,7 +34,8 @@ import cz.slush.adbanywhere.MainActivity
 import cz.slush.adbanywhere.R
 import cz.slush.adbanywhere.adb.AdbClient
 import cz.slush.adbanywhere.adb.AdbMode
-import cz.slush.adbanywhere.adb.AdbPlainTokenRefusedException
+import cz.slush.adbanywhere.adb.AdbTls
+import cz.slush.adbanywhere.adb.DaemonPortHeldException
 import cz.slush.adbanywhere.adb.DaemonChannel
 import cz.slush.adbanywhere.adb.DaemonManager
 import cz.slush.adbanywhere.adb.DaemonTunnel
@@ -248,6 +249,14 @@ class ControlService : Service() {
             // harness sends the code and port as separate extras; both paths reach
             // the same pair() call.
             ACTION_PAIR -> {
+                // The notification reply is the one pairing path another app can
+                // reach (a notification listener can fire the mutable reply
+                // PendingIntent, even after the notification is gone). Accept it
+                // only while a notification the app posted is current, once.
+                if (intent.getBooleanExtra(EXTRA_FROM_NOTIFICATION, false) && !consumePairingReply()) {
+                    AppLog.warn("pair", "ignored a pairing reply without a current pairing notification")
+                    return START_STICKY
+                }
                 val codeText = intent.getStringExtra(EXTRA_CODE)
                 val portText = intent.getStringExtra(EXTRA_PAIR_PORT)
                 val code = codeText?.let { PairingCode.parseCode(it) }
@@ -463,6 +472,19 @@ class ControlService : Service() {
                 }
                 var daemonAlive = probe == DaemonProbe.Verified || legacyShell != null
                 AppLog.info("setup", "custom adb probe=$probe alive=$daemonAlive dir=${prefs.remoteDir}")
+                // A pre-TLS daemon trusts the system key over plain ADB. While it
+                // runs, a plain signature on 5555 (which any app can bind) could be
+                // relayed to it, so the bootstrap may only use TLS listeners (I15).
+                val plainAllowed = SetupPolicy.plainSigningAllowed(probe)
+                if (SetupPolicy.stopsBeforeBootstrap(probe, userInitiated)) {
+                    // Something that is not the app's daemon answers on the
+                    // loopback port with another identity. Only an explicit Start
+                    // may redeploy over it (it stops every vendored daemon first);
+                    // a boot, the watchdog or a network change must not reopen the
+                    // system wireless debugging for it on every retry (§9).
+                    fail(DaemonPortHeldException(prefs.loopbackPort).message!!, retryable = false)
+                    return@withLock
+                }
                 val canWriteSettings = ContextCompat.checkSelfPermission(
                     this,
                     android.Manifest.permission.WRITE_SECURE_SETTINGS,
@@ -492,7 +514,7 @@ class ControlService : Service() {
                 // listener and the TLS property both work on mobile data; wireless
                 // debugging is only the fallback for the first shell after a reboot.
                 var systemAlive = if (daemonAlive) false
-                else withContext(Dispatchers.IO) { system.ensureConnected() }
+                else withContext(Dispatchers.IO) { system.ensureConnected(plainAllowed) }
                 if (!daemonAlive && !systemAlive && canWriteSettings &&
                     prefs.setupComplete && SystemSettings.isWifiConnected(this)
                 ) {
@@ -521,7 +543,7 @@ class ControlService : Service() {
                     delay(900)
                     awaitSystemWirelessDebugging()
                     ControlBus.update { it.copy(message = "Preparing…") }
-                    systemAlive = withContext(Dispatchers.IO) { system.ensureConnected() }
+                    systemAlive = withContext(Dispatchers.IO) { system.ensureConnected(plainAllowed) }
                 }
                 // A stale paired flag is the most common pairing failure: the
                 // app key is no longer in the system adbd, so a connect is
@@ -540,10 +562,21 @@ class ControlService : Service() {
                     // listener only when the system adbd itself says it owns the
                     // port (I2); our own daemon is restarted loopback-only below,
                     // and anything else is a foreign listener the relay reports.
-                    // `usb:` keeps the system adbd on USB, so the recovery path
-                    // stays (I1).
-                    val systemOwnsPort = system.ensureConnected() &&
+                    // `usb:` keeps the system adbd on USB. It removes the plain
+                    // listener, so it may only run while the app reaches the
+                    // system adbd over its TLS listener, which the restart keeps:
+                    // that listener is the recovery path (I1).
+                    val systemOwnsPort = system.ensureConnected(plainAllowed) &&
                         system.plainTcpPort() == prefs.vpnPort
+                    if (systemOwnsPort && !system.connectedOverTls) {
+                        fail(
+                            "Android's plain adb listener holds the firewall port ${prefs.vpnPort} and is " +
+                                "the only way the app reaches Android's adb. Run `adb usb` over USB, or " +
+                                "change the VPN port in Settings, then press Start again.",
+                            retryable = false,
+                        )
+                        return@withLock
+                    }
                     if (systemOwnsPort) {
                         AppLog.info(
                             "firewall",
@@ -558,7 +591,7 @@ class ControlService : Service() {
                                 legacyShell = withContext(Dispatchers.IO) { legacyDaemonShell() }
                             }
                             daemonAlive = again == DaemonProbe.Verified || legacyShell != null
-                            systemAlive = if (daemonAlive) false else system.ensureConnected()
+                            systemAlive = if (daemonAlive) false else system.ensureConnected(plainAllowed)
                         } else {
                             AppLog.warn("firewall", "could not close the system plain listener")
                         }
@@ -764,7 +797,9 @@ class ControlService : Service() {
                 refreshLogs()
             } catch (e: Exception) {
                 AppLog.error("setup", "failed: ${e.message}", e)
-                fail(e.message ?: "Setup failed")
+                // A port another process holds stays held: retrying would reopen
+                // the bootstrap on every watchdog tick, so it waits for the user.
+                fail(e.message ?: "Setup failed", retryable = SetupPolicy.retryable(e))
             } finally {
                 legacyShell?.close()
                 if (cleanupRequired && ControlBus.state.value.phase != Phase.Running) {
@@ -884,7 +919,8 @@ class ControlService : Service() {
             }
             val open = ports.firstOrNull(SystemSettings::isLocalPortOpen)
             if (open != null) {
-                prefs.lastTlsPort = open
+                // Open is not verified: any app can advertise or bind a port.
+                // Only SystemAdb.tryConnect remembers a port, after the proof (I16).
                 AppLog.info("setup", "system wireless debugging is up on 127.0.0.1:$open")
                 return
             }
@@ -938,7 +974,6 @@ class ControlService : Service() {
         postPairingNotification()
     }
 
-    private enum class DaemonProbe { Verified, Legacy, Absent, Foreign }
 
     /**
      * Who holds the loopback port. Verified: the TLS handshake matched the
@@ -951,16 +986,10 @@ class ControlService : Service() {
         try {
             DaemonChannel.connect(this@ControlService, prefs.loopbackPort).close()
             DaemonProbe.Verified
-        } catch (e: AdbPlainTokenRefusedException) {
-            if (prefs.tlsDaemonDeployed) {
-                AppLog.warn("setup", "a plain listener holds 127.0.0.1:${prefs.loopbackPort}; not trusted")
-                DaemonProbe.Foreign
-            } else {
-                DaemonProbe.Legacy
-            }
         } catch (e: Exception) {
-            AppLog.warn("setup", "127.0.0.1:${prefs.loopbackPort} is not the app's daemon: ${e.message}")
-            DaemonProbe.Foreign
+            SetupPolicy.classify(e, prefs.tlsDaemonDeployed).also {
+                AppLog.warn("setup", "127.0.0.1:${prefs.loopbackPort} is not the app's daemon ($it): ${e.message}")
+            }
         }
     }
 
@@ -995,6 +1024,7 @@ class ControlService : Service() {
         val shell = try {
             daemonShell()
         } catch (e: Exception) {
+            if (AdbTls.identityFailure(e) != null) throw DaemonPortHeldException(prefs.loopbackPort)
             throw IOException(
                 "The custom adb on 127.0.0.1:${prefs.loopbackPort} did not present the app's " +
                     "pinned key (${e.message}). Another process may hold the port; " +
@@ -1467,8 +1497,14 @@ class ControlService : Service() {
                 } finally {
                     shell.close()
                 }
-            }.getOrDefault(true)
+            }.getOrElse {
+                AppLog.warn("watchdog", "could not check the daemon key files: ${it.message}")
+                null
+            }
         }
+        // An unchecked tick is not a passed one: it neither resets the backoff
+        // nor counts as ok, and the next tick checks again.
+        if (intact == null) return
         if (!intact) {
             AppLog.error("watchdog", "the daemon key files were changed on the device; restoring them")
             ControlBus.update {
@@ -1935,8 +1971,16 @@ class ControlService : Service() {
         return builder.build()
     }
 
+    /** True once for the current pairing notification; see [Prefs.pairingArmedAt]. */
+    private fun consumePairingReply(): Boolean {
+        val armedAt = prefs.pairingArmedAt
+        prefs.pairingArmedAt = 0L
+        return SetupPolicy.pairingReplyAccepted(armedAt, System.currentTimeMillis())
+    }
+
     /** One reply carries the code:port shown in Android's pairing dialog. */
     private fun postPairingNotification(error: String = "") {
+        prefs.pairingArmedAt = System.currentTimeMillis()
         val text = buildString {
             if (error.isNotEmpty()) append(error).append("\n\n")
             append("Open Settings → Developer options → Wireless debugging → Pair device ")
@@ -2100,15 +2144,17 @@ class ControlService : Service() {
         const val EXTRA_PROMPT_DECISION = "prompt_decision"
         const val EXTRA_PROMPT_RULE = "prompt_rule"
         const val EXTRA_PAIR_INPUT = "pair_input"
+        private const val EXTRA_FROM_NOTIFICATION = "from_notification"
 
         fun start(context: Context, action: String) {
             send(context, Intent(context, ControlService::class.java).setAction(action))
         }
 
-        fun startPair(context: Context, code: String, port: String?) {
+        fun startPair(context: Context, code: String, port: String?, fromNotification: Boolean = false) {
             val intent = Intent(context, ControlService::class.java)
                 .setAction(ACTION_PAIR)
                 .putExtra(EXTRA_CODE, code)
+                .putExtra(EXTRA_FROM_NOTIFICATION, fromNotification)
             if (port != null) intent.putExtra(EXTRA_PAIR_PORT, port)
             send(context, intent)
         }

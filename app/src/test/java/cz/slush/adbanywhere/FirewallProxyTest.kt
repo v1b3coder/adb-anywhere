@@ -211,6 +211,43 @@ class FirewallProxyTest {
         assertFalse(proxy.isListeningOn("127.0.0.1", proxyPort, upstream.localPort))
     }
 
+    @Test
+    fun aPeerTricklingItsFirstFrameIsClosedAtTheDeadline() = runBlocking {
+        val proxyPort = freePort()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val states = CopyOnWriteArrayList<FirewallState>()
+        val proxy = FirewallProxy(
+            scope = scope,
+            config = { FirewallConfig(enabled = true) },
+            monitor = null,
+            policy = FakePolicy(),
+            audit = AuditLog(null) { false },
+            preAuthTimeoutMs = 800,
+            onState = { states.add(it) },
+        )
+        proxy.start("127.0.0.1", proxyPort, freePort())
+        try {
+            Socket("127.0.0.1", proxyPort).use { client ->
+                awaitSessions(states, 1)
+                // One byte every 300 ms never lets a single read time out.
+                val started = System.currentTimeMillis()
+                var closed = false
+                while (!closed && System.currentTimeMillis() - started < 5_000) {
+                    closed = runCatching {
+                        client.getOutputStream().write(0)
+                        client.getOutputStream().flush()
+                    }.isFailure || states.last().activeSessions == 0
+                    delay(300)
+                }
+                assertTrue("the slot was released", closed)
+                assertTrue(System.currentTimeMillis() - started < 3_000)
+            }
+        } finally {
+            proxy.stop()
+            scope.cancel()
+        }
+    }
+
     private suspend fun awaitSessions(states: List<FirewallState>, expected: Int) {
         withTimeout(3_000) {
             while (states.lastOrNull()?.activeSessions != expected) delay(10)

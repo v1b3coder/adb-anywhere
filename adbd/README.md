@@ -6,7 +6,10 @@ ships the real daemon instead of a reimplementation.
 The sources under `vendor/` are pristine upstream copies. The patches in `patches/`
 disable the subsystems this product does not use and add the CLI the app already
 speaks. `build.sh` applies the patches to a build copy under `build/src`, so
-re-vendoring is a straight copy and never a merge.
+re-vendoring is a straight copy and never a merge. Patches apply with
+`--fuzz=0`, and a hunk that needs an offset fails the build: after a re-vendor
+a security hunk must not land on a different line than the one it was written
+for. Refresh the patch instead.
 
 ## Provenance
 
@@ -97,7 +100,10 @@ adbd --tls-listen tcp:127.0.0.1:15037 \
   never prompted for or auto-accepted.
 - `--log` redirects the daemon's stderr to a file and `--pid-file` writes the
   daemon's pid. Both are opened `0600` with `O_NOFOLLOW`. The daemon sets
-  `umask 022`, so nothing it or its shells create is world-writable. It closes
+  `umask 022`, so nothing it or its shells create is world-writable; a pushed
+  file's mode also loses group and other write (upstream copies the owner bits
+  to both and `fchmod` ignores the umask). The log rotates at 1 MiB while the
+  daemon runs, keeping one predecessor (`.1`). It closes
   every inherited descriptor except stdio at startup. There is no `--policy`
   flag: per-key policy is not implemented.
 - `--version`, `--device_banner`, `--logpostfsdata`, `--root_seclabel` and
@@ -132,6 +138,15 @@ loop after 256, which stalled every transport). Only the first `RSAPUBLICKEY`
 per transport is accepted, and its payload is never read past its length. The
 log line for an unlisted key shows at most its first 64 bytes, with
 non-printable bytes replaced by `?`.
+
+Any local app can connect to the loopback listener, so unauthenticated peers are
+bounded too: at most 32 transports that have not authenticated exist at once (a
+connection over the cap is closed at accept, without a log line), and one that
+has not authenticated 10 s after accept has its socket shut down. The shutdown
+goes through a duplicate of the socket, so it also ends a TLS handshake that
+holds the connection lock and never touches a reused descriptor number. An
+offered key gets no callback id, because the vendored `adbd_auth` never calls
+back.
 
 ## Supported subset
 
@@ -173,6 +188,7 @@ These are the patches, all in `patches/`:
 | `13-transport-tls-tunnel` | The transport state of the tunnel: a `--tls-listen` origin, handshake started, handshake done, public key offered. |
 | `14-daemon-listeners` | Binds each listener synchronously and reports a failure instead of retrying every second in the background; a listener can be a TLS tunnel. |
 | `15-daemon-reverse-loopback` | `reverse:` device listeners are `tcp:` on loopback only. |
+| `16-daemon-preauth-limits` | Caps unauthenticated transports at 32 and shuts one down 10 s after accept; rotates the log while the daemon runs; a pushed file is never group- or world-writable; no leaked auth callback ids. |
 
 Not implemented: USB, vsock, TLS on plain listeners, Wi-Fi debugging TLS,
 pairing, mDNS advertisement, `jdwp:`,
@@ -204,7 +220,8 @@ protobuf and the TLS stack) and the device `adbd_test` (needs the same plus
 `adb forward` and checks the contract above: the strict listeners and their exit
 codes, the TLS tunnel (STLS, client certificate gate, SPKI pin, key auth inside
 TLS, a shell through it), the plain listener's STLS kick and auth limits, the
-bounded log line, the reverse restriction and the `0600` files. It needs `adb`,
+bounded log line, the reverse restriction, the `0600` files, the push mode
+mask, runtime log rotation and the pre-auth deadline and cap. It needs `adb`,
 `openssl` and the Python standard library:
 
 ```sh

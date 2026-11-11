@@ -376,6 +376,67 @@ def main():
     check("reverse listeners bind 127.0.0.1 only",
           len(bound) == 3 and all(a == "0100007F" for a in bound), str(bound))
 
+    print("== push permissions ==")
+    s = connect(HOST_PLAIN)
+    _, _, _, token = cnxn(s)
+    s.sendall(packet(A_AUTH, AUTH_SIGNATURE, 0, developer.sign(token)))
+    read_packet(s)
+    s.sendall(packet(A_OPEN, 9, 0, b"sync:\0"))
+    _, remote, _, _ = read_packet(s)
+    target = f"{REMOTE}/pushed,{0o100777}".encode()
+    body = (struct.pack("<4sI", b"SEND", len(target)) + target +
+            struct.pack("<4sI", b"DATA", 2) + b"hi" + struct.pack("<4sI", b"DONE", 0))
+    s.sendall(packet(A_WRTE, 9, remote, body))
+    reply = b""
+    try:
+        while len(reply) < 8:
+            cmd, _, _, data = read_packet(s)
+            if cmd == A_WRTE:
+                reply += data
+                s.sendall(packet(A_OKAY, 9, remote))
+    except (socket.timeout, EOFError):
+        pass
+    s.close()
+    mode = dev.sh(f"stat -c %a {REMOTE}/pushed").strip()
+    check("a pushed 0777 file is not world-writable", reply[:4] == b"OKAY" and mode == "755",
+          f"reply={reply[:4]!r} mode={mode}")
+
+    print("== log rotation while running ==")
+    dev.sh(f"dd if=/dev/zero bs=1024 count=1100 2>/dev/null >> {REMOTE}/adbd.log")
+    time.sleep(3)
+    sizes = dev.sh(f"wc -c < {REMOTE}/adbd.log; test -f {REMOTE}/adbd.log.1 && echo rotated").split()
+    check("the log rotates while the daemon runs",
+          "rotated" in sizes and int(sizes[0]) < (1 << 20), " ".join(sizes))
+
+    print("== pre-auth limits ==")
+    idle = connect(HOST_PLAIN)
+    started = time.time()
+    check("a silent unauthenticated peer is closed by the deadline",
+          is_closed(idle, timeout=16), f"after {time.time() - started:.1f}s")
+    pending, refused = [], 0
+    for _ in range(40):
+        c = connect(HOST_PLAIN)
+        try:
+            cmd, arg0, _, _ = cnxn(c)
+            if cmd == A_AUTH and arg0 == AUTH_TOKEN:
+                pending.append(c)
+            else:
+                refused += 1
+        except (EOFError, ConnectionError, socket.timeout, OSError):
+            refused += 1
+    check("unauthenticated transports are capped", 0 < len(pending) <= 32 and refused >= 8,
+          f"pending={len(pending)} refused={refused}")
+    for c in pending:
+        c.close()
+    time.sleep(2)
+    s = connect(HOST_PLAIN)
+    _, _, _, token = cnxn(s)
+    s.sendall(packet(A_AUTH, AUTH_SIGNATURE, 0, developer.sign(token)))
+    cmd, _, _, _ = read_packet(s)
+    check("the daemon accepts again after the flood", cmd == A_CNXN)
+    s.close()
+    check("the daemon survived", dev.sh(f"kill -0 {pid} && echo alive").strip() == "alive")
+
     dev.sh(f"kill {pid}")
     dev.adb("forward", "--remove-all", check_rc=False)
     print(f"\n{sum(results)}/{len(results)} checks passed")

@@ -53,8 +53,28 @@ object SyncParser {
         val length = le32(payload, 4)
         if (length < 0 || length > MAX_PATH || 8 + length > payload.size) return null
         val direction = direction(id)
-        val raw = String(payload, 8, length, Charsets.UTF_8)
+        val raw = runCatching { decodePath(payload.copyOfRange(8, 8 + length)) }.getOrNull() ?: return null
         return SyncRequest(id, normalizePath(id, raw), direction)
+    }
+
+    /**
+     * Decodes a sync path exactly as adbd will use it, or throws. adbd treats the
+     * path as a C string, so a NUL would end it there while the relay saw the
+     * rest (`/protected/key\u0000/../..`); bytes that are not UTF-8 would decode to
+     * a replacement character adbd never sees. Either makes the relay judge a
+     * different path than adbd opens, so both are malformed (I17).
+     */
+    fun decodePath(bytes: ByteArray): String {
+        if (bytes.any { it == 0.toByte() }) throw SyncMalformedException("NUL in sync path")
+        return try {
+            Charsets.UTF_8.newDecoder()
+                .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                .decode(java.nio.ByteBuffer.wrap(bytes))
+                .toString()
+        } catch (e: java.nio.charset.CharacterCodingException) {
+            throw SyncMalformedException("sync path is not UTF-8")
+        }
     }
 
     /** SEND v1 carries "path,mode"; adbd splits at the last comma. */
@@ -150,7 +170,7 @@ class SyncStream {
     }
 
     private fun report(path: ByteArray, requests: MutableList<SyncRequest>) {
-        val raw = String(path, Charsets.UTF_8)
+        val raw = SyncParser.decodePath(path)
         requests += SyncRequest(id, SyncParser.normalizePath(id, raw), SyncParser.direction(id))
         when (id) {
             SyncParser.ID_SEND -> next(State.DATA_HEADER, 8)

@@ -73,6 +73,18 @@ class Prefs(context: Context) {
             prefs.edit().putBoolean("tls_daemon_deployed", value).commit()
         }
 
+    /**
+     * When the app last posted the pairing notification, or 0. Its reply action
+     * is a mutable PendingIntent (RemoteInput needs one), so any app with
+     * notification access can fire it; a reply is accepted only while a
+     * notification the app posted is current (D9).
+     */
+    var pairingArmedAt: Long
+        get() = prefs.getLong("pairing_armed_at", 0L)
+        set(value) {
+            prefs.edit().putLong("pairing_armed_at", value).commit()
+        }
+
     /** D6: the last failure needs the user; a process restart does not retry it. */
     var failureNeedsUser: Boolean
         get() = prefs.getBoolean("failure_needs_user", false)

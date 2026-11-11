@@ -54,6 +54,7 @@ data class AuditEvent(
 
 class AuditLog(
     private val file: File?,
+    private val clock: () -> Long = System::currentTimeMillis,
     private val redact: () -> Boolean,
 ) {
     private val lock = Any()
@@ -61,13 +62,55 @@ class AuditLog(
     private val _entries = MutableStateFlow<List<AuditEvent>>(emptyList())
     val entries: StateFlow<List<AuditEvent>> = _entries.asStateFlow()
 
-    fun record(event: AuditEvent) {
+    // Events a peer causes before it authenticates are rate limited: anyone the
+    // VPN routes can connect, and without a limit they could rotate every
+    // earlier entry out of the bounded log. Dropped events are counted and the
+    // count is reported with the next one that is recorded.
+    private var tokens = UNAUTHENTICATED_BURST.toDouble()
+    private var refilledAt = -1L
+    private var suppressed = 0L
+
+    /**
+     * Records [event]. With [unauthenticated], the event was caused by a peer
+     * that has not passed ADB key auth and goes through the rate limit.
+     */
+    fun record(event: AuditEvent, unauthenticated: Boolean = false) {
         synchronized(lock) {
-            events.addLast(event)
-            while (events.size > CAPACITY) events.removeFirst()
-            _entries.value = events.toList()
-            file?.let { appendLocked(it, event.toJson(redact()).toString()) }
+            if (unauthenticated && !takeToken()) {
+                suppressed++
+                return
+            }
+            if (suppressed > 0) {
+                val note = AuditEvent(
+                    time = event.time,
+                    event = "audit_suppressed",
+                    detail = "$suppressed unauthenticated events were not recorded",
+                )
+                suppressed = 0
+                appendLocked(note)
+            }
+            appendLocked(event)
         }
+    }
+
+    private fun takeToken(): Boolean {
+        val now = clock()
+        if (refilledAt < 0) refilledAt = now
+        tokens = minOf(
+            UNAUTHENTICATED_BURST.toDouble(),
+            tokens + (now - refilledAt).coerceAtLeast(0) / UNAUTHENTICATED_REFILL_MS.toDouble(),
+        )
+        refilledAt = now
+        if (tokens < 1.0) return false
+        tokens -= 1.0
+        return true
+    }
+
+    private fun appendLocked(event: AuditEvent) {
+        events.addLast(event)
+        while (events.size > CAPACITY) events.removeFirst()
+        _entries.value = events.toList()
+        file?.let { appendFile(it, event.toJson(redact()).toString()) }
     }
 
     fun clear() {
@@ -83,7 +126,7 @@ class AuditLog(
         }
     }
 
-    private fun appendLocked(target: File, line: String) {
+    private fun appendFile(target: File, line: String) {
         runCatching {
             target.parentFile?.mkdirs()
             target.appendText(line + "\n")
@@ -105,5 +148,7 @@ class AuditLog(
     companion object {
         private const val CAPACITY = 500
         private const val MAX_BYTES = 256 * 1024L
+        const val UNAUTHENTICATED_BURST = 50
+        const val UNAUTHENTICATED_REFILL_MS = 6_000L
     }
 }

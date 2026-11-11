@@ -43,6 +43,9 @@ class AdbPairingRequiredException(message: String) : IOException(message)
 /** The server broke the mode's rules, for example a plain token on a TLS-only connection. */
 open class AdbProtocolException(message: String) : IOException(message)
 
+/** The server asked for a second token: it rejected the signature of a key it does not trust. */
+class AdbKeyRejectedException : AdbProtocolException("the server rejected the key")
+
 /** A plain AUTH token arrived where only a verified TLS channel may be signed for. */
 class AdbPlainTokenRefusedException : AdbProtocolException(
     "refusing to sign a plain ADB token on a TLS-only connection",
@@ -232,7 +235,7 @@ class AdbClient private constructor(
                         if (!allowed) throw AdbPlainTokenRefusedException()
                         // A second token means the first signature was rejected. The
                         // public key is never offered: unknown keys are never prompted.
-                        if (signed) throw AdbProtocolException("the server rejected the key")
+                        if (signed) throw AdbKeyRejectedException()
                         val token = frame.payload
                         if (token.size != AdbTls.TOKEN_SIZE) {
                             throw AdbProtocolException("bad ADB token size ${token.size}")

@@ -250,4 +250,188 @@ class AdbRelaySecurityTest {
         pipes.clientToRelay.write(ByteArray(1))
         withTimeout(3_000) { closed.await() }
     }
+
+    // Stream identity, path identity, resource bounds and reverse streams.
+
+    private fun authenticate(pipes: Pipes) {
+        pipes.serverToRelay.write(frame(AdbFrameCodec.A_CNXN, 0, 0))
+        assertNotNull(read(pipes.clientReader))
+    }
+
+    private fun rawReq(type: String, path: ByteArray) = ByteBuffer.allocate(8 + path.size)
+        .order(ByteOrder.LITTLE_ENDIAN).putInt(id(type)).putInt(path.size).put(path).array()
+
+    @Test
+    fun aCloseBeforeTheDeviceAnswersKeepsTheIdTaken() = runBlocking {
+        val pipes = Pipes()
+        val closed = CompletableDeferred<Unit>()
+        relay(pipes, PathPolicy(), onClose = { closed.complete(Unit) })
+        authenticate(pipes)
+        pipes.clientToRelay.write(frame(AdbFrameCodec.A_OPEN, 7, 0, "sync:".toByteArray()))
+        assertEquals(AdbFrameCodec.A_OPEN, read(pipes.serverReader)?.command)
+        // adbd ignores a close without its id, so the sync stream stays open there,
+        // and the relay does not forward it.
+        pipes.clientToRelay.write(frame(AdbFrameCodec.A_CLSE, 7, 0))
+        pipes.clientToRelay.write(frame(AdbFrameCodec.A_OPEN, 8, 0, "exec:id".toByteArray()))
+        assertEquals(AdbFrameCodec.A_OPEN, read(pipes.serverReader)?.command)
+        // Re-opening the id as another call must not inherit the sync stream.
+        pipes.clientToRelay.write(frame(AdbFrameCodec.A_OPEN, 7, 0, "exec:id".toByteArray()))
+        withTimeout(3_000) { closed.await() }
+        assertNull(read(pipes.serverReader, 300))
+    }
+
+    @Test
+    fun theRelayClosesADeviceStreamTheClientAbandonedBeforeItsOkay() = runBlocking {
+        val pipes = Pipes()
+        val relay = relay(pipes, PathPolicy())
+        authenticate(pipes)
+        pipes.clientToRelay.write(frame(AdbFrameCodec.A_OPEN, 7, 0, "sync:".toByteArray()))
+        assertNotNull(read(pipes.serverReader))
+        pipes.clientToRelay.write(frame(AdbFrameCodec.A_CLSE, 7, 0))
+        // The relay handles client frames in order: once the device sees this
+        // OPEN, the close before it was handled, and it was held back.
+        pipes.clientToRelay.write(frame(AdbFrameCodec.A_OPEN, 8, 0, "exec:id".toByteArray()))
+        assertEquals(8, read(pipes.serverReader)?.arg0)
+        pipes.serverToRelay.write(frame(AdbFrameCodec.A_OKAY, 9, 7))
+        val close = read(pipes.serverReader)
+        assertEquals(AdbFrameCodec.A_CLSE, close?.command)
+        assertEquals(7, close?.arg0)
+        assertEquals(9, close?.arg1)
+        // The client closed the stream; it does not see the late OKAY.
+        assertNull(read(pipes.clientReader, 300))
+        relay.close()
+    }
+
+    @Test
+    fun aStaleOkayNeverAttachesARetiredDeviceStreamToANewCall() = runBlocking {
+        val pipes = Pipes()
+        val relay = relay(pipes, PathPolicy())
+        openSync(pipes)
+        pipes.clientToRelay.write(frame(AdbFrameCodec.A_CLSE, 7, 9))
+        assertEquals(AdbFrameCodec.A_CLSE, read(pipes.serverReader)?.command)
+        pipes.clientToRelay.write(frame(AdbFrameCodec.A_OPEN, 7, 0, "exec:id".toByteArray()))
+        assertEquals(AdbFrameCodec.A_OPEN, read(pipes.serverReader)?.command)
+        // A late OKAY for the retired sync stream 9, then the real one for exec.
+        pipes.serverToRelay.write(frame(AdbFrameCodec.A_OKAY, 9, 7))
+        pipes.serverToRelay.write(frame(AdbFrameCodec.A_OKAY, 12, 7))
+        assertNotNull(read(pipes.clientReader))
+        assertNotNull(read(pipes.clientReader))
+        pipes.clientToRelay.write(frame(AdbFrameCodec.A_WRTE, 7, 9, req("RECV", "/data/secret")))
+        assertNull(read(pipes.serverReader, 500))
+        pipes.clientToRelay.write(frame(AdbFrameCodec.A_WRTE, 7, 12, "x".toByteArray()))
+        val write = read(pipes.serverReader)
+        assertEquals(AdbFrameCodec.A_WRTE, write?.command)
+        assertEquals(12, write?.arg1)
+        relay.close()
+    }
+
+    @Test
+    fun aNulInASyncPathClosesTheStream() = runBlocking {
+        val pipes = Pipes()
+        val relay = relay(pipes, PathPolicy())
+        openSync(pipes)
+        // adbd would open /data/secret; the relay would have judged /data/ok.
+        val path = "/data/secret\u0000/../../ok".toByteArray()
+        pipes.clientToRelay.write(frame(AdbFrameCodec.A_WRTE, 7, 9, rawReq("RECV", path)))
+        assertDeviceSawOnlyTheClose(pipes)
+        relay.close()
+    }
+
+    @Test
+    fun aSyncPathThatIsNotUtf8ClosesTheStream() = runBlocking {
+        val pipes = Pipes()
+        val relay = relay(pipes, PathPolicy())
+        openSync(pipes)
+        val path = byteArrayOf('/'.code.toByte(), 0xff.toByte(), 'x'.code.toByte())
+        pipes.clientToRelay.write(frame(AdbFrameCodec.A_WRTE, 7, 9, rawReq("STAT", path)))
+        assertDeviceSawOnlyTheClose(pipes)
+        relay.close()
+    }
+
+    @Test
+    fun aNulInsideAServiceNameIsDenied() = runBlocking {
+        val pipes = Pipes()
+        val relay = relay(pipes, PathPolicy())
+        authenticate(pipes)
+        pipes.clientToRelay.write(frame(AdbFrameCodec.A_OPEN, 11, 0, "shell:ls\u0000rm -rf /sdcard".toByteArray()))
+        val close = read(pipes.clientReader)
+        assertEquals(AdbFrameCodec.A_CLSE, close?.command)
+        assertEquals(11, close?.arg1)
+        assertNull(read(pipes.serverReader, 300))
+        relay.close()
+    }
+
+    @Test
+    fun aHeldStreamThatIgnoresFlowControlIsClosedAtTheCap() = runBlocking {
+        val pipes = Pipes()
+        val policy = object : RelayPolicy {
+            override fun evaluate(call: AdbCall) =
+                if (call.path == "/sdcard/ask") CallVerdict(CallDecision.PROMPT) else CallVerdict(CallDecision.ALLOW)
+            override suspend fun prompt(call: AdbCall, peer: String, fingerprint: String, timeoutMs: Long): PromptResponse? =
+                CompletableDeferred<PromptResponse?>().await()
+            override fun onRule(rule: CallRule) = Unit
+            override fun promptPending() = true
+        }
+        val relay = relay(pipes, policy)
+        openSync(pipes)
+        pipes.clientToRelay.write(frame(AdbFrameCodec.A_WRTE, 7, 9, req("STAT", "/sdcard/ask")))
+        val chunk = ByteArray(512 * 1024)
+        val frames = (AdbRelay.MAX_HELD_BYTES / chunk.size + 2).toInt()
+        withContext(Dispatchers.IO) {
+            repeat(frames) { pipes.clientToRelay.write(frame(AdbFrameCodec.A_WRTE, 7, 9, chunk)) }
+        }
+        assertDeviceSawOnlyTheClose(pipes)
+        relay.close()
+    }
+
+    @Test
+    fun aReverseStreamTheHostAcceptsCarriesDataBothWays() = runBlocking {
+        val pipes = Pipes()
+        val relay = relay(pipes, PathPolicy())
+        authenticate(pipes)
+        // The device opens a stream for `adb reverse`; the host accepts it as 100.
+        pipes.serverToRelay.write(frame(AdbFrameCodec.A_OPEN, 20, 0, "tcp:8080".toByteArray()))
+        assertEquals(AdbFrameCodec.A_OPEN, read(pipes.clientReader)?.command)
+        pipes.clientToRelay.write(frame(AdbFrameCodec.A_OKAY, 100, 20))
+        assertEquals(AdbFrameCodec.A_OKAY, read(pipes.serverReader)?.command)
+        pipes.clientToRelay.write(frame(AdbFrameCodec.A_WRTE, 100, 20, "hi".toByteArray()))
+        val write = read(pipes.serverReader)
+        assertEquals(AdbFrameCodec.A_WRTE, write?.command)
+        assertEquals("hi", write?.payload?.let { String(it) })
+        pipes.serverToRelay.write(frame(AdbFrameCodec.A_OKAY, 20, 100))
+        assertEquals(AdbFrameCodec.A_OKAY, read(pipes.clientReader)?.command)
+        pipes.serverToRelay.write(frame(AdbFrameCodec.A_WRTE, 20, 100, "yo".toByteArray()))
+        assertEquals(AdbFrameCodec.A_WRTE, read(pipes.clientReader)?.command)
+        pipes.clientToRelay.write(frame(AdbFrameCodec.A_CLSE, 100, 20))
+        assertEquals(AdbFrameCodec.A_CLSE, read(pipes.serverReader)?.command)
+        // Closed: the ids no longer carry data.
+        pipes.clientToRelay.write(frame(AdbFrameCodec.A_WRTE, 100, 20, "late".toByteArray()))
+        assertNull(read(pipes.serverReader, 300))
+        relay.close()
+    }
+
+    @Test
+    fun aHostCannotAcceptAStreamTheDeviceNeverOpened() = runBlocking {
+        val pipes = Pipes()
+        val relay = relay(pipes, PathPolicy())
+        openSync(pipes)
+        // Device stream 9 is the sync stream; the host cannot claim it as reverse.
+        pipes.clientToRelay.write(frame(AdbFrameCodec.A_OKAY, 100, 9))
+        pipes.clientToRelay.write(frame(AdbFrameCodec.A_WRTE, 100, 9, req("RECV", "/data/secret")))
+        assertNull(read(pipes.serverReader, 500))
+        relay.close()
+    }
+
+    @Test
+    fun unauthenticatedOpensCannotFloodTheAudit() = runBlocking {
+        val pipes = Pipes()
+        val audit = AuditLog(null) { false }
+        val relay = relay(pipes, PathPolicy(), audit)
+        withContext(Dispatchers.IO) {
+            repeat(300) { pipes.clientToRelay.write(frame(AdbFrameCodec.A_OPEN, it + 1, 0, "shell:id".toByteArray())) }
+        }
+        repeat(300) { read(pipes.clientReader, 1_000) }
+        assertTrue(audit.entries.value.size <= AuditLog.UNAUTHENTICATED_BURST)
+        relay.close()
+    }
 }

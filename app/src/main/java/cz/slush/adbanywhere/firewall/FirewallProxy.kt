@@ -36,6 +36,8 @@ class FirewallProxy(
      * stop a LAN host from sending to it, so the source must be a VPN source.
      */
     private val peerRouted: (InetAddress) -> Boolean = { true },
+    /** How long a connection may stay unauthenticated, counted from accept(). */
+    private val preAuthTimeoutMs: Int = PRE_AUTH_TIMEOUT_MS,
     private val onState: (FirewallState) -> Unit,
 ) {
     private val lock = Any()
@@ -152,7 +154,7 @@ class FirewallProxy(
             if ((!localListener && (peer.isLoopbackAddress || peer.isLinkLocalAddress)) ||
                 (!localListener && own != null && peer.address.contentEquals(own.address))
             ) {
-                audit.record(
+                preAuth(
                     AuditEvent(
                         event = "ip_denied",
                         peer = peer.hostAddress ?: "",
@@ -163,7 +165,7 @@ class FirewallProxy(
                 continue
             }
             if (!localListener && !peerRouted(peer)) {
-                audit.record(
+                preAuth(
                     AuditEvent(
                         event = "ip_denied",
                         peer = peer.hostAddress ?: "",
@@ -177,7 +179,7 @@ class FirewallProxy(
             if (config.ipAllowlistEnabled) {
                 val allowlist = IpAllowlist(config.ipAllowlist)
                 if (!allowlist.allows(peer, own)) {
-                    audit.record(AuditEvent(event = "ip_denied", peer = peer.hostAddress ?: ""))
+                    preAuth(AuditEvent(event = "ip_denied", peer = peer.hostAddress ?: ""))
                     runCatching { client.close() }
                     continue
                 }
@@ -186,7 +188,7 @@ class FirewallProxy(
             if (config.appAllowlistEnabled) {
                 val foreground = monitor?.state?.value?.foreground
                 if (foreground == null || foreground !in config.appAllowlist) {
-                    audit.record(
+                    preAuth(
                         AuditEvent(
                             event = "app_denied",
                             peer = peer.hostAddress ?: "",
@@ -202,7 +204,7 @@ class FirewallProxy(
             if (activeSessions >= MAX_CONNECTIONS ||
                 (synchronized(lock) { perPeer[peerKey] ?: 0 }) >= MAX_PER_PEER
             ) {
-                audit.record(
+                preAuth(
                     AuditEvent(
                         event = "proxy_error",
                         peer = peerKey,
@@ -215,7 +217,7 @@ class FirewallProxy(
             // An unauthenticated peer must not hold a slot forever: every read
             // times out, and the relay closes the transport when it has not
             // authenticated by an absolute deadline, so trickled bytes do not help.
-            runCatching { client.soTimeout = PRE_AUTH_TIMEOUT_MS }
+            runCatching { client.soTimeout = preAuthTimeoutMs }
             val connection = Connection(client, peer)
             synchronized(lock) {
                 connections.add(connection)
@@ -225,6 +227,9 @@ class FirewallProxy(
             publish()
         }
     }
+
+    /** An event a peer caused before ADB key auth; rate limited by the audit log. */
+    private fun preAuth(event: AuditEvent) = audit.record(event, unauthenticated = true)
 
     private fun onForegroundChanged(state: ForegroundState) {
         if (!config().appAllowlistEnabled) {
@@ -313,8 +318,23 @@ class FirewallProxy(
 
         val pendingPrompts: Int get() = relay?.pendingPrompts ?: 0
 
+        @Volatile
+        private var authenticated = false
+
         fun start() {
-            audit.record(AuditEvent(event = "connection_open", peer = peer.hostAddress ?: ""))
+            preAuth(AuditEvent(event = "connection_open", peer = peer.hostAddress ?: ""))
+            // The deadline runs from accept(), not from the first frame: the
+            // per-read timeout alone lets a peer trickle one byte at a time
+            // through the first A_CNXN and hold a slot indefinitely.
+            scope.launch {
+                delay(preAuthTimeoutMs.toLong())
+                if (!authenticated && !closed.get()) {
+                    preAuth(
+                        AuditEvent(event = "proxy_error", peer = peer.hostAddress ?: "", detail = "authentication timed out"),
+                    )
+                    close()
+                }
+            }
             scope.launch(kotlinx.coroutines.Dispatchers.IO) { open() }
         }
 
@@ -327,7 +347,7 @@ class FirewallProxy(
             try {
                 val first = AdbFrameCodec.read(client.getInputStream(), AdbFrameCodec.PRE_AUTH_MAX_PAYLOAD)
                 if (first == null || first.command != AdbFrameCodec.A_CNXN) {
-                    audit.record(
+                    preAuth(
                         AuditEvent(event = "proxy_error", peer = peer.hostAddress ?: "", detail = "the client did not start with A_CNXN"),
                     )
                     close()
@@ -339,7 +359,7 @@ class FirewallProxy(
                     runCatching { server.close() }
                     return
                 }
-                val remaining = (PRE_AUTH_TIMEOUT_MS - (System.currentTimeMillis() - started)).coerceAtLeast(1)
+                val remaining = (preAuthTimeoutMs - (System.currentTimeMillis() - started)).coerceAtLeast(1)
                 val relay = AdbRelay(
                     client.getInputStream(),
                     client.getOutputStream(),
@@ -349,7 +369,10 @@ class FirewallProxy(
                     audit,
                     peer.hostAddress ?: "",
                     connectionAllowed = { !config().appAllowlistEnabled || appAllowed() },
-                    onAuthenticated = { runCatching { client.soTimeout = 0 } },
+                    onAuthenticated = {
+                        authenticated = true
+                        runCatching { client.soTimeout = 0 }
+                    },
                     knownKeys = knownKeys,
                     authTimeoutMs = remaining,
                     onPromptFinished = { onPromptFinished() },
@@ -358,7 +381,7 @@ class FirewallProxy(
                 this.relay = relay
                 relay.start()
             } catch (e: Exception) {
-                audit.record(
+                preAuth(
                     AuditEvent(event = "proxy_error", peer = peer.hostAddress ?: "", detail = e.message ?: "upstream failed"),
                 )
                 close()

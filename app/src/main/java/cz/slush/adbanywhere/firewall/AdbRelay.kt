@@ -16,6 +16,15 @@
  *   device's own token, never from what the client claims.
  * - Every write to a side goes through one lock, so an injected A_CLSE can never
  *   interleave with a forwarded frame.
+ * - A client close before the device's A_OKAY keeps the stream as a tombstone:
+ *   adbd ignores a close without its id, so the relay closes the device stream
+ *   itself when the A_OKAY arrives, and the id cannot be reused meanwhile. A
+ *   device id the relay has retired never attaches to a new stream.
+ * - Streams the device opens (`adb reverse`) are tracked by both ids once the
+ *   host accepts them; they carry data to a phone-side socket, not to a service.
+ * - A held stream buffers at most [MAX_HELD_BYTES]; more closes the stream.
+ * - Events before authentication go through the audit log's rate limit, so an
+ *   unauthenticated peer cannot rotate the audit trail away.
  */
 package cz.slush.adbanywhere.firewall
 
@@ -55,6 +64,15 @@ class AdbRelay(
     private val lock = Any()
     private val streams = mutableMapOf<Int, StreamState>()
     private val denied = mutableSetOf<Int>()
+
+    /** Device ids of streams that are closed; a late A_OKAY naming one is stale. */
+    private val retired = object : LinkedHashSet<Int>() {}
+
+    /** Device ids of streams the device opened that the host has not answered yet. */
+    private val pendingReverse = mutableSetOf<Int>()
+
+    /** Host id to device id of the accepted device-opened (reverse) streams. */
+    private val reverse = mutableMapOf<Int, Int>()
     private val closed = AtomicBoolean(false)
     private val prompts = AtomicInteger(0)
 
@@ -72,6 +90,14 @@ class AdbRelay(
     @Volatile
     private var clientFingerprint = ""
 
+    private fun record(event: AuditEvent) = audit.record(event, unauthenticated = !authenticated)
+
+    /** Remembers a closed device id; bounded, because adbd ids only grow. Caller holds [lock]. */
+    private fun retire(serverId: Int) {
+        retired.add(serverId)
+        if (retired.size > MAX_RETIRED) retired.remove(retired.first())
+    }
+
     /** Prompts this connection is waiting on; a pending one defers the app-allowlist close. */
     val pendingPrompts: Int get() = prompts.get()
 
@@ -82,7 +108,7 @@ class AdbRelay(
             scope.launch {
                 delay(authTimeoutMs)
                 if (!authenticated) {
-                    audit.record(AuditEvent(event = "proxy_error", peer = peer, detail = "authentication timed out"))
+                    record(AuditEvent(event = "proxy_error", peer = peer, detail = "authentication timed out"))
                     close()
                 }
             }
@@ -122,11 +148,14 @@ class AdbRelay(
                             streams.values.forEach { it.job?.cancel() }
                             streams.clear()
                             denied.clear()
+                            retired.clear()
+                            pendingReverse.clear()
+                            reverse.clear()
                         }
                         toServer(frame.raw)
                     }
                     AdbFrameCodec.A_STLS -> {
-                        audit.record(
+                        record(
                             AuditEvent(event = "call_denied", peer = peer, service = "stls", detail = "TLS ADB is not supported"),
                         )
                         close()
@@ -137,7 +166,7 @@ class AdbRelay(
             }
         } catch (e: Exception) {
             if (!closed.get()) {
-                audit.record(AuditEvent(event = "proxy_error", peer = peer, detail = e.message ?: "relay failed"))
+                record(AuditEvent(event = "proxy_error", peer = peer, detail = e.message ?: "relay failed"))
             }
         } finally {
             close()
@@ -153,35 +182,66 @@ class AdbRelay(
                         authenticated = true
                         clientFingerprint = signedBy.ifEmpty { clientFingerprint }
                         onAuthenticated()
-                        audit.record(AuditEvent(event = "auth_ok", peer = peer, fingerprint = clientFingerprint))
+                        record(AuditEvent(event = "auth_ok", peer = peer, fingerprint = clientFingerprint))
                         toClient(frame.raw)
                     }
                     AdbFrameCodec.A_AUTH -> {
                         if (frame.arg0 == AdbFrameCodec.ADB_AUTH_TOKEN) lastToken = frame.payload
                         toClient(frame.raw)
                     }
-                    AdbFrameCodec.A_OKAY -> {
-                        synchronized(lock) {
-                            val state = streams[frame.arg1]
-                            if (state != null && state.serverId == null) state.serverId = frame.arg0
-                        }
+                    AdbFrameCodec.A_OPEN -> {
+                        // A device-opened stream (adb reverse). The host answers
+                        // with its own id in A_OKAY; until then only that answer is valid.
+                        if (frame.arg0 != 0) synchronized(lock) { pendingReverse.add(frame.arg0) }
                         toClient(frame.raw)
                     }
+                    AdbFrameCodec.A_OKAY -> {
+                        val tombstone = synchronized(lock) {
+                            val state = streams[frame.arg1]
+                            when {
+                                reverse[frame.arg1] == frame.arg0 -> false
+                                state == null || state.serverId != null || frame.arg0 in retired -> false
+                                state.clientClosed -> {
+                                    // The client closed before adbd answered; close it now.
+                                    streams.remove(frame.arg1)
+                                    retire(frame.arg0)
+                                    true
+                                }
+                                else -> {
+                                    state.serverId = frame.arg0
+                                    false
+                                }
+                            }
+                        }
+                        if (tombstone) {
+                            toServer(frame(AdbFrameCodec.A_CLSE, frame.arg1, frame.arg0))
+                        } else {
+                            toClient(frame.raw)
+                        }
+                    }
                     AdbFrameCodec.A_CLSE -> {
-                        synchronized(lock) {
+                        val forward = synchronized(lock) {
+                            pendingReverse.remove(frame.arg0)
+                            if (reverse[frame.arg1] == frame.arg0) reverse.remove(frame.arg1)
                             val state = streams[frame.arg1]
                             if (state != null && (state.serverId == null || state.serverId == frame.arg0)) {
                                 streams.remove(frame.arg1)
+                                state.serverId?.let(::retire)
+                                if (frame.arg0 != 0) retire(frame.arg0)
+                                state.job?.cancel()
+                                !state.clientClosed
+                            } else {
+                                true
                             }
                         }
-                        toClient(frame.raw)
+                        if (forward) toClient(frame.raw)
                     }
                     else -> toClient(frame.raw)
                 }
             }
         } catch (e: Exception) {
             if (!closed.get()) {
-                audit.record(AuditEvent(event = "proxy_error", peer = peer, detail = e.message ?: "relay failed"))
+                record(AuditEvent(event = "proxy_error", peer = peer, detail = e.message ?: "relay failed"))
             }
         } finally {
             close()
@@ -208,7 +268,7 @@ class AdbRelay(
                 val text = String(frame.payload, Charsets.UTF_8).trimEnd('\u0000')
                 val fingerprint = runCatching { AndroidPubKey.parse(text)?.fingerprint }.getOrNull().orEmpty()
                 if (fingerprint.isNotEmpty()) {
-                    audit.record(
+                    record(
                         AuditEvent(event = "auth_unknown", peer = peer, fingerprint = fingerprint, detail = "key offered"),
                     )
                 }
@@ -221,7 +281,7 @@ class AdbRelay(
         val localId = frame.arg0
         val service = AdbFrameCodec.service(frame)
         val call = AdbCallParser.parse(service)
-        audit.record(AuditEvent(event = "call_open", peer = peer, service = call.service, fields = call.fields))
+        record(AuditEvent(event = "call_open", peer = peer, service = call.service, fields = call.fields))
         if (!authenticated) {
             deny(localId, call, "unauthenticated")
             return
@@ -230,11 +290,20 @@ class AdbRelay(
             deny(localId, call, "protocol")
             return
         }
-        val reused = synchronized(lock) { streams.containsKey(localId) || localId in denied }
+        // adbd ends a service name at a NUL (`shell:` hands sh a C string), so the
+        // relay would judge more than adbd runs. Only abb_exec separates its
+        // arguments with NUL, and the parser splits them as adbd does.
+        if (service.contains('\u0000') && call.service != "abb_exec") {
+            deny(localId, call, "builtin:nul")
+            return
+        }
+        val reused = synchronized(lock) {
+            streams.containsKey(localId) || localId in denied || reverse.containsKey(localId)
+        }
         if (reused) {
             // A live id reused for another OPEN would let the relay's view of the
             // stream and adbd's diverge. A conforming client never does this.
-            audit.record(AuditEvent(event = "proxy_error", peer = peer, detail = "stream id $localId reused"))
+            record(AuditEvent(event = "proxy_error", peer = peer, detail = "stream id $localId reused"))
             close()
             return
         }
@@ -280,7 +349,7 @@ class AdbRelay(
 
     private fun allowOpen(frame: AdbFrame, call: AdbCall, rule: String, registered: Boolean = false) {
         if (!registered) synchronized(lock) { streams[frame.arg0] = StreamState(call, null) }
-        audit.record(
+        record(
             AuditEvent(event = "call_allowed", peer = peer, service = call.service, fields = call.fields, rule = rule),
         )
         toServer(frame.raw)
@@ -289,7 +358,17 @@ class AdbRelay(
     private fun handleClientOkay(frame: AdbFrame) {
         val forward = synchronized(lock) {
             val state = streams[frame.arg0]
-            state != null && (state.serverId == null || state.serverId == frame.arg1)
+            when {
+                state != null -> !state.clientClosed && (state.serverId == null || state.serverId == frame.arg1)
+                reverse[frame.arg0] == frame.arg1 -> true
+                frame.arg0 != 0 && frame.arg1 in pendingReverse && frame.arg0 !in denied -> {
+                    // The host accepted a device-opened stream under its own id.
+                    pendingReverse.remove(frame.arg1)
+                    reverse[frame.arg0] = frame.arg1
+                    true
+                }
+                else -> false
+            }
         }
         if (forward) toServer(frame.raw)
     }
@@ -298,36 +377,78 @@ class AdbRelay(
         val localId = frame.arg0
         val forward = synchronized(lock) {
             if (denied.remove(localId)) return@synchronized false
-            val state = streams[localId] ?: return@synchronized false
-            if (state.held != null && state.serverId == null) {
-                // The client gave up on a call the device never saw; the
-                // cancelled prompt releases its slot.
-                streams.remove(localId)
-                state.job?.cancel()
+            val state = streams[localId]
+            if (state == null) {
+                if (reverse[localId] == frame.arg1) {
+                    reverse.remove(localId)
+                    return@synchronized true
+                }
+                // The host refused a device-opened stream.
+                if (localId == 0 && pendingReverse.remove(frame.arg1)) return@synchronized true
+                return@synchronized false
+            }
+            if (state.clientClosed) return@synchronized false
+            val serverId = state.serverId
+            if (serverId == null) {
+                if (state.held != null) {
+                    // The client gave up on a call the device never saw; the
+                    // cancelled prompt releases its slot.
+                    streams.remove(localId)
+                    state.job?.cancel()
+                    return@synchronized false
+                }
+                // adbd has not answered yet, so it would ignore this close and
+                // keep its stream open. Keep a tombstone: the id stays taken and
+                // the relay closes the device stream when its A_OKAY arrives.
+                state.clientClosed = true
                 return@synchronized false
             }
             // A close that names another device stream must not drop this
             // stream's state: adbd ignores it and keeps the stream open.
-            if (state.serverId == null || state.serverId == frame.arg1) streams.remove(localId)
+            if (serverId == frame.arg1) {
+                streams.remove(localId)
+                retire(serverId)
+                state.job?.cancel()
+            }
             true
         }
         if (forward) toServer(frame.raw)
     }
 
     private fun handleWrite(frame: AdbFrame) {
+        var route = WriteRoute.DROP
         val state = synchronized(lock) {
             if (frame.arg0 in denied) return
-            val state = streams[frame.arg0] ?: return
-            if (state.serverId == null || state.serverId != frame.arg1) return
-            val held = state.held
-            if (held != null) {
-                held += frame
-                return
+            val state = streams[frame.arg0]
+            when {
+                // Data for a device-opened stream goes to a phone-side socket.
+                state == null -> if (reverse[frame.arg0] == frame.arg1) route = WriteRoute.REVERSE
+                state.clientClosed || state.serverId == null || state.serverId != frame.arg1 -> Unit
+                state.held == null -> route = WriteRoute.PROCESS
+                state.heldBytes + frame.raw.size > MAX_HELD_BYTES -> route = WriteRoute.OVERFLOW
+                else -> {
+                    state.held?.add(frame)
+                    state.heldBytes += frame.raw.size
+                }
             }
             state
         }
-        process(frame.arg0, state, frame)
+        when (route) {
+            WriteRoute.DROP -> Unit
+            WriteRoute.REVERSE -> toServer(frame.raw)
+            WriteRoute.PROCESS -> process(frame.arg0, state!!, frame)
+            WriteRoute.OVERFLOW -> {
+                // A client that ignores flow control while a prompt holds the
+                // stream must not grow the queue until the app runs out of memory.
+                record(
+                    AuditEvent(event = "proxy_error", peer = peer, service = state!!.call.service, detail = "held stream overflow"),
+                )
+                closeStream(frame.arg0, state)
+            }
+        }
     }
+
+    private enum class WriteRoute { DROP, REVERSE, PROCESS, OVERFLOW }
 
     /**
      * Evaluates every sync request in the frame before the frame is forwarded.
@@ -343,7 +464,7 @@ class AdbRelay(
         val requests = try {
             sync.feed(frame.payload)
         } catch (e: SyncMalformedException) {
-            audit.record(
+            record(
                 AuditEvent(event = "call_denied", peer = peer, service = "sync", rule = "sync:malformed", detail = e.message ?: ""),
             )
             closeStream(localId, state)
@@ -355,11 +476,11 @@ class AdbRelay(
             val call = state.call.withSync(request.path, direction)
             val verdict = policy.evaluate(call)
             when (verdict.decision) {
-                CallDecision.ALLOW -> audit.record(
+                CallDecision.ALLOW -> record(
                     AuditEvent(event = "call_allowed", peer = peer, service = call.service, fields = call.fields, rule = verdict.ruleId ?: ""),
                 )
                 CallDecision.DENY -> {
-                    audit.record(
+                    record(
                         AuditEvent(event = "call_denied", peer = peer, service = call.service, fields = call.fields, rule = verdict.ruleId ?: ""),
                     )
                     closeStream(localId, state)
@@ -380,7 +501,7 @@ class AdbRelay(
                 for ((call, verdict) in pending) {
                     val response = policy.prompt(call, peer, clientFingerprint, verdict.timeoutMs)
                     val ok = response != null && response.allowsCall
-                    audit.record(
+                    record(
                         AuditEvent(
                             event = if (ok) "call_allowed" else "call_denied",
                             peer = peer,
@@ -418,16 +539,17 @@ class AdbRelay(
                 val held = state.held ?: return
                 if (held.isEmpty()) {
                     state.held = null
+                    state.heldBytes = 0
                     return
                 }
-                held.removeAt(0)
+                held.removeAt(0).also { state.heldBytes -= it.raw.size }
             }
             if (process(localId, state, next)) return
         }
     }
 
     private fun deny(localId: Int, call: AdbCall, rule: String) {
-        audit.record(
+        record(
             AuditEvent(event = "call_denied", peer = peer, service = call.service, fields = call.fields, rule = rule),
         )
         synchronized(lock) { denied.add(localId) }
@@ -440,6 +562,8 @@ class AdbRelay(
             streams.remove(localId)
             denied.add(localId)
             state.held = null
+            state.heldBytes = 0
+            serverId?.let(::retire)
         }
         if (serverId != null) {
             runCatching { toServer(frame(AdbFrameCodec.A_CLSE, localId, serverId)) }
@@ -472,7 +596,16 @@ class AdbRelay(
         var held: MutableList<AdbFrame>? = null,
     ) {
         var serverId: Int? = null
+        var heldBytes = 0L
+        /** The client closed before the device answered; see [handleClientClose]. */
+        var clientClosed = false
         @Volatile
         var job: kotlinx.coroutines.Job? = null
+    }
+
+    companion object {
+        /** What a held stream may buffer while its prompt is open. */
+        const val MAX_HELD_BYTES = 4L * 1024 * 1024
+        private const val MAX_RETIRED = 4096
     }
 }

@@ -34,10 +34,14 @@ object CallRules {
         if (call.service == "tcp" && (call.port == null || call.port in protected.ports)) {
             return CallVerdict(CallDecision.DENY, "builtin:protected-port")
         }
-        if (call.service == "sync" && call.path != null && protected.directory.isNotEmpty() &&
-            isUnder(normalize(call.path), protected.directory)
-        ) {
-            return CallVerdict(CallDecision.DENY, "builtin:protected-path")
+        if (call.service == "sync" && call.path != null) {
+            // adbd resolves a relative path against its working directory, which
+            // the relay cannot see; only an absolute path can be judged.
+            val sent = call.fields["raw_path"] ?: call.path
+            if (!sent.startsWith("/")) return CallVerdict(CallDecision.DENY, "builtin:relative-path")
+            if (protected.directory.isNotEmpty() && isUnder(normalize(call.path), protected.directory)) {
+                return CallVerdict(CallDecision.DENY, "builtin:protected-path")
+            }
         }
         if (call.service == "shell" && call.interactive) {
             val rule = config.callRules.firstOrNull { it.matches(call) }
