@@ -1,16 +1,17 @@
 --- a/transport.cpp
 +++ b/transport.cpp
-@@ -1159,6 +1159,9 @@
+@@ -1208,6 +1208,10 @@
          // (http://b/24370690)
  
          // clang-format off
 +        // Only the features this daemon actually implements. Advertising a
 +        // feature it does not handle makes the client pick a path that ends in a
 +        // closed service: abb_exec covers install, sendrecv_v2 covers push.
++        // devraw is not advertised: dev: and dev-raw: are not built in.
          FeatureSet result {
              kFeatureShell2,
              kFeatureCmd,
-@@ -1166,20 +1169,12 @@
+@@ -1215,20 +1219,11 @@
              kFeatureLs2,
              kFeatureFixedPushMkdir,
              kFeatureApex,
@@ -26,7 +27,7 @@
              kFeatureSendRecv2DryRunSend,
 -            kFeatureOpenscreenMdns,
 -            kFeatureDeviceTrackerProtoFormat,
-             kFeatureDevRaw,
+-            kFeatureDevRaw,
 -            kFeatureAppInfo,
              kFeatureServerStatus,
          };

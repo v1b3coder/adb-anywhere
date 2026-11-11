@@ -1,0 +1,49 @@
+--- a/daemon/services.cpp
++++ b/daemon/services.cpp
+@@ -56,6 +56,34 @@
+ #include "daemon/logging.h"
+ #include "daemon/shell_service.h"
+ 
++// adb-anywhere: the device side of `adb reverse` listens on loopback only.
++// Upstream binds tcp:<port> on every interface, which would expose the
++// developer machine's port to the phone's Wi-Fi, cellular and VPN networks and
++// bypass the app's relay. Only tcp:<port>, tcp:localhost:<port> and
++// tcp:127.0.0.1:<port> are accepted, and socket_spec_listen binds them to
++// 127.0.0.1; every other host and every other socket type is refused.
++static bool reverse_listen_spec_allowed(std::string_view command, std::string* error) {
++    if (!android::base::ConsumePrefix(&command, "forward:")) {
++        return true;  // list-forward, killforward:, killforward-all
++    }
++    android::base::ConsumePrefix(&command, "norebind:");
++    size_t split = command.find(';');
++    // A std::string: parse_tcp_socket_spec reads the port through a C string.
++    std::string spec(command.substr(0, split));
++    std::string host;
++    int port = 0;
++    if (!spec.starts_with("tcp:") ||
++        !parse_tcp_socket_spec(spec, &host, &port, nullptr, error)) {
++        *error = "reverse listeners must be tcp:<port> on loopback";
++        return false;
++    }
++    if (!host.empty() && host != "localhost" && host != "127.0.0.1") {
++        *error = "reverse listeners bind loopback only";
++        return false;
++    }
++    return true;
++}
++
+ unique_fd reverse_service(std::string_view command, atransport* transport) {
+     // The device listens on <local> and forwards each connection to <remote> on
+     // the host, through the transport. This is what `adb reverse` needs.
+@@ -67,7 +95,10 @@
+         return unique_fd{};
+     }
+     VLOG(SERVICES) << "service socketpair: " << s[0] << ", " << s[1];
+-    if (!handle_forward_request(str.c_str(), transport, s[1])) {
++    std::string error;
++    if (!reverse_listen_spec_allowed(command, &error)) {
++        SendFail(s[1], error);
++    } else if (!handle_forward_request(str.c_str(), transport, s[1])) {
+         SendFail(s[1], "not a reverse forwarding command");
+     }
+     adb_close(s[1]);

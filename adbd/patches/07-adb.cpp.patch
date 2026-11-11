@@ -1,12 +1,98 @@
 --- a/adb.cpp
 +++ b/adb.cpp
-@@ -451,7 +451,8 @@
+@@ -417,7 +417,11 @@
+     ADB_LOG(Connection) << "received CNXN: version=" << p->msg.arg0 << ", maxdata = " << p->msg.arg1
+                         << ", banner = '" << banner << "'";
+ 
+-    if (t->use_tls) {
++    if (t->tls_tunnel && t->tls_established) {
++        // adb-anywhere: a CNXN inside an established TLS tunnel restarts the
++        // inner key auth; the tunnel itself is never renegotiated.
++        send_auth_request(t);
++    } else if (t->use_tls) {
+         // We still handshake in TLS mode. If auth_required is disabled,
+         // we'll just not verify the client's certificate. This should be the
+         // first packet the client receives to indicate the new protocol.
+@@ -432,6 +436,11 @@
+ #endif
+ }
+ 
++#if !ADB_HOST
++// adb-anywhere: failed signatures tolerated on one transport before it is kicked.
++static constexpr size_t kMaxFailedAuthAttempts = 16;
++#endif
++
+ void handle_packet(apacket *p, atransport *t)
+ {
+     D("handle_packet() %c%c%c%c", ((char*) (&(p->msg.command)))[0],
+@@ -446,18 +455,29 @@
+         handle_new_connection(t, p);
+         break;
+     case A_STLS:  // TLS(version, "")
+-        t->use_tls = true;
+ #if ADB_HOST
++        t->use_tls = true;
          send_tls_request(t);
          adb_auth_tls_handshake(t);
  #else
--        adbd_auth_tls_handshake(t);
-+        // TLS is not built into this daemon.
-+        t->Kick();
++        // adb-anywhere: TLS only on a --tls-listen listener, and only once. A
++        // plain listener never upgrades: its clients are developer machines that
++        // speak plain ADB over the VPN.
++        if (!t->tls_tunnel || t->tls_handshake_started) {
++            LOG(WARNING) << t->serial_name() << ": unexpected STLS; closing";
++            t->Kick();
++            break;
++        }
++        t->tls_handshake_started = true;
+         adbd_auth_tls_handshake(t);
  #endif
          break;
  
+     case A_AUTH:
+-        // All AUTH commands are ignored in TLS mode
+-        if (t->use_tls) {
++        // All AUTH commands are ignored in TLS mode. adb-anywhere: a TLS tunnel
++        // runs the normal key auth inside TLS once the handshake completed, and
++        // ignores AUTH before that.
++        if (t->use_tls && !(t->tls_tunnel && t->tls_established)) {
+             break;
+         }
+         switch (p->msg.arg0) {
+@@ -479,16 +499,34 @@
+                     t->auth_key = auth_key;
+                     adbd_notify_framework_connected_key(t);
+                 } else {
+-                    if (t->failed_auth_attempts++ > 256) std::this_thread::sleep_for(1s);
++                    // adb-anywhere: upstream sleeps 1 s on the main loop after 256
++                    // failures, which stalls every transport. A real client tries
++                    // each of its keys once; kick a transport that keeps failing.
++                    if (++t->failed_auth_attempts >= kMaxFailedAuthAttempts) {
++                        LOG(WARNING) << t->serial_name() << ": too many failed signatures";
++                        t->Kick();
++                        break;
++                    }
+                     send_auth_request(t);
+                 }
+                 break;
+             }
+ 
+-            case ADB_AUTH_RSAPUBLICKEY:
+-                t->auth_key = std::string(p->payload.data());
++            case ADB_AUTH_RSAPUBLICKEY: {
++                // adb-anywhere: one public key per transport, and never read past
++                // the payload (upstream treated it as a NUL-terminated string).
++                if (t->pubkey_offered) {
++                    LOG(WARNING) << t->serial_name() << ": second public key; closing";
++                    t->Kick();
++                    break;
++                }
++                t->pubkey_offered = true;
++                std::string key(p->payload.begin(), p->payload.end());
++                key.resize(strnlen(key.data(), key.size()));
++                t->auth_key = std::move(key);
+                 adbd_auth_confirm_key(t);
+                 break;
++            }
+ #endif
+             default:
+                 t->SetConnectionState(kCsOffline);

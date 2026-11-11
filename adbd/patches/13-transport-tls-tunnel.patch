@@ -1,0 +1,27 @@
+--- a/transport.h
++++ b/transport.h
+@@ -329,6 +329,14 @@
+     // If this is set, the transport will initiate the connection with a
+     // START_TLS command, instead of AUTH.
+     bool use_tls = false;
++    // adb-anywhere: the transport came from a --tls-listen listener. TLS
++    // authenticates the channel (server key and app-only client certificate);
++    // ADB key auth against --keys still runs inside the tunnel.
++    bool tls_tunnel = false;
++    bool tls_handshake_started = false;
++    bool tls_established = false;
++    // Only the first RSAPUBLICKEY of a transport is accepted.
++    bool pubkey_offered = false;
+     int tls_version = A_STLS_VERSION;
+     int get_tls_version() const;
+ 
+--- a/transport.cpp
++++ b/transport.cpp
+@@ -1505,6 +1505,7 @@
+                                atransport::ReconnectCallback reconnect, bool use_tls, int* error) {
+     atransport* t = new atransport(kTransportLocal, std::move(reconnect), kCsOffline);
+     t->use_tls = use_tls;
++    t->tls_tunnel = use_tls;
+     t->serial = std::move(serial);
+ 
+     D("transport: %s init'ing for socket %d, on port %d", t->serial.c_str(), s.get(), port);

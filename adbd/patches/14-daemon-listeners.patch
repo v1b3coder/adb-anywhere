@@ -1,0 +1,77 @@
+--- a/daemon/transport_socket_server.cpp
++++ b/daemon/transport_socket_server.cpp
+@@ -47,27 +47,13 @@
+ #include "socket_spec.h"
+ #include "sysdeps/chrono.h"
+ 
+-void server_socket_thread(std::string_view addr) {
++// adb-anywhere: every listener is bound synchronously at startup and a failure
++// is fatal to the caller. Upstream retried a busy bind every second forever, so a
++// daemon could run without a listener the app asked for, or take a port later
++// from whoever held it. The accept loop never gives up on the socket it owns.
++static void server_socket_thread(unique_fd serverfd, std::string addr, bool use_tls) {
+     adb_thread_setname("server_socket");
+ 
+-    unique_fd serverfd;
+-    std::string error;
+-
+-    while (serverfd == -1) {
+-        errno = 0;
+-        serverfd = unique_fd{socket_spec_listen(addr, &error, nullptr)};
+-        if (serverfd < 0) {
+-            if (errno == EAFNOSUPPORT || errno == EINVAL || errno == EPROTONOSUPPORT) {
+-                D("unrecoverable error: '%s'", error.c_str());
+-                return;
+-            }
+-            D("server: cannot bind socket yet: %s", error.c_str());
+-            std::this_thread::sleep_for(1s);
+-            continue;
+-        }
+-        close_on_exec(serverfd.get());
+-    }
+-
+     while (true) {
+         D("server: trying to get new connection from fd %d", serverfd.get());
+         unique_fd fd(adb_socket_accept(serverfd, nullptr, nullptr));
+@@ -80,15 +66,25 @@
+             // only from ADB_HOST. "server_socket_thread" is never called from ADB_HOST.
+             register_socket_transport(
+                     std::move(fd), std::move(serial), 0, false,
+-                    [](atransport*) { return ReconnectResult::Abort; }, false);
++                    [](atransport*) { return ReconnectResult::Abort; }, use_tls);
++        } else if (errno != EINTR && errno != ECONNABORTED && errno != EAGAIN) {
++            PLOG(ERROR) << "accept failed on " << addr;
++            std::this_thread::sleep_for(100ms);
+         }
+     }
+-    D("transport: server_socket_thread() exiting");
+ }
+ 
+-void init_transport_socket_server(const std::string& addr) {
+-    VLOG(TRANSPORT) << "Starting tcp server on '" << addr << "'";
+-    std::thread(server_socket_thread, addr).detach();
++bool init_transport_socket_server(const std::string& addr, bool use_tls, std::string* error) {
++    VLOG(TRANSPORT) << "Starting tcp server on '" << addr << "' tls=" << use_tls;
++    errno = 0;
++    unique_fd serverfd{socket_spec_listen(addr, error, nullptr)};
++    if (serverfd < 0) {
++        if (error->empty()) *error = strerror(errno);
++        return false;
++    }
++    close_on_exec(serverfd.get());
++    std::thread(server_socket_thread, std::move(serverfd), addr, use_tls).detach();
++    return true;
+ }
+ 
+ int init_socket_transport(atransport* t, unique_fd fd, int, bool) {
+--- a/daemon/transport_daemon.h
++++ b/daemon/transport_daemon.h
+@@ -19,4 +19,7 @@
+ #include <string>
+ 
+ // Start the TCP server, to allow commands like `adb connect IP:PORT"
+-void init_transport_socket_server(const std::string& addr);
++//
++// adb-anywhere: binds |addr| before it returns and reports a failure instead of
++// retrying in the background. |use_tls| makes it a TLS tunnel listener.
++bool init_transport_socket_server(const std::string& addr, bool use_tls, std::string* error);

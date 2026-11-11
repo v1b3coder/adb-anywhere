@@ -18,8 +18,8 @@ set(ADB_DIR ${ADBD_SRC})
 set(VENDOR_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendor)
 set(STUB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/stubs)
 
-# BoringSSL is the crypto library AOSP adbd links against. Only libcrypto is
-# built; TLS is disabled by the patches and libssl is not linked.
+# BoringSSL is the crypto library AOSP adbd links against. libcrypto backs the
+# RSA key auth; libssl backs the --tls-listen tunnel the app's own channel uses.
 set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 add_subdirectory(${VENDOR_DIR}/boringssl ${CMAKE_BINARY_DIR}/boringssl)
 
@@ -87,6 +87,9 @@ set(ADB_CORE_SOURCES
   ${ADB_DIR}/types.cpp
   ${ADB_DIR}/daemon/auth.cpp
   ${ADB_DIR}/shell_service_protocol.cpp
+  ${ADB_DIR}/crypto/x509_generator.cpp
+  ${ADB_DIR}/tls/adb_ca_list.cpp
+  ${ADB_DIR}/tls/tls_connection.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/stubs/diagnose_usb.cpp
 )
 
@@ -107,6 +110,16 @@ set(ADBD_DAEMON_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/stubs/log/log_stub.cpp
 )
 
+if(NOT ANDROID)
+  # The host build (compile check and smoke test) has no bionic properties; the
+  # watchdog and the bionic property stubs are Android-only.
+  list(REMOVE_ITEM ADBD_DAEMON_SOURCES
+    ${ADB_DIR}/daemon/watchdog.cpp
+    ${ADB_DIR}/daemon/property_monitor.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/stubs/libc_private.cpp
+  )
+endif()
+
 add_library(adbd_core STATIC
   ${LIBBASE_SOURCES}
   ${LIBCUTILS_SOURCES}
@@ -117,9 +130,14 @@ add_library(adbd_core STATIC
 )
 
 target_include_directories(adbd_core BEFORE PUBLIC ${STUB_DIR})
+if(NOT ANDROID)
+  # The host compile check and smoke test need a few headers bionic provides.
+  target_include_directories(adbd_core BEFORE PUBLIC ${STUB_DIR}/host)
+endif()
 target_include_directories(adbd_core PUBLIC
   ${ADB_DIR}
   ${ADB_DIR}/crypto/include
+  ${ADB_DIR}/tls/include
   ${VENDOR_DIR}/libbase/include
   ${VENDOR_DIR}/libcutils/include
   ${VENDOR_DIR}/libcrypto_utils/include
@@ -142,7 +160,10 @@ target_compile_options(adbd_core PRIVATE
   -Wall -Wextra -Wno-unused-parameter -Wno-deprecated-declarations
 )
 
-target_link_libraries(adbd_core PUBLIC crypto log dl zstd)
+target_link_libraries(adbd_core PUBLIC ssl crypto dl zstd)
+if(ANDROID)
+  target_link_libraries(adbd_core PUBLIC log)
+endif()
 
 add_executable(adbd ${ADBD_DAEMON_SOURCES})
 target_link_libraries(adbd PRIVATE adbd_core)

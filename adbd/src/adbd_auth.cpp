@@ -29,6 +29,9 @@ namespace {
 
 constexpr const char* kDefaultKeyFile = "/data/local/tmp/adb-anywhere/adb_keys";
 
+// The most bytes of an unlisted key the log shows.
+constexpr size_t kMaxLoggedKey = 64;
+
 std::mutex g_lock;
 
 const char* key_file() {
@@ -99,8 +102,17 @@ void adbd_auth_prompt_user(AdbdAuthContext* ctx, const char* public_key, size_t 
                            void* opaque) {
     (void)ctx;
     (void)opaque;
-    // Unknown keys are never auto-accepted: the app owns the key file.
-    fprintf(stderr, "adbd: rejecting unlisted key %.*s\n", (int)len, public_key);
+    // Unknown keys are never auto-accepted: the app owns the key file. The key
+    // comes from an unauthenticated peer, so log a bounded, printable prefix: a
+    // peer must not grow the log by 1 MiB per packet or forge log lines.
+    char shown[kMaxLoggedKey + 1];
+    size_t n = 0;
+    for (; n < len && n < kMaxLoggedKey; ++n) {
+        unsigned char c = static_cast<unsigned char>(public_key[n]);
+        shown[n] = (c >= 0x20 && c < 0x7f) ? static_cast<char>(c) : '?';
+    }
+    shown[n] = '\0';
+    fprintf(stderr, "adbd: rejecting unlisted key %s%s\n", shown, len > kMaxLoggedKey ? "..." : "");
 }
 
 // daemon/auth.cpp CHECKs that a disconnected transport carries an auth id, and it

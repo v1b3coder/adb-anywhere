@@ -1,40 +1,60 @@
 --- a/transport.cpp
 +++ b/transport.cpp
-@@ -36,8 +36,6 @@
+@@ -36,9 +36,9 @@
  #include <string>
  #include <thread>
  
 -#include <adb/crypto/rsa_2048_key.h>
--#include <adb/crypto/x509_generator.h>
+ #include <adb/crypto/x509_generator.h>
  #include <adb/tls/tls_connection.h>
++#include <openssl/pem.h>
  #include <android-base/logging.h>
  #include <android-base/no_destructor.h>
-@@ -62,11 +60,8 @@
- #include "client/usb.h"
- #endif
- 
--using namespace adb::crypto;
--using namespace adb::tls;
- using namespace std::string_literals;
- using android::base::ScopedLockAssertion;
--using TlsError = TlsConnection::TlsError;
- 
- static void remove_transport(atransport* transport);
- static void transport_destroy(atransport* transport);
-@@ -511,48 +506,10 @@
+ #include <android-base/parsenetaddress.h>
+@@ -510,48 +510,54 @@
+     return true;
  }
  
++// adb-anywhere: PKCS#8 PEM of the tunnel's server key, as TlsConnection wants it.
++// Upstream uses adb::crypto::Key::ToPEMString, which drags in protobuf.
++static std::string PrivateKeyToPEM(EVP_PKEY* pkey) {
++    bssl::UniquePtr<BIO> bio(BIO_new(BIO_s_mem()));
++    if (PEM_write_bio_PKCS8PrivateKey(bio.get(), pkey, nullptr, nullptr, 0, nullptr, nullptr) !=
++        1) {
++        return "";
++    }
++    BUF_MEM* mem = nullptr;
++    BIO_get_mem_ptr(bio.get(), &mem);
++    if (!mem || !mem->data || !mem->length) return "";
++    return std::string(mem->data, mem->length);
++}
++
  bool FdConnection::DoTlsHandshake(RSA* key, std::string* auth_key) {
--    bssl::UniquePtr<EVP_PKEY> evp_pkey(EVP_PKEY_new());
--    if (!EVP_PKEY_set1_RSA(evp_pkey.get(), key)) {
--        LOG(ERROR) << "EVP_PKEY_set1_RSA failed";
--        return false;
--    }
++    // adb-anywhere: the daemon side of a --tls-listen tunnel. The certificate is
++    // generated from the fixed --tls-key key on every handshake, as upstream
++    // does, so the app can pin the key's public half. The client must present a
++    // certificate for a key in --tls-clients.
+     bssl::UniquePtr<EVP_PKEY> evp_pkey(EVP_PKEY_new());
+     if (!EVP_PKEY_set1_RSA(evp_pkey.get(), key)) {
+         LOG(ERROR) << "EVP_PKEY_set1_RSA failed";
+         return false;
+     }
 -    auto x509 = GenerateX509Certificate(evp_pkey.get());
 -    auto x509_str = X509ToPEMString(x509.get());
 -    auto evp_str = Key::ToPEMString(evp_pkey.get());
--
--    int osh = cast_handle_to_int(adb_get_os_handle(fd_));
++    auto x509 = adb::crypto::GenerateX509Certificate(evp_pkey.get());
++    if (!x509) {
++        LOG(ERROR) << "cannot generate the TLS certificate";
++        return false;
++    }
++    auto x509_str = adb::crypto::X509ToPEMString(x509.get());
++    auto evp_str = PrivateKeyToPEM(evp_pkey.get());
++    if (x509_str.empty() || evp_str.empty()) {
++        LOG(ERROR) << "cannot encode the TLS certificate or key";
++        return false;
++    }
+ 
+     int osh = cast_handle_to_int(adb_get_os_handle(fd_));
 -#if ADB_HOST
 -    tls_ = TlsConnection::Create(TlsConnection::Role::Client, x509_str, evp_str, osh);
 -#else
@@ -54,23 +74,22 @@
 -    tls_->SetCertVerifyCallback([](X509_STORE_CTX*) { return 1; });
 -#else
 -    // Add callback to check certificate against a list of known public keys
--    tls_->SetCertVerifyCallback(
--            [auth_key](X509_STORE_CTX* ctx) { return adbd_tls_verify_cert(ctx, auth_key); });
++    tls_ = adb::tls::TlsConnection::Create(adb::tls::TlsConnection::Role::Server, x509_str,
++                                           evp_str, osh);
++    if (!tls_) return false;
+     tls_->SetCertVerifyCallback(
+             [auth_key](X509_STORE_CTX* ctx) { return adbd_tls_verify_cert(ctx, auth_key); });
 -    // Add the list of allowed client CA issuers
--    auto ca_list = adbd_tls_client_ca_list();
--    tls_->SetClientCAList(ca_list.get());
+     auto ca_list = adbd_tls_client_ca_list();
+     tls_->SetClientCAList(ca_list.get());
 -#endif
--
+ 
 -    auto err = tls_->DoHandshake();
 -    if (err == TlsError::Success) {
--        return true;
--    }
++    if (tls_->DoHandshake() == adb::tls::TlsConnection::TlsError::Success) {
+         return true;
+     }
 -
--    tls_.reset();
-+    // TLS is deliberately not built into this daemon: the developer machine talks
-+    // plain ADB over the VPN.
-+    (void)key;
-+    (void)auth_key;
+     tls_.reset();
      return false;
  }
- 

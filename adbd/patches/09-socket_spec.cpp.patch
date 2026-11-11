@@ -1,17 +1,19 @@
 --- a/socket_spec.cpp
 +++ b/socket_spec.cpp
-@@ -16,6 +16,10 @@
+@@ -16,6 +16,12 @@
  
  #include "socket_spec.h"
  
 +#include <netdb.h>
++#include <netinet/in.h>
++#include <string.h>
 +#include <sys/socket.h>
 +#include <unistd.h>
 +
  #include <limits>
  #include <string>
  #include <string_view>
-@@ -153,8 +157,8 @@
+@@ -153,8 +159,8 @@
  }
  
  static bool tcp_host_is_local(std::string_view hostname) {
@@ -22,15 +24,32 @@
  }
  
  bool is_socket_spec(std::string_view spec) {
-@@ -336,6 +340,51 @@
+@@ -336,6 +342,77 @@
      return false;
  }
  
++// True for 0.0.0.0, :: and ::ffff:0.0.0.0: an address that binds every interface.
++static bool is_wildcard_address(const sockaddr* addr) {
++    if (addr->sa_family == AF_INET) {
++        return reinterpret_cast<const sockaddr_in*>(addr)->sin_addr.s_addr == htonl(INADDR_ANY);
++    }
++    if (addr->sa_family == AF_INET6) {
++        const in6_addr& a = reinterpret_cast<const sockaddr_in6*>(addr)->sin6_addr;
++        if (IN6_IS_ADDR_UNSPECIFIED(&a)) return true;
++        if (IN6_IS_ADDR_V4MAPPED(&a)) {
++            static const uint8_t zero[4] = {};
++            return memcmp(&a.s6_addr[12], zero, sizeof(zero)) == 0;
++        }
++    }
++    return false;
++}
++
 +// AOSP's socket_spec_listen only binds loopback or every interface. The
 +// standalone daemon is given an explicit VPN address by the app, so bind the
-+// address it names. A wildcard is refused: the app never asks for one.
++// address it names. A wildcard is refused after the address is parsed, so no
++// spelling of it (0, 0.0, ::0, [::], ::ffff:0.0.0.0) gets through.
 +static int listen_on_host(std::string_view hostname, int port, int type, std::string* error) {
-+    if (hostname.empty() || hostname == "0.0.0.0" || hostname == "::" || hostname == "*") {
++    if (hostname.empty()) {
 +        *error = "wildcard binds are refused";
 +        return -1;
 +    }
@@ -46,6 +65,15 @@
 +    if (rc != 0) {
 +        *error = gai_strerror(rc);
 +        return -1;
++    }
++
++    for (addrinfo* ai = result; ai != nullptr; ai = ai->ai_next) {
++        if (is_wildcard_address(ai->ai_addr)) {
++            freeaddrinfo(result);
++            *error = "wildcard binds are refused";
++            errno = EINVAL;
++            return -1;
++        }
 +    }
 +
 +    unique_fd fd;
@@ -74,7 +102,21 @@
  int socket_spec_listen(std::string_view spec, std::string* error, int* resolved_port) {
      if (spec.starts_with("tcp:")) {
          std::string hostname;
-@@ -356,9 +405,7 @@
+@@ -347,18 +424,18 @@
+         int result;
+ #if ADB_HOST
+         if (hostname.empty() && gListenAll) {
+-#else
+-        if (hostname.empty()) {
+-#endif
+             result = network_inaddr_any_server(port, SOCK_STREAM, error);
+         } else if (tcp_host_is_local(hostname)) {
++#else
++        // adb-anywhere: the daemon never listens on every interface. A spec
++        // without a host (`adb reverse tcp:8081 ...`) binds loopback only.
++        if (tcp_host_is_local(hostname)) {
++#endif
+             result = network_loopback_server(port, SOCK_STREAM, error, true);
          } else if (hostname == "::1") {
              result = network_loopback_server(port, SOCK_STREAM, error, false);
          } else {

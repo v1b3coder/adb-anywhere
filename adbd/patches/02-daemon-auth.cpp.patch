@@ -1,20 +1,22 @@
 --- a/daemon/auth.cpp
 +++ b/daemon/auth.cpp
-@@ -29,8 +29,6 @@
+@@ -29,7 +29,6 @@
  #include <memory>
  #include <thread>
  
 -#include <adb/crypto/rsa_2048_key.h>
--#include <adb/tls/adb_ca_list.h>
+ #include <adb/tls/adb_ca_list.h>
  #include <adbd_auth.h>
  #include <android-base/file.h>
- #include <android-base/no_destructor.h>
-@@ -39,23 +37,18 @@
+@@ -37,6 +36,7 @@
+ #include <android-base/strings.h>
+ #include <crypto_utils/android_pubkey.h>
  #include <openssl/obj_mac.h>
++#include <openssl/pem.h>
  #include <openssl/rsa.h>
  #include <openssl/sha.h>
--#include <openssl/ssl.h>
- 
+ #include <openssl/ssl.h>
+@@ -44,18 +44,20 @@
  #include "adb.h"
  #include "adb_auth.h"
  #include "adb_io.h"
@@ -24,72 +26,76 @@
  #include "types.h"
  
 -using namespace adb::crypto;
--using namespace adb::tls;
+ using namespace adb::tls;
  using namespace std::chrono_literals;
  
  static AdbdAuthContext* auth_ctx;
  
 -static RSA* rsa_pkey = nullptr;
++// adb-anywhere: the TLS tunnel's server key comes from --tls-key and the
++// clients allowed to complete the handshake from --tls-clients. There is no
++// randomly generated server key: the app pins this key's public half.
++static RSA* tls_server_key = nullptr;
++static std::string tls_clients_path;
  
  static void adb_disconnected(void* unused, atransport* t);
  static struct adisconnect adb_disconnect = {adb_disconnected, nullptr};
-@@ -104,55 +97,6 @@
+@@ -104,14 +106,50 @@
              &f);
  }
  
 -bssl::UniquePtr<STACK_OF(X509_NAME)> adbd_tls_client_ca_list() {
 -    if (!auth_required) {
 -        return nullptr;
--    }
--
--    bssl::UniquePtr<STACK_OF(X509_NAME)> ca_list(sk_X509_NAME_new_null());
--
++// adb-anywhere: the keys allowed to complete the TLS handshake. The file is
++// re-read on every handshake; a missing or empty file admits nobody.
++static void IterateTlsClientKeys(std::function<bool(std::string_view public_key)> f) {
++    std::string content;
++    if (tls_clients_path.empty() ||
++        !android::base::ReadFileToString(tls_clients_path, &content)) {
++        return;
+     }
++    for (const std::string& raw : android::base::Split(content, "\n")) {
++        std::string line = android::base::Trim(raw);
++        if (line.empty() || line[0] == '#') continue;
++        if (!f(line)) break;
++    }
++}
+ 
++bool adbd_tls_configure(const std::string& key_path, const std::string& clients_path,
++                        std::string* error) {
++    std::string pem;
++    if (!android::base::ReadFileToString(key_path, &pem)) {
++        *error = "cannot read TLS key " + key_path + ": " + strerror(errno);
++        return false;
++    }
++    // PEM_read_bio_PrivateKey accepts both PKCS#8 and traditional RSA keys.
++    bssl::UniquePtr<BIO> bio(BIO_new_mem_buf(pem.data(), pem.size()));
++    bssl::UniquePtr<EVP_PKEY> pkey(PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, nullptr));
++    if (!pkey) {
++        *error = "TLS key " + key_path + " is not a PEM private key";
++        return false;
++    }
++    RSA* rsa = EVP_PKEY_get1_RSA(pkey.get());
++    if (rsa == nullptr || RSA_bits(rsa) != 2048) {
++        if (rsa != nullptr) RSA_free(rsa);
++        *error = "TLS key " + key_path + " is not an RSA-2048 key";
++        return false;
++    }
++    tls_server_key = rsa;
++    tls_clients_path = clients_path;
++    return true;
++}
++
++bssl::UniquePtr<STACK_OF(X509_NAME)> adbd_tls_client_ca_list() {
+     bssl::UniquePtr<STACK_OF(X509_NAME)> ca_list(sk_X509_NAME_new_null());
+ 
 -    IteratePublicKeys([&](std::string_view public_key) {
--        // TODO: do we really have to support both ' ' and '\t'?
--        std::vector<std::string> split = android::base::Split(std::string(public_key), " \t");
--        uint8_t keybuf[ANDROID_PUBKEY_ENCODED_SIZE + 1];
--        const std::string& pubkey = split[0];
--        if (b64_pton(pubkey.c_str(), keybuf, sizeof(keybuf)) != ANDROID_PUBKEY_ENCODED_SIZE) {
--            LOG(ERROR) << "Invalid base64 key " << pubkey;
--            return true;
--        }
--
--        RSA* key = nullptr;
--        if (!android_pubkey_decode(keybuf, ANDROID_PUBKEY_ENCODED_SIZE, &key)) {
--            LOG(ERROR) << "Failed to parse key " << pubkey;
--            return true;
--        }
--        bssl::UniquePtr<RSA> rsa_key(key);
--
--        unsigned char* dkey = nullptr;
--        int len = i2d_RSA_PUBKEY(rsa_key.get(), &dkey);
--        if (len <= 0 || dkey == nullptr) {
--            LOG(ERROR) << "Failed to encode RSA public key";
--            return true;
--        }
--
--        uint8_t digest[SHA256_DIGEST_LENGTH];
--        // Put the encoded key in the commonName attribute of the issuer name.
--        // Note that the commonName has a max length of 64 bytes, which is less
--        // than the SHA256_DIGEST_LENGTH.
--        SHA256(dkey, len, digest);
--        OPENSSL_free(dkey);
--
--        auto digest_str = SHA256BitsToHexString(
--                std::string_view(reinterpret_cast<const char*>(&digest[0]), sizeof(digest)));
--        LOG(INFO) << "fingerprint=[" << digest_str << "]";
--        auto issuer = CreateCAIssuerFromEncodedKey(digest_str);
--        CHECK(bssl::PushToStack(ca_list.get(), std::move(issuer)));
--        return true;
--    });
--
--    return ca_list;
--}
--
- bool adbd_auth_verify(const char* token, size_t token_size, const std::string& sig,
-                       std::string* auth_key) {
-     bool authorized = false;
-@@ -199,12 +143,7 @@
++    IterateTlsClientKeys([&](std::string_view public_key) {
+         // TODO: do we really have to support both ' ' and '\t'?
+         std::vector<std::string> split = android::base::Split(std::string(public_key), " \t");
+         uint8_t keybuf[ANDROID_PUBKEY_ENCODED_SIZE + 1];
+@@ -199,12 +237,7 @@
  }
  
  void adbd_cloexec_auth_socket() {
@@ -103,7 +109,7 @@
  }
  
  static void adbd_auth_key_authorized(void* arg, uint64_t id) {
-@@ -246,7 +185,6 @@
+@@ -246,7 +279,6 @@
      cb.key_authorized = adbd_auth_key_authorized;
      cb.key_removed = adbd_key_removed;
      auth_ctx = adbd_auth_new(&cb);
@@ -111,69 +117,33 @@
      std::thread([]() {
          adb_thread_setname("adbd auth");
          adbd_auth_run(auth_ctx);
-@@ -297,87 +235,3 @@
- void adbd_notify_framework_connected_key(atransport* t) {
-     t->auth_id = adbd_auth_notify_auth(auth_ctx, t->auth_key.data(), t->auth_key.size());
+@@ -299,12 +331,7 @@
  }
--
--int adbd_tls_verify_cert(X509_STORE_CTX* ctx, std::string* auth_key) {
+ 
+ int adbd_tls_verify_cert(X509_STORE_CTX* ctx, std::string* auth_key) {
 -    if (!auth_required) {
 -        // Any key will do.
 -        VLOG(AUTH) << __func__ << ": auth not required";
 -        return 1;
 -    }
 -
--    bool authorized = false;
--    X509* cert = X509_STORE_CTX_get0_cert(ctx);
--    if (cert == nullptr) {
--        VLOG(AUTH) << "got null x509 certificate";
--        return 0;
--    }
--    bssl::UniquePtr<EVP_PKEY> evp_pkey(X509_get_pubkey(cert));
--    if (evp_pkey == nullptr) {
--        VLOG(AUTH) << "got null evp_pkey from x509 certificate";
--        return 0;
--    }
--
++    // adb-anywhere: always verified, against --tls-clients, never --keys.
+     bool authorized = false;
+     X509* cert = X509_STORE_CTX_get0_cert(ctx);
+     if (cert == nullptr) {
+@@ -317,7 +344,7 @@
+         return 0;
+     }
+ 
 -    IteratePublicKeys([&](std::string_view public_key) {
--        // TODO: do we really have to support both ' ' and '\t'?
--        std::vector<std::string> split = android::base::Split(std::string(public_key), " \t");
--        uint8_t keybuf[ANDROID_PUBKEY_ENCODED_SIZE + 1];
--        const std::string& pubkey = split[0];
--        if (b64_pton(pubkey.c_str(), keybuf, sizeof(keybuf)) != ANDROID_PUBKEY_ENCODED_SIZE) {
--            LOG(ERROR) << "Invalid base64 key " << pubkey;
--            return true;
--        }
--
--        RSA* key = nullptr;
--        if (!android_pubkey_decode(keybuf, ANDROID_PUBKEY_ENCODED_SIZE, &key)) {
--            LOG(ERROR) << "Failed to parse key " << pubkey;
--            return true;
--        }
--
--        bool verified = false;
--        bssl::UniquePtr<EVP_PKEY> known_evp(EVP_PKEY_new());
--        EVP_PKEY_set1_RSA(known_evp.get(), key);
--        if (EVP_PKEY_cmp(known_evp.get(), evp_pkey.get())) {
--            VLOG(AUTH) << "Matched auth_key=" << public_key;
--            verified = true;
--        } else {
--            VLOG(AUTH) << "auth_key doesn't match [" << public_key << "]";
--        }
--        RSA_free(key);
--        if (verified) {
--            *auth_key = public_key;
--            authorized = true;
--            return false;
--        }
--
--        return true;
--    });
--
--    return authorized ? 1 : 0;
--}
--
--void adbd_auth_tls_handshake(atransport* t) {
++    IterateTlsClientKeys([&](std::string_view public_key) {
+         // TODO: do we really have to support both ' ' and '\t'?
+         std::vector<std::string> split = android::base::Split(std::string(public_key), " \t");
+         uint8_t keybuf[ANDROID_PUBKEY_ENCODED_SIZE + 1];
+@@ -356,28 +383,31 @@
+ }
+ 
+ void adbd_auth_tls_handshake(atransport* t) {
 -    if (rsa_pkey == nullptr) {
 -        // Generate a random RSA key to feed into the X509 certificate
 -        auto rsa_2048 = CreateRSA2048Key();
@@ -192,10 +162,35 @@
 -            } else {
 -                adbd_auth_verified(t);
 -                adbd_notify_framework_connected_key(t);
--            }
++    // adb-anywhere: the tunnel handshake. It runs off the main loop, like
++    // upstream; BlockingConnectionAdapter stopped the read thread when it read the
++    // STLS and restarts it after the handshake. On success the normal key auth
++    // starts inside TLS; on failure the transport is closed.
++    void* arg = transport_to_callback_arg(t);
++    if (tls_server_key == nullptr) {
++        LOG(ERROR) << "TLS listener without a server key";
++        fdevent_run_on_looper([arg]() {
++            if (atransport* transport = transport_from_callback_arg(arg)) transport->Kick();
++        });
++        return;
++    }
++    std::thread([t, arg]() {
++        std::string client_key;
++        bool ok = t->connection()->DoTlsHandshake(tls_server_key, &client_key);
++        fdevent_run_on_looper([arg, ok]() {
++            atransport* transport = transport_from_callback_arg(arg);
++            if (transport == nullptr) return;
++            if (!ok) {
++                LOG(WARNING) << transport->serial_name() << ": TLS handshake failed";
++                transport->Kick();
++                return;
+             }
 -        } else {
 -            // Only allow one attempt at the handshake.
 -            t->Kick();
 -        }
--    }).detach();
--}
++            transport->tls_established = true;
++            send_auth_request(transport);
++        });
+     }).detach();
+ }

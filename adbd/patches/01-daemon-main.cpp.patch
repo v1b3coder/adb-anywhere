@@ -1,16 +1,29 @@
 --- a/daemon/main.cpp
 +++ b/daemon/main.cpp
-@@ -24,7 +24,8 @@
+@@ -24,192 +24,213 @@
  #include <signal.h>
  #include <stdio.h>
  #include <stdlib.h>
 -#include <sys/capability.h>
  #include <sys/prctl.h>
++#include <arpa/inet.h>
++#include <dirent.h>
++#include <fcntl.h>
++#include <netdb.h>
++#include <netinet/in.h>
++#include <string.h>
++#include <sys/socket.h>
 +#include <sys/stat.h>
 +#include <unistd.h>
  
  #include <memory>
-@@ -36,172 +37,49 @@
+ #include <vector>
+ 
++#include <android-base/file.h>
+ #include <android-base/logging.h>
+ #include <android-base/macros.h>
++#include <android-base/parseint.h>
+ #include <android-base/properties.h>
  #include <android-base/stringprintf.h>
  #include <android-base/strings.h>
  
@@ -68,33 +81,57 @@
 -    // ... and "adb unroot" lets you explicitly drop privileges.
 -    if (adb_unroot) {
 -        drop = true;
+-    }
 +static std::string g_listen_addrs;
++static std::string g_tls_listen_addrs;
 +static std::string g_keys_path;
++static std::string g_tls_key_path;
++static std::string g_tls_clients_path;
 +static std::string g_log_path;
 +static std::string g_pid_path;
 +
++// The daemon's own files are private to the shell uid, and never followed
++// through a symlink.
++static int open_private(const std::string& path, int flags) {
++    int fd = unix_open(path, flags | O_WRONLY | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
++    if (fd >= 0) fchmod(fd, 0600);
++    return fd;
++}
+ 
+-    return drop;
 +static void redirect_log(const std::string& path) {
 +    if (path.empty()) return;
 +    // Rotate at startup: the app trims the files while the daemon is
 +    // stopped, and this bounds a predecessor's log that was not trimmed.
 +    struct stat st;
-+    if (stat(path.c_str(), &st) == 0 && st.st_size > (1 << 20)) {
++    if (lstat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode) && st.st_size > (1 << 20)) {
 +        rename(path.c_str(), (path + ".1").c_str());
 +    }
-+    FILE* fp = fopen(path.c_str(), "ae");
-+    if (fp == nullptr) {
++    int fd = open_private(path, O_APPEND);
++    if (fd < 0) {
 +        PLOG(ERROR) << "cannot open log " << path;
 +        return;
-     }
--
--    return drop;
-+    dup2(fileno(fp), STDERR_FILENO);
-+    fclose(fp);
++    }
++    dup2(fd, STDERR_FILENO);
++    unix_close(fd);
  }
  
 -static void drop_privileges() {
 -    ScopedMinijail jail(minijail_new());
--
++static void write_pid_file(const std::string& path) {
++    if (path.empty()) return;
++    int fd = open_private(path, O_TRUNC);
++    if (fd < 0) {
++        PLOG(ERROR) << "cannot write pid file " << path;
++        return;
++    }
++    std::string pid = android::base::StringPrintf("%d\n", getpid());
++    if (!android::base::WriteFully(fd, pid.data(), pid.size())) {
++        PLOG(ERROR) << "cannot write pid file " << path;
++    }
++    unix_close(fd);
++}
+ 
 -    // Add extra groups:
 -    // AID_ADB to access the USB driver
 -    // AID_LOG to read system logs (adb logcat)
@@ -165,11 +202,77 @@
 -            auth_required = false;
 -        } else if (is_in_tradein_evaluation_mode()) {
 -            auth_required = false;
--        }
--    } else {
++// A listener spec is exactly tcp:<numeric address>:<port>. The address must be a
++// literal (IPv6 in brackets) that names one interface; the port is explicit.
++// There is no default port, no hostname lookup and no wildcard.
++static bool valid_listen_spec(const std::string& spec, std::string* error) {
++    if (!spec.starts_with("tcp:")) {
++        *error = "not a tcp: spec";
++        return false;
++    }
++    std::string rest = spec.substr(4);
++    std::string host;
++    std::string port_text;
++    if (!rest.empty() && rest[0] == '[') {
++        size_t close = rest.find(']');
++        if (close == std::string::npos || close + 1 >= rest.size() || rest[close + 1] != ':') {
++            *error = "bad IPv6 literal";
++            return false;
+         }
++        host = rest.substr(1, close - 1);
++        port_text = rest.substr(close + 2);
+     } else {
 -        // minijail_enter() will abort if any priv-dropping step fails.
 -        minijail_enter(jail.get());
--
++        size_t colon = rest.rfind(':');
++        if (colon == std::string::npos) {
++            *error = "missing host or port";
++            return false;
++        }
++        host = rest.substr(0, colon);
++        port_text = rest.substr(colon + 1);
++        if (host.find(':') != std::string::npos) {
++            *error = "IPv6 literals must be in brackets";
++            return false;
++        }
++    }
++    int port = 0;
++    if (host.empty() || port_text.empty() ||
++        port_text.find_first_not_of("0123456789") != std::string::npos ||
++        !android::base::ParseInt(port_text, &port, 1, 65535)) {
++        *error = "missing host or bad port";
++        return false;
++    }
++    addrinfo hints = {};
++    hints.ai_family = AF_UNSPEC;
++    hints.ai_socktype = SOCK_STREAM;
++    hints.ai_flags = AI_NUMERICHOST | AI_NUMERICSERV;
++    addrinfo* result = nullptr;
++    if (getaddrinfo(host.c_str(), port_text.c_str(), &hints, &result) != 0 || result == nullptr) {
++        *error = "the host is not a numeric address";
++        return false;
++    }
++    bool wildcard = false;
++    for (addrinfo* ai = result; ai != nullptr; ai = ai->ai_next) {
++        if (ai->ai_family == AF_INET) {
++            auto* in = reinterpret_cast<sockaddr_in*>(ai->ai_addr);
++            wildcard |= in->sin_addr.s_addr == htonl(INADDR_ANY);
++        } else if (ai->ai_family == AF_INET6) {
++            auto* in6 = reinterpret_cast<sockaddr_in6*>(ai->ai_addr);
++            static const uint8_t zero[4] = {};
++            wildcard |= IN6_IS_ADDR_UNSPECIFIED(&in6->sin6_addr) ||
++                        (IN6_IS_ADDR_V4MAPPED(&in6->sin6_addr) &&
++                         memcmp(&in6->sin6_addr.s6_addr[12], zero, sizeof(zero)) == 0);
++        }
++    }
++    freeaddrinfo(result);
++    if (wildcard) {
++        *error = "wildcard addresses are refused";
++        return false;
++    }
++    return true;
++}
+ 
 -        if (root_seclabel != nullptr) {
 -            if (selinux_android_setcon(root_seclabel) < 0) {
 -                // If we failed to become root, don't try again to avoid a
@@ -177,20 +280,27 @@
 -                android::base::SetProperty("service.adb.root", "0");
 -                LOG(FATAL) << "Could not set SELinux context";
 -            }
--        }
-+static void write_pid_file(const std::string& path) {
-+    if (path.empty()) return;
-+    FILE* fp = fopen(path.c_str(), "we");
-+    if (fp == nullptr) {
-+        PLOG(ERROR) << "cannot write pid file " << path;
-+        return;
++// The daemon is started from a shell of the system adbd, which can leak a
++// descriptor of its own (the shell service socket) into the child. Holding it
++// keeps the starting `adb shell` from ever seeing EOF and lets this daemon keep
++// a system adbd socket. Close everything but stdio before anything is opened.
++static void close_inherited_fds() {
++    DIR* dir = opendir("/proc/self/fd");
++    if (dir == nullptr) return;
++    std::vector<int> fds;
++    while (dirent* entry = readdir(dir)) {
++        int fd;
++        if (android::base::ParseInt(entry->d_name, &fd) && fd > STDERR_FILENO &&
++            fd != dirfd(dir)) {
++            fds.push_back(fd);
+         }
      }
-+    fprintf(fp, "%d\n", getpid());
-+    fclose(fp);
++    closedir(dir);
++    for (int fd : fds) unix_close(fd);
  }
 -#endif
  
- static void setup_adb(const std::vector<std::string>& addrs) {
+-static void setup_adb(const std::vector<std::string>& addrs) {
 -#if defined(__ANDROID__)
 -    // Get the first valid port from addrs and setup mDNS.
 -    int port = -1;
@@ -199,18 +309,60 @@
 -        port = get_host_socket_spec_port(addr, &error);
 -        if (port != -1) {
 -            break;
--        }
--    }
++static std::vector<std::string> split_specs(const std::string& list) {
++    std::vector<std::string> specs;
++    if (list.empty()) return specs;
++    for (const auto& spec : android::base::Split(list, ",")) specs.push_back(spec);
++    return specs;
++}
++
++// Binds every listener before the event loop starts. Any invalid spec or failed
++// bind ends the daemon: the app treats a missing listener as an error, and a
++// daemon that took a port later could not be verified.
++static void setup_adb(const std::vector<std::string>& plain, const std::vector<std::string>& tls) {
++    if (plain.empty() && tls.empty()) {
++        LOG(ERROR) << "no listener: pass --listen and/or --tls-listen";
++        exit(1);
++    }
++    for (const auto* specs : {&plain, &tls}) {
++        for (const auto& addr : *specs) {
++            std::string error;
++            if (!valid_listen_spec(addr, &error)) {
++                LOG(ERROR) << "invalid listener '" << addr << "': " << error;
++                exit(1);
++            }
+         }
+     }
 -    if (port == -1) {
 -        port = DEFAULT_ADB_LOCAL_TRANSPORT_PORT;
 -    }
 -    LOG(INFO) << "Setup mdns on port= " << port;
 -    setup_mdns(port);
 -#endif
-     for (const auto& addr : addrs) {
-         LOG(INFO) << "adbd listening on " << addr;
-         init_transport_socket_server(addr);
-@@ -217,21 +95,11 @@
+-    for (const auto& addr : addrs) {
+-        LOG(INFO) << "adbd listening on " << addr;
+-        init_transport_socket_server(addr);
++    for (const auto& [specs, use_tls] : {std::pair{&plain, false}, std::pair{&tls, true}}) {
++        for (const auto& addr : *specs) {
++            std::string error;
++            if (!init_transport_socket_server(addr, use_tls, &error)) {
++                LOG(ERROR) << "cannot listen on " << addr << ": " << error;
++                exit(1);
++            }
++            LOG(INFO) << "adbd listening on " << addr << (use_tls ? " (tls)" : "");
++        }
+     }
+ }
+ 
+ int adbd_main() {
+     umask(0);
++    // adb-anywhere: the daemon's files and everything its shells create are never
++    // world-writable.
++    umask(022);
+ 
+     signal(SIGPIPE, SIG_IGN);
+ 
+@@ -217,21 +238,11 @@
      // descriptor will always be open.
      adbd_cloexec_auth_socket();
  
@@ -236,7 +388,7 @@
  
      // Our external storage path may be different than apps, since
      // we aren't able to bind mount after dropping root.
-@@ -243,72 +111,41 @@
+@@ -243,72 +254,28 @@
            " unchanged.\n");
      }
  
@@ -266,50 +418,53 @@
 -    // If one of these properties is set, also listen on that port.
 -    // If one of the properties isn't set and we couldn't listen on usb, listen
 -    // on the default port.
-+    // The listener list comes from --listen, then service.adb.listen_addrs, then
-+    // the plain TCP port property, then the default port. This daemon is TCP only:
-+    // there is no USB, vsock, mDNS or TLS transport.
-     std::vector<std::string> addrs;
+-    std::vector<std::string> addrs;
 -    std::string prop_addr = android::base::GetProperty("service.adb.listen_addrs", "");
-+    std::string prop_addr = g_listen_addrs;
-     if (prop_addr.empty()) {
-+        prop_addr = android::base::GetProperty("service.adb.listen_addrs", "");
-+    }
-+    if (!prop_addr.empty()) {
-+        addrs = android::base::Split(prop_addr, ",");
-+    } else {
-         std::string prop_port = android::base::GetProperty("service.adb.tcp.port", "");
-         if (prop_port.empty()) {
-             prop_port = android::base::GetProperty("persist.adb.tcp.port", "");
+-    if (prop_addr.empty()) {
+-        std::string prop_port = android::base::GetProperty("service.adb.tcp.port", "");
+-        if (prop_port.empty()) {
+-            prop_port = android::base::GetProperty("persist.adb.tcp.port", "");
++    // The listeners come only from --listen (plain ADB) and --tls-listen (the TLS
++    // tunnel). There is no property, environment or default-port fallback, and no
++    // USB, vsock or mDNS transport.
++    std::vector<std::string> tls = split_specs(g_tls_listen_addrs);
++    if (!tls.empty()) {
++        if (g_tls_key_path.empty() || g_tls_clients_path.empty()) {
++            LOG(ERROR) << "--tls-listen needs --tls-key and --tls-clients";
++            exit(1);
++        }
++        std::string error;
++        if (!adbd_tls_configure(g_tls_key_path, g_tls_clients_path, &error)) {
++            LOG(ERROR) << error;
++            exit(1);
          }
 -
 -#if !defined(__ANDROID__)
-         if (prop_port.empty() && getenv("ADBD_PORT")) {
-             prop_port = getenv("ADBD_PORT");
-         }
+-        if (prop_port.empty() && getenv("ADBD_PORT")) {
+-            prop_port = getenv("ADBD_PORT");
+-        }
 -#endif
- 
-         int port;
-         if (sscanf(prop_port.c_str(), "%d", &port) == 1 && port > 0) {
-             D("using tcp port=%d", port);
+-
+-        int port;
+-        if (sscanf(prop_port.c_str(), "%d", &port) == 1 && port > 0) {
+-            D("using tcp port=%d", port);
 -            // Listen on TCP and VSOCK port specified by service.adb.tcp.port property.
-             addrs.push_back(android::base::StringPrintf("tcp:%d", port));
+-            addrs.push_back(android::base::StringPrintf("tcp:%d", port));
 -            addrs.push_back(android::base::StringPrintf("vsock:%d", port));
 -            setup_adb(addrs);
 -        } else if (!is_usb) {
 -            // Listen on default port.
-+        } else {
-             addrs.push_back(
-                     android::base::StringPrintf("tcp:%d", DEFAULT_ADB_LOCAL_TRANSPORT_PORT));
+-            addrs.push_back(
+-                    android::base::StringPrintf("tcp:%d", DEFAULT_ADB_LOCAL_TRANSPORT_PORT));
 -            addrs.push_back(
 -                    android::base::StringPrintf("vsock:%d", DEFAULT_ADB_LOCAL_TRANSPORT_PORT));
 -            setup_adb(addrs);
-         }
+-        }
 -    } else {
 -        addrs = android::base::Split(prop_addr, ",");
 -        setup_adb(addrs);
      }
-+    setup_adb(addrs);
++    setup_adb(split_specs(g_listen_addrs), tls);
  
      LOG(INFO) << "adbd started";
  
@@ -320,18 +475,21 @@
      D("Event loop starting");
      fdevent_loop();
  
-@@ -326,6 +163,10 @@
+@@ -326,6 +293,13 @@
                  {"root_seclabel", required_argument, nullptr, 's'},
                  {"tim_seclabel", required_argument, nullptr, 't'},
                  {"device_banner", required_argument, nullptr, 'b'},
 +                {"listen", required_argument, nullptr, 'L'},
++                {"tls-listen", required_argument, nullptr, 'T'},
++                {"tls-key", required_argument, nullptr, 'K'},
++                {"tls-clients", required_argument, nullptr, 'C'},
 +                {"keys", required_argument, nullptr, 'k'},
 +                {"log", required_argument, nullptr, 'g'},
 +                {"pid-file", required_argument, nullptr, 'P'},
                  {"version", no_argument, nullptr, 'v'},
                  {"logpostfsdata", no_argument, nullptr, 'l'},
                  {nullptr, no_argument, nullptr, 0},
-@@ -338,17 +179,21 @@
+@@ -338,17 +312,30 @@
          }
  
          switch (c) {
@@ -349,6 +507,15 @@
 +            case 'L':
 +                g_listen_addrs = optarg;
 +                break;
++            case 'T':
++                g_tls_listen_addrs = optarg;
++                break;
++            case 'K':
++                g_tls_key_path = optarg;
++                break;
++            case 'C':
++                g_tls_clients_path = optarg;
++                break;
 +            case 'k':
 +                g_keys_path = optarg;
 +                break;
@@ -361,3 +528,11 @@
              case 'v':
                  printf("Android Debug Bridge Daemon version %d.%d.%d\n", ADB_VERSION_MAJOR,
                         ADB_VERSION_MINOR, ADB_SERVER_VERSION);
+@@ -363,6 +350,7 @@
+     }
+ 
+     close_stdin();
++    close_inherited_fds();
+ 
+     adb_trace_init(argv);
+ 

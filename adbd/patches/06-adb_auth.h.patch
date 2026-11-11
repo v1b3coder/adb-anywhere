@@ -1,13 +1,23 @@
 --- a/adb_auth.h
 +++ b/adb_auth.h
-@@ -62,10 +62,6 @@
+@@ -23,6 +23,8 @@
+ #include <memory>
  
- void send_auth_request(atransport *t);
+ #include <openssl/rsa.h>
++// adb-anywhere: the TLS tunnel declarations below need the X509 types.
++#include <openssl/ssl.h>
  
--void adbd_auth_tls_handshake(atransport* t);
--int adbd_tls_verify_cert(X509_STORE_CTX* ctx, std::string* auth_key);
--bssl::UniquePtr<STACK_OF(X509_NAME)> adbd_tls_client_ca_list();
--
+ /* AUTH packets first argument */
+ /* Request */
+@@ -66,6 +68,11 @@
+ int adbd_tls_verify_cert(X509_STORE_CTX* ctx, std::string* auth_key);
+ bssl::UniquePtr<STACK_OF(X509_NAME)> adbd_tls_client_ca_list();
+ 
++// adb-anywhere: loads the --tls-key server key (PEM, RSA-2048) and records the
++// --tls-clients file that gates the TLS tunnel handshake.
++bool adbd_tls_configure(const std::string& key_path, const std::string& clients_path,
++                        std::string* error);
++
  #endif // ADB_HOST
  
  #endif // __ADB_AUTH_H
