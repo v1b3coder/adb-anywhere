@@ -4,44 +4,59 @@ All notable changes to ADB Anywhere are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases use
 semantic versioning once the project leaves 0.x.
 
-## Unreleased
+## 0.11.0 — 2026-11-18
 
-### Added
+Pause without a redeploy. The firewall port can now be closed and reopened on its own,
+so a phone stops exposing ADB while the daemon keeps running — and an idle timeout can
+take that same pause for you. Updating the app no longer restarts a daemon that is
+already the one it would deploy.
 
-- **Pause** and **Resume** for firewall mode. Pause closes the firewall relay and keeps
-  the custom adb running on loopback, so nothing on the network answers while the app
-  keeps its own channel to the daemon. Resume rebinds the relay against the same daemon,
-  so it needs neither Android's adb nor Wi-Fi and works on mobile data — the recovery a
-  Stop followed by a Start does not have. In firewall mode Pause and Resume are the main
-  action on Home and in the ongoing notification; Stop stays as the secondary CTA.
-- **Auto pause** in the Firewall tab: after the chosen time without an adb command
-  (5 min to 12 h, or a custom duration) the app takes the same Pause as the button.
-  The clock restarts only on authenticated relay traffic, so the app's own loopback
-  channel, the watchdog and an unauthenticated peer cannot keep the VPN port open; a
-  session that stays idle for the whole timeout is closed with the relay.
+### Pause, resume and auto pause
 
-### Changed
+- **Pause** closes the firewall relay and keeps the custom adb running on its loopback
+  listener, so nothing on the network answers while the app keeps its own channel to the
+  daemon. **Resume** rebinds the relay against the same daemon: it needs neither
+  Android's adb nor Wi-Fi, so it also works on mobile data, where a Stop followed by a
+  Start cannot always be undone. In firewall mode Pause and Resume are the main action on
+  Home and in the ongoing notification; Stop stays as the secondary CTA.
+- **Auto pause** in the Firewall tab takes the same Pause after a chosen time without an
+  adb command (5 min to 12 h, or a custom duration). The clock restarts only on
+  authenticated relay traffic, so the app's own loopback channel, the watchdog and an
+  unauthenticated peer cannot keep the VPN port open; a session that stays idle for the
+  whole timeout is closed with the relay.
+- The paused state says *ADB is paused*, not *Firewall is paused*, which read as
+  "unprotected"; Pause and Resume are icon buttons on Home so the action row still fits
+  a narrow screen.
 
-- The firewall audit log reads like a sentence instead of an event dump: it names the
-  peer, the foreground app that failed the app allowlist (or that the screen is off or
-  the phone is locked), the command or transfer, the reason and the matched rule, with
-  a timestamp. One call is one line — the redundant `call_open` row is gone — and the
-  log appends at the bottom, following new decisions only while it is scrolled to the
-  bottom. The app and adb log tabs re-arm their tail-follow when you return to the
-  bottom, and a connect failure no longer logs `failed: null`.
+### Daemon and lifecycle
 
-- A daemon that already matches is adopted instead of killed and restarted (D23). A
-  process restart, a boot, an app update that ships the same binary, a re-check and a
-  repeated Start now keep the running daemon, so they no longer open the window in
-  which the old daemon is gone and only the system adb could bring it back — the window
-  that left a phone on mobile data with no reachable adb. A stale binary, a port or mode
-  change, a legacy migration, an explicit Restart and a key revocation still restart it.
-- The lifecycle is one persisted value with three states — started, paused, stopped —
-  instead of a start/stop boolean. A Start or Restart keeps a paused firewall closed, the
-  watchdog and a network change never reopen it, and a paused app redeploys the daemon
-  loopback-only after a reboot.
+- A daemon that already matches is adopted instead of killed and restarted. A process
+  restart, a boot, an app update that ships the same binary, a re-check and a repeated
+  Start keep the running daemon when it answered the pinned probe, its binary on the
+  device is byte-identical to the one this build ships, the mode and ports match what it
+  listens on, nothing else holds the VPN port and no legacy daemon needs migrating. That
+  closes the window in which the old daemon was gone and only Android's adb could bring
+  it back — the window that left a phone on mobile data with no reachable adb. A stale
+  binary, a port or mode change, a legacy migration, the Restart button and a key
+  revocation still restart it.
+- One persisted lifecycle value with three states — started, paused, stopped — replaces
+  the start/stop boolean, and only an explicit Start, Restart, Pair, Pause, Resume or
+  Stop writes it. A Start or Restart keeps a paused firewall closed, the watchdog and a
+  network change never reopen it, and a paused app redeploys the daemon loopback-only
+  after a reboot.
 - A firewall mode change clears a pause, and the Settings switch only stores the mode
   while the app is stopped.
+
+### Audit log
+
+- The firewall audit log reads like a sentence instead of an event dump: it names the
+  peer, the foreground app that failed the app allowlist (or that the screen is off, the
+  phone is locked or Usage access is missing), the command or transfer, the reason and
+  the matched rule, with a timestamp. One call is one line — the redundant `call_open`
+  row is gone — and the log appends at the bottom, following new decisions only while it
+  is scrolled to the bottom.
+- The app and adb log tabs re-arm their tail-follow when you return to the bottom, and a
+  connect failure logs the exception class instead of `failed: null`.
 
 ### Fixed
 
@@ -49,6 +64,30 @@ semantic versioning once the project leaves 0.x.
   the "user wants running" intent, so a stopped app came back on.
 - An action that does not own the lifecycle (a log refresh, a prompt answer) no longer
   leaves a stopped app running as a foreground service with an ongoing notification.
+
+### Upgrading from 0.10.0
+
+- Install over 0.10.0; paired computers keep their keys and reconnect without
+  re-pairing.
+- An app update that ships the same daemon binary now adopts the running daemon instead
+  of restarting it, so an update no longer needs Android's adb. An update from an older
+  build whose daemon binary differs still needs one reachable Android adb to redeploy
+  it: Wi-Fi wireless debugging, plain 5555, or root.
+- The firewall stays off unless you turned it on; auto pause is off by default and lives
+  in the Firewall tab.
+
+### Known limitations
+
+- The firewall IP allowlist is IPv4-only.
+- Per-key policy, audit export and work-profile apps are not implemented yet.
+- A reboot does not keep the daemon alive. On mobile data the app needs one Wi-Fi
+  connection or USB `adb tcpip` to redeploy it.
+- Some OEMs do not restart wireless debugging on a Wi-Fi network without internet;
+  enable Wireless debugging once in Settings to recover.
+- Another app can keep the daemon from starting by holding its ports. The app reports
+  the port; change the ports in Settings or reboot.
+
+**Full changelog**: https://github.com/v1b3coder/adb-anywhere/compare/v0.10.0...v0.11.0
 
 ## 0.10.0 — 2026-11-12
 
