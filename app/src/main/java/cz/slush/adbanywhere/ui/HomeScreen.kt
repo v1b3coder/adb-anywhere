@@ -31,6 +31,7 @@ import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
@@ -244,15 +245,17 @@ private fun StatusHero(
                     // so they need neither the system adb nor Wi-Fi the way a Stop
                     // followed by a Start does. Stop stays as the secondary CTA.
                     if (state.phase == Phase.Running && state.firewall.enabled) {
+                        // Icon only: an icon plus a label wraps the row on a narrow
+                        // screen once Restart, Re-check and Stop are beside it. The
+                        // filled button still marks it as the main action, and the
+                        // hero text names it in both states.
                         if (paused) {
-                            Button(onClick = onResume) {
-                                Icon(Icons.Rounded.PlayArrow, contentDescription = null)
-                                Text("Resume", modifier = Modifier.padding(start = 8.dp))
+                            FilledIconButton(onClick = onResume) {
+                                Icon(Icons.Rounded.PlayArrow, contentDescription = "Resume")
                             }
                         } else {
-                            Button(onClick = onPause) {
-                                Icon(Icons.Rounded.Pause, contentDescription = null)
-                                Text("Pause", modifier = Modifier.padding(start = 8.dp))
+                            FilledIconButton(onClick = onPause) {
+                                Icon(Icons.Rounded.Pause, contentDescription = "Pause")
                             }
                         }
                         FilledTonalIconButton(onClick = onRestart) {
