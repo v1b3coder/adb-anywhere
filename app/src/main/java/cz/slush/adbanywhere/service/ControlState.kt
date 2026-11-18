@@ -54,10 +54,18 @@ data class ControlState(
     /**
      * The custom adb can be healthy while the firewall relay is down: the loopback
      * channel works, but developer machines cannot reach the VPN endpoint.  The Home
-     * status must not claim the endpoint is reachable in that state.
+     * status must not claim the endpoint is reachable in that state. A paused
+     * firewall is closed on purpose, not down (§6 Listener modes 6).
      */
     val firewallDown: Boolean
-        get() = phase == Phase.Running && firewall.enabled && !firewall.listening
+        get() = phase == Phase.Running && firewall.enabled && !firewall.paused &&
+            !firewall.listening
+
+    /**
+     * Running with the firewall paused: the daemon is up, the VPN listener is
+     * closed, and Resume is the one action that reopens it.
+     */
+    val paused: Boolean get() = phase == Phase.Running && firewall.paused
 }
 
 object ControlBus {

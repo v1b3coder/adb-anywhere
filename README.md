@@ -76,13 +76,21 @@ The VPN port defaults to `15038`; both ports are configurable in
 Settings → Ports. The app's own channel defaults to `127.0.0.1:15037` and is not
 reachable from the network.
 
-## Start and stop
+## Start, pause and stop
 
-The status card shows *Set up* on a fresh install, *Start* when stopped, and
-*Stop*, *Re-check* and *Restart* while running. The app stores the last explicit
-choice in device-protected storage, so a stopped app stays stopped when it is
-reopened, after a reboot and after the system restarts the service. Only an
-explicit Start, Set up, Pair or Restart starts it again.
+The status card shows *Set up* on a fresh install, *Start* when stopped, and, while
+running, *Pause* or *Resume* in firewall mode plus *Restart*, *Re-check* and *Stop*.
+The app stores the last explicit choice in device-protected storage, so a stopped
+app stays stopped when it is reopened, after a reboot and after the system restarts
+the service, and a paused app stays paused. Only an explicit Start, Set up, Pair or
+Restart starts it again, and none of them reopens a paused firewall.
+
+In firewall mode *Pause* is the main action: it closes the VPN port and keeps the
+custom adb running on loopback, so nothing on the network answers. *Resume* reopens
+the VPN port against the same daemon and needs no new setup, which is why it also
+works on mobile data. A *Stop* followed by a *Start* has to redeploy the daemon, and
+that needs Android's adb once — the reason a Stop on mobile data cannot always be
+undone there.
 
 A fresh install waits for Set up or Start; an install that already completed setup
 keeps its last choice across an update. Stop waits for a deployment in progress to
@@ -95,6 +103,11 @@ The optional firewall moves the VPN listener into the app. It is off by default.
 When it is on, the daemon listens only on loopback and the app accepts the VPN
 port, applies the IP and app allowlists and the call policy, then relays to the
 daemon. ADB key authentication stays end-to-end.
+
+*Pause* on Home closes the VPN port without stopping the daemon: the app keeps its
+channel to the custom adb, nothing is reachable from the network, and *Resume*
+reopens the port without a new setup. Stopping the app instead tears the daemon
+down, and starting it again may need Android's adb (Wi-Fi or USB).
 
 The Firewall tab has:
 
@@ -159,7 +172,8 @@ not isolated. The full design and its limits are in
   screen denies a call that needs approval.
 - A reboot does not keep the daemon running. The app redeploys it after boot when it
   can reach Android's adb; on mobile data without the plain 5555 listener it waits for
-  Wi-Fi or USB. The app shows the recovery steps.
+  Wi-Fi or USB. The app shows the recovery steps. A paused app comes back with the
+  VPN port still closed, so nothing is exposed while it waits.
 - On some OEMs Android does not restart wireless debugging on a Wi-Fi network
   without internet. Enable Wireless debugging once in Settings to recover.
 - A VPN address change restarts the daemon when the firewall is off and rebinds the

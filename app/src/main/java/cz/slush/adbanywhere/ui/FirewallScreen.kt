@@ -138,11 +138,21 @@ fun FirewallScreen(
     ) {
         item {
             SectionCard("Status") {
-                KeyValueRow(
-                    "Listener",
-                    state.firewall.listenAddress.ifBlank { "not listening" },
-                    mono = true,
-                )
+                if (state.firewall.paused) {
+                    KeyValueRow("Listener", "paused")
+                    Text(
+                        "The firewall is paused: the custom adb runs on loopback only and the " +
+                            "VPN port is closed. Resume on Home reopens it without a new setup.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    KeyValueRow(
+                        "Listener",
+                        state.firewall.listenAddress.ifBlank { "not listening" },
+                        mono = true,
+                    )
+                }
                 KeyValueRow("Sessions", state.firewall.activeSessions.toString())
                 KeyValueRow("Pending prompts", state.firewall.pendingPrompts.toString())
                 if (state.firewall.lastError.isNotEmpty()) {

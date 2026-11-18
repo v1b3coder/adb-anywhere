@@ -566,7 +566,18 @@ Lifecycle changes:
 - `verifyDaemon()` verifies loopback through the pinned channel and, with the
   firewall on, verifies that the relay is bound; it never signs on the VPN address.
 - The relay's upstream is the pinned TLS tunnel (`DaemonTunnel`).
-- `watchdog()` checks the relay with the daemon and restarts it if it is down.
+- `watchdog()` checks the relay with the daemon and restarts it if it is down,
+  except while the firewall is paused: a tick then only closes a relay that is
+  somehow still up, so a pause survives every tick, a process restart and a network
+  change (DESIGN D22).
+- `ACTION_PAUSE_FIREWALL` stores `Prefs.lifecycle = Paused`, stops the relay and
+  publishes a closed listener with no endpoint. The daemon and the loopback channel
+  are untouched, so nothing on the network answers. `ACTION_RESUME_FIREWALL` stores
+  `Running` and binds the relay against the same daemon; it never touches the system
+  adbd, so it also works on mobile data. An occupied port or a daemon that is not
+  running falls back to the full setup, which names the owner before replacing it.
+- A firewall mode change clears a pause: the switch is the explicit choice of mode.
+  While the app is stopped the switch only stores the mode.
 - `networkChanged()` rebinds the relay when the VPN address changes and stops it
   when the VPN is gone.
 - `stopEverything()` stops the relay before the daemon.
@@ -591,7 +602,8 @@ calls `adb tcpip` and never moves to another port silently.
 - The bottom bar shows `Firewall` only while the switch is on. If the switch is
   turned off while the tab is open, the UI returns to Home.
 - `FirewallScreen` sections:
-  - **Status**: listener address, active sessions, pending prompts, last error.
+  - **Status**: listener address (or `paused`), active sessions, pending prompts,
+    last error.
   - **IP allowlist**: switch, list, add dialog (`a.b.c.d` or `a.b.c.d/n`), delete;
     each entry shows its last accepted connection as a relative age.
   - **App allowlist**: switch, selected apps, searchable picker with a warning
@@ -614,10 +626,11 @@ calls `adb tcpip` and never moves to another port silently.
 - `RuleEditor` is a modal screen with field rows, lock toggles, action selector,
   preview and save.
 - The ongoing notification adds one line: `Firewall: 1 session`,
-  `Firewall: 2 sessions` or `Firewall: VPN is down`. `sessions` is the number of
-  open TCP connections accepted by the relay, not the number of ADB calls or
-  authenticated devices. Prompts are foreground dialogs, so the notification does
-  not count them.
+  `Firewall: 2 sessions`, `Firewall: paused` or `Firewall: VPN is down`. `sessions`
+  is the number of open TCP connections accepted by the relay, not the number of ADB
+  calls or authenticated devices. Prompts are foreground dialogs, so the notification
+  does not count them. With the firewall on, the notification also carries Pause
+  (or Resume) next to Stop.
 
 ## 11. Failure modes
 
@@ -820,8 +833,8 @@ Implemented in the app:
 - `adb/SystemAdb.closePlainListener()`: sends `usb:` to the system adbd so the
   firewall can take over its port.
 - `service/ControlService.kt`: loopback-only daemon when the firewall is on,
-  full-stack restart on a firewall toggle, relay lifecycle, port takeover from the
-  system plain listener, prompt notification and response.
+  full-stack restart on a firewall toggle, relay lifecycle, pause and resume, port
+  takeover from the system plain listener, prompt notification and response.
 - `ui/FirewallScreen.kt`, `ui/CallPromptScreen.kt`, `ui/CallPromptOverlay.kt`,
   `ui/CallPromptActivity.kt`, `ui/RuleEditor.kt`: the tab, the floating prompt,
   the notification fallback, the custom filter and the rule edit dialog.

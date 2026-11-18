@@ -7,6 +7,34 @@ package cz.slush.adbanywhere.data
 import android.content.Context
 import android.content.SharedPreferences
 
+/**
+ * The persisted lifecycle intent. It is the user's last explicit choice, not the
+ * observed state: `Running` and `Paused` both keep the daemon up, `Paused` also
+ * keeps the relay closed. Only an explicit start, restart, pairing, pause,
+ * resume or stop changes it (D22).
+ */
+enum class Lifecycle {
+    Stopped,
+    Paused,
+    Running,
+    ;
+
+    /**
+     * An explicit Start or Restart. It keeps a pause: starting the app must not
+     * reopen the VPN listener the user closed on purpose.
+     */
+    val afterRequestRun: Lifecycle get() = if (this == Paused) Paused else Running
+
+    /** An explicit Pause. Only a running daemon can be paused. */
+    val afterPause: Lifecycle get() = if (this == Running) Paused else this
+
+    /** An explicit Resume, or a firewall mode change; a stop is not revived. */
+    val afterResume: Lifecycle get() = if (this == Stopped) Stopped else Running
+
+    /** An explicit Stop wins over everything and clears the pause. */
+    val afterStop: Lifecycle get() = Stopped
+}
+
 class Prefs(context: Context) {
     private val prefs: SharedPreferences =
         context.createDeviceProtectedStorageContext()
@@ -25,18 +53,55 @@ class Prefs(context: Context) {
         set(value) = prefs.edit().putBoolean("setup_complete", value).apply()
 
     /**
-     * The last explicit start or stop. A fresh install waits for Start; an
-     * install that already completed setup keeps running across an update, so a
-     * deploy does not leave an unsupervised daemon behind. Nothing else brings
-     * the daemon up without this intent: not opening the app, not a reboot and
-     * not a sticky restart. The write is synchronous: a stop that is followed
-     * by a hard process kill must not be lost in a pending apply().
+     * The last explicit lifecycle choice: started, paused or stopped. A fresh
+     * install waits for Start; an install that already completed setup keeps its
+     * choice across an update, so a deploy does not leave an unsupervised daemon
+     * behind. Nothing else changes it: not opening the app, not a reboot, not a
+     * settings change and not a sticky restart. The write is synchronous: a stop
+     * that is followed by a hard process kill must not be lost in an apply().
+     *
+     * `user_wants_running` is the pre-pause key; it is read, never written again.
      */
-    var userWantsRunning: Boolean
-        get() = prefs.getBoolean("user_wants_running", setupComplete)
-        set(value) {
-            prefs.edit().putBoolean("user_wants_running", value).commit()
+    var lifecycle: Lifecycle
+        get() {
+            val stored = prefs.getString(LIFECYCLE, null)
+                ?.let { name -> Lifecycle.entries.firstOrNull { it.name == name } }
+            if (stored != null) return stored
+            return if (prefs.getBoolean(USER_WANTS_RUNNING, setupComplete)) {
+                Lifecycle.Running
+            } else {
+                Lifecycle.Stopped
+            }
         }
+        set(value) {
+            prefs.edit().putString(LIFECYCLE, value.name).commit()
+        }
+
+    /** The daemon is this process's responsibility: started or paused. */
+    val userWantsRunning: Boolean get() = lifecycle != Lifecycle.Stopped
+
+    /** The firewall mode is on and the relay must stay closed. */
+    val firewallPaused: Boolean get() = lifecycle == Lifecycle.Paused
+
+    /** An explicit Start or Restart; it never resumes a pause (D22). */
+    fun requestRun() {
+        lifecycle = lifecycle.afterRequestRun
+    }
+
+    /** An explicit Pause of a daemon that runs; a stop is not a pause. */
+    fun pauseLifecycle() {
+        lifecycle = lifecycle.afterPause
+    }
+
+    /** An explicit Resume, or a firewall mode change: clears the pause. */
+    fun resumeLifecycle() {
+        lifecycle = lifecycle.afterResume
+    }
+
+    /** An explicit Stop wins over everything and clears the pause. */
+    fun stopLifecycle() {
+        lifecycle = lifecycle.afterStop
+    }
 
     var paired: Boolean
         get() = prefs.getBoolean("paired", false)
@@ -161,6 +226,9 @@ class Prefs(context: Context) {
         set(value) = prefs.edit().putBoolean("firewall_redact_audit", value).apply()
 
     companion object {
+        private const val LIFECYCLE = "lifecycle"
+        private const val USER_WANTS_RUNNING = "user_wants_running"
+
         const val DEFAULT_LOOPBACK_PORT = 15037
         const val DEFAULT_VPN_PORT = 15038
 

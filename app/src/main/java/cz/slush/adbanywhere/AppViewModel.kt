@@ -101,6 +101,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         ControlService.start(getApplication(), ControlService.ACTION_STOP)
     }
 
+    /** D22: closes the firewall relay and keeps the custom adb on loopback. */
+    fun pauseFirewall() {
+        AppLog.info("ui", "firewall pause requested")
+        ControlService.start(getApplication(), ControlService.ACTION_PAUSE_FIREWALL)
+    }
+
+    /** D22: reopens the VPN listener; never needs the system adb. */
+    fun resumeFirewall() {
+        AppLog.info("ui", "firewall resume requested")
+        ControlService.start(getApplication(), ControlService.ACTION_RESUME_FIREWALL)
+    }
+
     /** Turns the app's own event log on or off. Off is the default. */
     fun setDiagnosticLog(enabled: Boolean) {
         prefs.diagnosticLog = enabled
@@ -228,11 +240,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setFirewallEnabled(enabled: Boolean) {
-        AppLog.info("firewall", "enabled=$enabled; clean stack restart")
+        AppLog.info("firewall", "enabled=$enabled")
         updateFirewall(apply = false) { it.copy(enabled = enabled) }
-        if (prefs.userWantsRunning) {
-            ControlService.start(getApplication(), ControlService.ACTION_APPLY_FIREWALL)
-        }
+        // A setting never starts the daemon (D22); while it runs, the mode change
+        // applies the new listener set and also clears a pause.
+        applyIfRunning(ControlService.ACTION_APPLY_FIREWALL)
     }
 
     fun setIpAllowlistEnabled(enabled: Boolean) {

@@ -61,6 +61,26 @@ class ControlDataTest {
         )
     }
 
+    /**
+     * D22: a paused firewall is closed on purpose. It is not a failure, so the hero
+     * must not show the relay error and the paused flag must survive the service's
+     * own firewallState() construction.
+     */
+    @Test
+    fun pausedIsNotFirewallDown() {
+        val paused = ControlState(
+            phase = Phase.Running,
+            firewall = FirewallState(enabled = true, listening = false, paused = true),
+        )
+        assertFalse(paused.firewallDown)
+        assertTrue(paused.paused)
+        // A pause only counts while the daemon runs; a stopped or failed app has
+        // nothing to resume and no relay to reopen.
+        assertFalse(paused.copy(phase = Phase.Error).paused)
+        assertFalse(paused.copy(phase = Phase.Stopped).paused)
+        assertFalse(ControlState(phase = Phase.Running).paused)
+    }
+
     @Test
     fun relayStateKeepsTheServiceOwnedPromptCount() {
         val current = FirewallState(enabled = true, pendingPrompts = 3)
@@ -75,6 +95,22 @@ class ControlDataTest {
         assertEquals(2, merged.activeSessions)
         assertEquals("100.64.0.10:15038", merged.listenAddress)
         assertTrue(merged.listening)
+    }
+
+    /**
+     * I3: the relay owns its listener fields and nothing else. A late snapshot from a
+     * relay that published just before a pause must not reopen the state the service
+     * closed.
+     */
+    @Test
+    fun relayStateDoesNotClearThePause() {
+        val paused = FirewallState(enabled = true, paused = true)
+        val lateSnapshot = FirewallState(
+            enabled = true,
+            listening = true,
+            listenAddress = "100.64.0.10:15038",
+        )
+        assertTrue(paused.withRelayState(lateSnapshot).paused)
     }
 
     @Test
@@ -102,6 +138,10 @@ class ControlDataTest {
         assertEquals(
             "Firewall: not listening",
             firewallStatusLine(FirewallState(enabled = true)),
+        )
+        assertEquals(
+            "Firewall: paused",
+            firewallStatusLine(FirewallState(enabled = true, paused = true)),
         )
     }
 

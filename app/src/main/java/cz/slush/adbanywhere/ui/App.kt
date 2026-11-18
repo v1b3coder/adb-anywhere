@@ -117,14 +117,16 @@ fun AppRoot(viewModel: AppViewModel) {
                     Column {
                         Text("ADB Anywhere", style = MaterialTheme.typography.titleLarge)
                         Text(
-                            when (state.phase) {
-                                Phase.Running -> state.endpoint.ifBlank { "running" }
-                                Phase.NeedsPairing -> "pairing needed"
-                                Phase.Deploying -> "setting up"
-                                Phase.Pairing -> "pairing"
-                                Phase.Error -> "needs attention"
-                                Phase.Stopped -> "stopped"
-                                Phase.Idle -> "not set up"
+                            when {
+                                state.paused -> "paused"
+                                state.phase == Phase.Running ->
+                                    state.endpoint.ifBlank { "running" }
+                                state.phase == Phase.NeedsPairing -> "pairing needed"
+                                state.phase == Phase.Deploying -> "setting up"
+                                state.phase == Phase.Pairing -> "pairing"
+                                state.phase == Phase.Error -> "needs attention"
+                                state.phase == Phase.Stopped -> "stopped"
+                                else -> "not set up"
                             },
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -170,6 +172,8 @@ fun AppRoot(viewModel: AppViewModel) {
                     onSetup = { screen = Screen.Setup; viewModel.start() },
                     onStart = viewModel::start,
                     onStop = viewModel::stop,
+                    onPause = viewModel::pauseFirewall,
+                    onResume = viewModel::resumeFirewall,
                     onCopy = ::copy,
                     onRestart = viewModel::restart,
                     onPair = { screen = Screen.Setup },

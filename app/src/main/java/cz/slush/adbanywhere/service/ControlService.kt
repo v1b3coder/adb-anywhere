@@ -46,6 +46,7 @@ import cz.slush.adbanywhere.data.AppKeyStore
 import cz.slush.adbanywhere.data.DaemonTlsKey
 import cz.slush.adbanywhere.data.DeveloperKey
 import cz.slush.adbanywhere.data.Endpoint
+import cz.slush.adbanywhere.data.Lifecycle
 import cz.slush.adbanywhere.data.PairingCode
 import cz.slush.adbanywhere.data.Prefs
 import cz.slush.adbanywhere.data.WirelessDebuggingGuard
@@ -158,9 +159,15 @@ class ControlService : Service() {
                 loopbackPort = prefs.loopbackPort,
                 vpnPort = prefs.vpnPort,
                 keyCount = DeveloperKey.list(prefs.developerKeysJson).size + 1,
-                endpoint = prefs.lastVpnIp.takeIf { ip -> ip.isNotBlank() }
-                    ?.let { ip -> Endpoint.display(ip, prefs.vpnPort) } ?: "",
-                firewall = FirewallState(enabled = firewallStore.load().enabled),
+                // A paused app publishes no endpoint: nothing on the network answers
+                // until Resume (D22).
+                endpoint = if (prefs.firewallPaused) {
+                    ""
+                } else {
+                    prefs.lastVpnIp.takeIf { ip -> ip.isNotBlank() }
+                        ?.let { ip -> Endpoint.display(ip, prefs.vpnPort) } ?: ""
+                },
+                firewall = firewallState(enabled = firewallStore.load().enabled),
             )
         }
 
@@ -187,7 +194,7 @@ class ControlService : Service() {
         when (intent?.action) {
             null -> resumeAfterRestart()
             ACTION_START -> {
-                prefs.userWantsRunning = true
+                prefs.requestRun()
                 AppLog.info("service", "user asked to run")
                 // An explicit Start is the user's retry: give it a fresh
                 // retry budget instead of the cap a previous failure set.
@@ -231,7 +238,7 @@ class ControlService : Service() {
                 }
             }
             ACTION_RESTART -> {
-                prefs.userWantsRunning = true
+                prefs.requestRun()
                 AppLog.info("service", "restart requested")
                 resetBackoff()
                 prefs.failureNeedsUser = false
@@ -264,12 +271,12 @@ class ControlService : Service() {
                 val combined = codeText?.let { PairingCode.parse(it) }
                 when {
                     code != null && port != null -> {
-                        prefs.userWantsRunning = true
+                        prefs.requestRun()
                         promoteForeground()
                         scope.launch { pair(PairingCode(code, port)) }
                     }
                     combined != null -> {
-                        prefs.userWantsRunning = true
+                        prefs.requestRun()
                         promoteForeground()
                         scope.launch { pair(combined) }
                     }
@@ -286,11 +293,25 @@ class ControlService : Service() {
                 postPairingNotification()
             }
             ACTION_APPLY_FIREWALL -> {
-                prefs.userWantsRunning = true
-                AppLog.info("firewall", "listener mode changed; restarting the daemon in place")
-                promoteForeground()
-                scope.launch { setup(forceRestart = true) }
+                // A mode change is a full apply, so it also clears a pause: the
+                // user asked for the mode they picked, not for a closed relay.
+                prefs.resumeLifecycle()
+                AppLog.info("firewall", "listener mode changed; applying it")
+                if (prefs.userWantsRunning) {
+                    promoteForeground()
+                    scope.launch { setup(forceRestart = true) }
+                } else {
+                    // A setting never starts the daemon: the stored mode is
+                    // applied by the next explicit Start (D22).
+                    AppLog.info("firewall", "mode stored; adb is stopped")
+                }
             }
+            // Pause keeps the daemon and closes the relay, so the phone stays
+            // reachable for the app over loopback without exposing the VPN port.
+            // Resume rebinds only the relay: no bootstrap, no system adbd, so it
+            // also works on mobile data.
+            ACTION_PAUSE_FIREWALL -> scope.launch { pauseFirewall() }
+            ACTION_RESUME_FIREWALL -> scope.launch { resumeFirewall() }
             ACTION_CLEAR_AUDIT -> {
                 auditLog.clear()
                 AppLog.info("firewall", "audit log cleared")
@@ -311,12 +332,15 @@ class ControlService : Service() {
                 if (id != null) prompts[id]?.complete(response)
             }
             ACTION_STOP -> {
-                prefs.userWantsRunning = false
+                prefs.stopLifecycle()
                 AppLog.info("service", "stop requested")
                 stopEverything(startId)
                 return START_NOT_STICKY
             }
         }
+        // A side-effect-only intent (a log refresh, a prompt answer) must not
+        // leave a foreground service running for an app the user stopped.
+        stopIfNotWanted(startId)
         return START_STICKY
     }
 
@@ -418,9 +442,12 @@ class ControlService : Service() {
                     loopbackPort = prefs.loopbackPort,
                     vpnPort = prefs.vpnPort,
                     firewall = if (relayListening) {
-                        it.firewall.copy(enabled = firewallStore.load().enabled)
+                        it.firewall.copy(
+                            enabled = firewallStore.load().enabled,
+                            paused = prefs.firewallPaused,
+                        )
                     } else {
-                        FirewallState(enabled = firewallStore.load().enabled)
+                        firewallState(enabled = firewallStore.load().enabled)
                     },
                 )
             }
@@ -554,7 +581,10 @@ class ControlService : Service() {
                     needsPairing()
                     return@withLock
                 }
-                if (firewallConfig.enabled && vpnIp != null &&
+                // A paused firewall does not need the VPN port, so it leaves the
+                // system listener alone (D22): closing it would remove a recovery path
+                // for a listener the app is not about to replace.
+                if (firewallConfig.enabled && vpnIp != null && !prefs.firewallPaused &&
                     SystemSettings.isPortOpen(vpnIp, prefs.vpnPort) &&
                     firewallProxy?.isListening != true
                 ) {
@@ -728,7 +758,10 @@ class ControlService : Service() {
                 // system wireless debugging off first would leave the phone with no
                 // reachable ADB endpoint when the relay cannot bind.
                 step(3, StepStatus.Active, "Starting the firewall relay")
-                if (firewallConfig.enabled && vpnIp != null && !isVpnActive()) {
+                // D22: a paused firewall keeps the daemon and closes the relay, so it
+                // is an alternative branch, never a skipped pre-check.
+                val relayWanted = firewallConfig.enabled && !prefs.firewallPaused
+                if (relayWanted && vpnIp != null && !isVpnActive()) {
                     fail(
                         "ADB Anywhere is excluded from the VPN. Include it in the VPN app, " +
                             "then press Start again. The firewall relay runs in the app process.",
@@ -736,36 +769,44 @@ class ControlService : Service() {
                     )
                     return@withLock
                 }
-                if (firewallConfig.enabled && vpnIp != null &&
-                    firewallProxy?.isListening != true
-                ) {
-                    waitForPortFree(vpnIp, prefs.vpnPort)
-                }
-                if (firewallConfig.enabled && vpnIp != null) {
-                    if (firewallChanged || vpnChanged || portsChanged ||
-                        firewallProxy?.isListening != true
-                    ) {
-                        startFirewall(vpnIp)
-                        relayTouched = true
+                when {
+                    firewallConfig.enabled && !relayWanted -> {
+                        // The relay stays closed and the daemon keeps its
+                        // loopback-only listener set, so Resume needs neither the
+                        // system adbd nor a network. Nothing is exposed while paused.
+                        if (firewallProxy != null) stopFirewall()
+                        step(3, StepStatus.Done, "Firewall paused; only loopback listens")
                     }
-                    verifyFirewall()
-                    firewallProxy?.publishState()
-                    step(3, StepStatus.Done, "Firewall relay on $vpnIp:${prefs.vpnPort}")
-                } else if (firewallConfig.enabled) {
-                    stopFirewall()
-                    ControlBus.update {
-                        it.copy(
-                            firewall = FirewallState(
-                                enabled = true,
-                                listening = false,
-                                lastError = "VPN is down",
-                            ),
-                        )
+                    relayWanted && vpnIp != null -> {
+                        if (firewallProxy?.isListening != true) {
+                            waitForPortFree(vpnIp, prefs.vpnPort)
+                        }
+                        if (firewallChanged || vpnChanged || portsChanged ||
+                            firewallProxy?.isListening != true
+                        ) {
+                            startFirewall(vpnIp)
+                            relayTouched = true
+                        }
+                        verifyFirewall()
+                        firewallProxy?.publishState()
+                        step(3, StepStatus.Done, "Firewall relay on $vpnIp:${prefs.vpnPort}")
                     }
-                    step(3, StepStatus.Done, "VPN is down; no external listener")
-                } else {
-                    stopFirewall()
-                    step(3, StepStatus.Done, "Firewall is off")
+                    relayWanted -> {
+                        stopFirewall()
+                        ControlBus.update {
+                            it.copy(
+                                firewall = firewallState(
+                                    enabled = true,
+                                    lastError = "VPN is down",
+                                ),
+                            )
+                        }
+                        step(3, StepStatus.Done, "VPN is down; no external listener")
+                    }
+                    else -> {
+                        stopFirewall()
+                        step(3, StepStatus.Done, "Firewall is off")
+                    }
                 }
 
                 step(4, StepStatus.Active, "Turning system wireless debugging off")
@@ -774,12 +815,17 @@ class ControlService : Service() {
 
                 prefs.setupComplete = true
                 AppLog.info("setup", "running; endpoint=${Endpoint.display(vpnIp, prefs.vpnPort)}")
+                // The pause is read after the last relay decision: a Pause that
+                // arrived during this setup has already set the intent and closes
+                // the relay itself once it holds the mutex.
+                val paused = firewallConfig.enabled && prefs.firewallPaused
                 ControlBus.update {
                     it.copy(
                         phase = Phase.Running,
-                        endpoint = Endpoint.display(vpnIp, prefs.vpnPort),
+                        endpoint = if (paused) "" else Endpoint.display(vpnIp, prefs.vpnPort),
                         vpnIp = vpnIp,
                         message = when {
+                            paused -> PAUSED_MESSAGE
                             firewallConfig.enabled && vpnIp == null ->
                                 "VPN is down. The firewall cannot expose the custom adb."
                             firewallConfig.enabled ->
@@ -789,6 +835,10 @@ class ControlService : Service() {
                             else -> "Ready for developer machines."
                         },
                         error = "",
+                        firewall = it.firewall.copy(
+                            enabled = firewallConfig.enabled,
+                            paused = paused,
+                        ),
                     )
                 }
                 resetBackoff()
@@ -1053,6 +1103,118 @@ class ControlService : Service() {
         setup(forceRestart = true)
     }
 
+    /**
+     * D22: Pause closes the relay and keeps the daemon. In firewall mode the daemon
+     * already listens on loopback only, so the relay is the whole difference; a pause
+     * therefore drops external access completely without touching the system adbd.
+     */
+    private suspend fun pauseFirewall() {
+        if (!firewallStore.load().enabled) {
+            AppLog.info("firewall", "pause ignored; the firewall mode is off")
+            return
+        }
+        prefs.pauseLifecycle()
+        setupMutex.withLock {
+            // The last explicit intent wins: a Start, Stop or Resume that arrived
+            // before this pause took the mutex must not be undone (I6).
+            if (!prefs.firewallPaused) return@withLock
+            if (ControlBus.state.value.phase == Phase.Running) {
+                AppLog.info("firewall", "paused; closing the relay")
+                stopFirewall()
+                publishPaused(ControlBus.state.value.vpnIp)
+            }
+        }
+        // A daemon started in the other mode still holds the VPN port. A pause must
+        // never leave an exposed listener behind, so it applies the listener set too.
+        if (prefs.firewallPaused && !prefs.daemonFirewallMode) {
+            AppLog.info("firewall", "the daemon was started in the other mode; applying it paused")
+            setup(forceRestart = true)
+        }
+    }
+
+    /**
+     * D22: Resume rebinds the relay against the running daemon. It never touches the
+     * system adbd, so it also works on mobile data, which a Stop followed by a Start
+     * does not. A daemon that is not running falls back to the full setup.
+     */
+    private suspend fun resumeFirewall() {
+        if (!firewallStore.load().enabled) {
+            AppLog.info("firewall", "resume ignored; the firewall mode is off")
+            return
+        }
+        prefs.resumeLifecycle()
+        // A Resume cannot revive a stopped app; the next explicit Start does.
+        if (!prefs.userWantsRunning) return
+        var fullSetup = false
+        setupMutex.withLock {
+            if (prefs.lifecycle != Lifecycle.Running) return@withLock
+            val vpnIp = withContext(Dispatchers.IO) {
+                VpnDetector.currentVpnAddress(this@ControlService)
+            }
+            when {
+                ControlBus.state.value.phase != Phase.Running -> fullSetup = true
+                vpnIp == null -> ControlBus.update {
+                    it.copy(
+                        vpnIp = null,
+                        endpoint = Endpoint.display(null, prefs.vpnPort),
+                        message = "VPN is down. Resume again once the VPN is up.",
+                        firewall = firewallState(enabled = true, lastError = "VPN is down"),
+                    )
+                }
+                !isVpnActive() -> ControlBus.update {
+                    it.copy(
+                        vpnIp = vpnIp,
+                        endpoint = Endpoint.display(vpnIp, prefs.vpnPort),
+                        message = "ADB Anywhere is excluded from the VPN.",
+                        firewall = firewallState(
+                            enabled = true,
+                            lastError = "Excluded from the VPN",
+                        ),
+                    )
+                }
+                // An occupied port is the setup's job: it names the owner, closes the
+                // system listener or restarts the daemon loopback-only (I2). Our own
+                // relay is not occupied: a second Resume re-uses it.
+                SystemSettings.isPortOpen(vpnIp, prefs.vpnPort) &&
+                    firewallProxy?.isListening != true -> fullSetup = true
+                else -> {
+                    try {
+                        startFirewall(vpnIp)
+                        verifyFirewall()
+                    } catch (e: Exception) {
+                        AppLog.error("firewall", "resume failed: ${e.message}", e)
+                        fail(e.message ?: "The firewall relay did not bind ${prefs.vpnPort}.")
+                        return@withLock
+                    }
+                    AppLog.info("firewall", "resumed on $vpnIp:${prefs.vpnPort}")
+                    ControlBus.update {
+                        it.copy(
+                            phase = Phase.Running,
+                            vpnIp = vpnIp,
+                            endpoint = Endpoint.display(vpnIp, prefs.vpnPort),
+                            error = "",
+                            message = "Firewall is on. Developer machines connect through " +
+                                "$vpnIp:${prefs.vpnPort}.",
+                            firewall = it.firewall.copy(
+                                enabled = true,
+                                paused = false,
+                                listening = true,
+                                listenAddress = "$vpnIp:${prefs.vpnPort}",
+                                lastError = "",
+                            ),
+                        )
+                    }
+                    firewallProxy?.publishState()
+                    resetBackoff()
+                }
+            }
+        }
+        if (fullSetup) {
+            AppLog.info("firewall", "resume needs the full setup")
+            setup()
+        }
+    }
+
     private suspend fun stopStack() = withContext(Dispatchers.IO + NonCancellable) {
         stopFirewall()
         cancelWatchdog()
@@ -1221,7 +1383,7 @@ class ControlService : Service() {
             ControlBus.pendingPrompt.value = null
             ControlBus.update {
                 it.copy(
-                    firewall = FirewallState(
+                    firewall = firewallState(
                         enabled = firewallStore.load().enabled,
                         lastError = reason,
                     ),
@@ -1229,6 +1391,36 @@ class ControlService : Service() {
             }
         }
     }
+
+    /**
+     * Publishes the paused state. The relay is the only thing a pause closes; the
+     * daemon and the loopback channel stay up, so there is no endpoint to show and
+     * no recovery step beyond Resume.
+     */
+    private fun publishPaused(vpnIp: String?) {
+        ControlBus.update {
+            it.copy(
+                vpnIp = vpnIp,
+                endpoint = "",
+                message = PAUSED_MESSAGE,
+                firewall = firewallState(enabled = true).copy(
+                    activeSessions = it.firewall.activeSessions,
+                ),
+            )
+        }
+    }
+
+    /** The one construction of the published firewall state (I13). */
+    private fun firewallState(
+        enabled: Boolean,
+        listening: Boolean = false,
+        lastError: String = "",
+    ): FirewallState = FirewallState(
+        enabled = enabled,
+        listening = listening,
+        lastError = lastError,
+        paused = enabled && prefs.firewallPaused,
+    )
 
     private fun hidePromptOverlay() {
         if (Looper.myLooper() == Looper.getMainLooper()) {
@@ -1534,6 +1726,16 @@ class ControlService : Service() {
 
     private suspend fun watchdogRelay() {
         val firewall = firewallStore.load()
+        if (firewall.enabled && prefs.firewallPaused) {
+            // D22: a pause outlives a tick, a restart and a network change. A relay
+            // that is still up is the only thing a tick has to close.
+            if (firewallProxy != null) {
+                AppLog.info("watchdog", "paused; closing a relay that was still listening")
+                stopFirewall()
+            }
+            publishPaused(ControlBus.state.value.vpnIp)
+            return
+        }
         if (firewall.enabled) {
             val vpnIp = withContext(Dispatchers.IO) {
                 VpnDetector.currentVpnAddress(this@ControlService)
@@ -1546,7 +1748,7 @@ class ControlService : Service() {
                             vpnIp = null,
                             endpoint = Endpoint.display(null, prefs.vpnPort),
                             message = "VPN is down. The firewall cannot expose the custom adb.",
-                            firewall = FirewallState(enabled = true, lastError = "VPN is down"),
+                            firewall = firewallState(enabled = true, lastError = "VPN is down"),
                         )
                     }
                 }
@@ -1562,7 +1764,7 @@ class ControlService : Service() {
                             vpnIp = vpnIp,
                             endpoint = Endpoint.display(vpnIp, prefs.vpnPort),
                             message = "ADB Anywhere is excluded from the VPN.",
-                            firewall = FirewallState(
+                            firewall = firewallState(
                                 enabled = true,
                                 lastError = "Excluded from the VPN",
                             ),
@@ -1629,6 +1831,14 @@ class ControlService : Service() {
             val vpnIp = withContext(Dispatchers.IO) {
                 VpnDetector.currentVpnAddress(this@ControlService)
             }
+            if (prefs.firewallPaused) {
+                // The relay follows the VPN address only while it listens. While
+                // paused a network change just records the new address; Resume
+                // reads it again.
+                AppLog.info("firewall", "paused; vpn address is now ${vpnIp ?: "none"}")
+                publishPaused(vpnIp)
+                return
+            }
             when {
                 vpnIp == null -> {
                     // The VPN is down: remove the VPN listener and keep the
@@ -1640,7 +1850,7 @@ class ControlService : Service() {
                             vpnIp = null,
                             endpoint = Endpoint.display(null, prefs.vpnPort),
                             message = "VPN is down. The firewall cannot expose the custom adb.",
-                            firewall = FirewallState(enabled = true, lastError = "VPN is down"),
+                            firewall = firewallState(enabled = true, lastError = "VPN is down"),
                         )
                     }
                 }
@@ -1653,7 +1863,7 @@ class ControlService : Service() {
                             vpnIp = vpnIp,
                             endpoint = Endpoint.display(vpnIp, prefs.vpnPort),
                             message = "ADB Anywhere is excluded from the VPN.",
-                            firewall = FirewallState(
+                            firewall = firewallState(
                                 enabled = true,
                                 lastError = "Excluded from the VPN",
                             ),
@@ -1799,6 +2009,25 @@ class ControlService : Service() {
         }
     }
 
+    /**
+     * D22: an intent that does not own the lifecycle (a log refresh, a prompt answer)
+     * can create the service. It must not leave it running in the foreground for an
+     * app the user stopped, so the stopped state survives every such action.
+     */
+    private fun stopIfNotWanted(startId: Int) {
+        synchronized(lifecycleLock) {
+            if (prefs.userWantsRunning) return
+            // A stop in flight owns the notification and the service; only an idle
+            // or stopped service is removed here.
+            if (ControlBus.state.value.phase !in setOf(Phase.Idle, Phase.Stopped)) return
+            AppLog.info("service", "no lifecycle intent; removing the foreground service")
+            notificationJob?.cancel()
+            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+            foregroundStarted = false
+            stopSelf(startId)
+        }
+    }
+
     /** The loopback port is the authority on whether the daemon still runs. */
     private suspend fun daemonListening(): Boolean = withContext(Dispatchers.IO) {
         val deadline = System.currentTimeMillis() + 2_000
@@ -1925,18 +2154,16 @@ class ControlService : Service() {
         // status, so it stays in the ongoing notification as well as in the UI.
         val warnings = state.adbStatus?.warnings().orEmpty()
         val firewallDown = state.firewallDown
-        val title = if (warnings.isNotEmpty() || firewallDown) {
-            "ADB Anywhere needs attention"
-        } else {
-            when (state.phase) {
-                Phase.Running -> "ADB Anywhere is running"
-                Phase.NeedsPairing -> "Pair with Android's wireless debugging"
-                Phase.Pairing -> "Pairing with Android's wireless debugging"
-                Phase.Deploying -> "Setting up ADB Anywhere"
-                Phase.Error -> "ADB Anywhere needs attention"
-                Phase.Stopped -> "ADB Anywhere is stopped"
-                Phase.Idle -> "ADB Anywhere"
-            }
+        val title = when {
+            warnings.isNotEmpty() || firewallDown -> "ADB Anywhere needs attention"
+            state.paused -> "ADB Anywhere is paused"
+            state.phase == Phase.Running -> "ADB Anywhere is running"
+            state.phase == Phase.NeedsPairing -> "Pair with Android's wireless debugging"
+            state.phase == Phase.Pairing -> "Pairing with Android's wireless debugging"
+            state.phase == Phase.Deploying -> "Setting up ADB Anywhere"
+            state.phase == Phase.Error -> "ADB Anywhere needs attention"
+            state.phase == Phase.Stopped -> "ADB Anywhere is stopped"
+            else -> "ADB Anywhere"
         }
         val text = buildList {
             addAll(warnings)
@@ -1963,6 +2190,17 @@ class ControlService : Service() {
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .addAction(0, "Open", contentPendingIntent())
         if (state.phase == Phase.Running) {
+            // Pause and Resume are the main control while the firewall is on; Stop
+            // stays available and does the full teardown.
+            if (state.firewall.enabled) {
+                builder.addAction(
+                    0,
+                    if (state.firewall.paused) "Resume" else "Pause",
+                    servicePendingIntent(
+                        if (state.firewall.paused) ACTION_RESUME_FIREWALL else ACTION_PAUSE_FIREWALL,
+                    ),
+                )
+            }
             builder.addAction(0, "Stop", servicePendingIntent(ACTION_STOP))
         }
         if (state.phase == Phase.NeedsPairing) {
@@ -2128,7 +2366,12 @@ class ControlService : Service() {
         const val ACTION_PROMPT_RESPONSE = "cz.slush.adbanywhere.PROMPT_RESPONSE"
         const val ACTION_CLEAR_AUDIT = "cz.slush.adbanywhere.CLEAR_AUDIT"
         const val ACTION_APPLY_FIREWALL = "cz.slush.adbanywhere.APPLY_FIREWALL"
+        const val ACTION_PAUSE_FIREWALL = "cz.slush.adbanywhere.PAUSE_FIREWALL"
+        const val ACTION_RESUME_FIREWALL = "cz.slush.adbanywhere.RESUME_FIREWALL"
         const val ACTION_STOP = "cz.slush.adbanywhere.STOP"
+        private const val PAUSED_MESSAGE =
+            "Firewall is paused. The custom adb keeps running on loopback; Resume reopens " +
+                "the VPN listener."
         private const val NETWORK_SETTLE_MS = 1_500L
         private const val USB_STATE = "android.hardware.usb.action.USB_STATE"
         private const val SYSTEM_ADB_WAIT_MS = 30_000L

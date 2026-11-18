@@ -7,6 +7,12 @@ package cz.slush.adbanywhere.firewall
 data class FirewallState(
     val enabled: Boolean = false,
     val listening: Boolean = false,
+    /**
+     * The user paused the firewall: the mode stays on, the relay stays closed and
+     * the custom adb keeps its loopback listener. Owned by the service, not by the
+     * relay, so a relay snapshot never clears it.
+     */
+    val paused: Boolean = false,
     val listenAddress: String = "",
     val activeSessions: Int = 0,
     val pendingPrompts: Int = 0,

@@ -23,6 +23,7 @@ import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Settings
@@ -55,6 +56,8 @@ fun HomeScreen(
     onSetup: () -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
+    onPause: () -> Unit,
+    onResume: () -> Unit,
     onCopy: (String) -> Unit,
     onRestart: () -> Unit,
     onPair: () -> Unit,
@@ -64,7 +67,9 @@ fun HomeScreen(
         contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 96.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        item { StatusHero(state, onCopy, onSetup, onStart, onStop, onRestart, onPair) }
+        item {
+            StatusHero(state, onCopy, onSetup, onStart, onStop, onPause, onResume, onRestart, onPair)
+        }
         if (state.steps.isNotEmpty()) {
             item {
                 SectionCard("Setup progress") {
@@ -96,9 +101,11 @@ fun HomeScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
-                    "Start uses Android's wireless debugging once to bootstrap. Stop follows " +
-                        "Settings → System adb: by default the system adb and its paired key " +
-                        "are left alone, so the phone stays recoverable.",
+                    "Start uses Android's wireless debugging once to bootstrap. Pause closes the " +
+                        "VPN listener and keeps the custom adb on loopback, so Resume needs no " +
+                        "bootstrap and works on mobile data. Stop is the full teardown and " +
+                        "follows Settings → System adb: by default the system adb and its paired " +
+                        "key are left alone, so the phone stays recoverable.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -115,12 +122,16 @@ private fun StatusHero(
     onSetup: () -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
+    onPause: () -> Unit,
+    onResume: () -> Unit,
     onRestart: () -> Unit,
     onPair: () -> Unit,
 ) {
     val firewallDown = state.firewallDown
+    val paused = state.paused
     val container = when {
         firewallDown -> MaterialTheme.colorScheme.errorContainer
+        paused -> MaterialTheme.colorScheme.secondaryContainer
         state.phase == Phase.Running -> MaterialTheme.colorScheme.primaryContainer
         state.phase == Phase.Error -> MaterialTheme.colorScheme.errorContainer
         state.phase == Phase.NeedsPairing -> MaterialTheme.colorScheme.tertiaryContainer
@@ -128,6 +139,7 @@ private fun StatusHero(
     }
     val onContainer = when {
         firewallDown -> MaterialTheme.colorScheme.onErrorContainer
+        paused -> MaterialTheme.colorScheme.onSecondaryContainer
         state.phase == Phase.Running -> MaterialTheme.colorScheme.onPrimaryContainer
         state.phase == Phase.Error -> MaterialTheme.colorScheme.onErrorContainer
         state.phase == Phase.NeedsPairing -> MaterialTheme.colorScheme.onTertiaryContainer
@@ -153,6 +165,7 @@ private fun StatusHero(
                         Icon(
                             when {
                                 firewallDown -> Icons.Rounded.ErrorOutline
+                                paused -> Icons.Rounded.Pause
                                 state.phase == Phase.Running -> Icons.Rounded.CheckCircle
                                 state.phase == Phase.Error -> Icons.Rounded.ErrorOutline
                                 state.phase == Phase.NeedsPairing -> Icons.Outlined.Link
@@ -166,7 +179,11 @@ private fun StatusHero(
                     }
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(
-                            if (firewallDown) "Firewall is not listening" else phaseTitle(state.phase),
+                            when {
+                                firewallDown -> "Firewall is not listening"
+                                paused -> "Firewall is paused"
+                                else -> phaseTitle(state.phase)
+                            },
                             style = MaterialTheme.typography.headlineSmall,
                             fontWeight = FontWeight.SemiBold,
                             color = onContainer,
@@ -222,49 +239,76 @@ private fun StatusHero(
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    // The daemon is only up while the user wants it: a stop is
-                    // reachable in every phase that owns the service.
-                    if (state.phase != Phase.Idle && state.phase != Phase.Stopped) {
+                    // D22: in firewall mode Pause and Resume are the main control and
+                    // the leftmost button. They close and reopen only the VPN listener,
+                    // so they need neither the system adb nor Wi-Fi the way a Stop
+                    // followed by a Start does. Stop stays as the secondary CTA.
+                    if (state.phase == Phase.Running && state.firewall.enabled) {
+                        if (paused) {
+                            Button(onClick = onResume) {
+                                Icon(Icons.Rounded.PlayArrow, contentDescription = null)
+                                Text("Resume", modifier = Modifier.padding(start = 8.dp))
+                            }
+                        } else {
+                            Button(onClick = onPause) {
+                                Icon(Icons.Rounded.Pause, contentDescription = null)
+                                Text("Pause", modifier = Modifier.padding(start = 8.dp))
+                            }
+                        }
+                        FilledTonalIconButton(onClick = onRestart) {
+                            Icon(Icons.Rounded.Refresh, contentDescription = "Restart")
+                        }
+                        FilledTonalButton(onClick = onStart) {
+                            Text("Re-check")
+                        }
                         FilledTonalIconButton(onClick = onStop) {
                             Icon(Icons.Rounded.Stop, contentDescription = "Stop")
                         }
-                    }
-                    when (state.phase) {
-                        Phase.Running -> {
-                            FilledTonalIconButton(onClick = onRestart) {
-                                Icon(Icons.Rounded.Refresh, contentDescription = "Restart")
-                            }
-                            Button(onClick = onStart) {
-                                Text("Re-check")
+                    } else {
+                        // The daemon is only up while the user wants it: a stop is
+                        // reachable in every phase that owns the service.
+                        if (state.phase != Phase.Idle && state.phase != Phase.Stopped) {
+                            FilledTonalIconButton(onClick = onStop) {
+                                Icon(Icons.Rounded.Stop, contentDescription = "Stop")
                             }
                         }
-                        Phase.NeedsPairing -> {
-                            Button(onClick = onPair) {
-                                Text("Pair now")
+                        when (state.phase) {
+                            Phase.Running -> {
+                                FilledTonalIconButton(onClick = onRestart) {
+                                    Icon(Icons.Rounded.Refresh, contentDescription = "Restart")
+                                }
+                                Button(onClick = onStart) {
+                                    Text("Re-check")
+                                }
                             }
-                            FilledTonalButton(onClick = onSetup) {
-                                Text("Retry")
+                            Phase.NeedsPairing -> {
+                                Button(onClick = onPair) {
+                                    Text("Pair now")
+                                }
+                                FilledTonalButton(onClick = onSetup) {
+                                    Text("Retry")
+                                }
                             }
-                        }
-                        Phase.Error -> {
-                            Button(onClick = onStart) {
-                                Text("Try again")
+                            Phase.Error -> {
+                                Button(onClick = onStart) {
+                                    Text("Try again")
+                                }
                             }
-                        }
-                        Phase.Deploying, Phase.Pairing -> {
-                            FilledTonalButton(onClick = onSetup, enabled = false) {
-                                Text("Working…")
+                            Phase.Deploying, Phase.Pairing -> {
+                                FilledTonalButton(onClick = onSetup, enabled = false) {
+                                    Text("Working…")
+                                }
                             }
-                        }
-                        Phase.Stopped -> {
-                            Button(onClick = onStart) {
-                                Icon(Icons.Rounded.PlayArrow, contentDescription = null)
-                                Text("Start", modifier = Modifier.padding(start = 8.dp))
+                            Phase.Stopped -> {
+                                Button(onClick = onStart) {
+                                    Icon(Icons.Rounded.PlayArrow, contentDescription = null)
+                                    Text("Start", modifier = Modifier.padding(start = 8.dp))
+                                }
                             }
-                        }
-                        Phase.Idle -> {
-                            Button(onClick = onSetup) {
-                                Text("Set up")
+                            Phase.Idle -> {
+                                Button(onClick = onSetup) {
+                                    Text("Set up")
+                                }
                             }
                         }
                     }

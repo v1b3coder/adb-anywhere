@@ -4,6 +4,33 @@ All notable changes to ADB Anywhere are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases use
 semantic versioning once the project leaves 0.x.
 
+## Unreleased
+
+### Added
+
+- **Pause** and **Resume** for firewall mode. Pause closes the firewall relay and keeps
+  the custom adb running on loopback, so nothing on the network answers while the app
+  keeps its own channel to the daemon. Resume rebinds the relay against the same daemon,
+  so it needs neither Android's adb nor Wi-Fi and works on mobile data — the recovery a
+  Stop followed by a Start does not have. In firewall mode Pause and Resume are the main
+  action on Home and in the ongoing notification; Stop stays as the secondary CTA.
+
+### Changed
+
+- The lifecycle is one persisted value with three states — started, paused, stopped —
+  instead of a start/stop boolean. A Start or Restart keeps a paused firewall closed, the
+  watchdog and a network change never reopen it, and a paused app redeploys the daemon
+  loopback-only after a reboot.
+- A firewall mode change clears a pause, and the Settings switch only stores the mode
+  while the app is stopped.
+
+### Fixed
+
+- Changing a setting no longer starts the daemon: the firewall mode switch used to set
+  the "user wants running" intent, so a stopped app came back on.
+- An action that does not own the lifecycle (a log refresh, a prompt answer) no longer
+  leaves a stopped app running as a foreground service with an ongoing notification.
+
 ## 0.10.0 — 2026-11-12
 
 Security-hardening release. The daemon's app channel is now a pinned TLS channel
