@@ -182,7 +182,7 @@ private fun StatusHero(
                         Text(
                             when {
                                 firewallDown -> "Firewall is not listening"
-                                paused -> "Firewall is paused"
+                                paused -> "ADB is paused"
                                 else -> phaseTitle(state.phase)
                             },
                             style = MaterialTheme.typography.headlineSmall,

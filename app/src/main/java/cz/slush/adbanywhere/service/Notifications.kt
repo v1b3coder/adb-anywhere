@@ -20,7 +20,7 @@ object Notifications {
 /** The relay line in the ongoing notification. */
 internal fun firewallStatusLine(firewall: FirewallState): String =
     when {
-        firewall.paused -> "Firewall: paused"
+        firewall.paused -> "Firewall: paused, nothing exposed"
         firewall.listening -> {
             val sessions = firewall.activeSessions
             "Firewall: $sessions ${if (sessions == 1) "session" else "sessions"}"

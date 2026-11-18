@@ -2370,8 +2370,8 @@ class ControlService : Service() {
         const val ACTION_RESUME_FIREWALL = "cz.slush.adbanywhere.RESUME_FIREWALL"
         const val ACTION_STOP = "cz.slush.adbanywhere.STOP"
         private const val PAUSED_MESSAGE =
-            "Firewall is paused. The custom adb keeps running on loopback; Resume reopens " +
-                "the VPN listener."
+            "The firewall relay is closed, so nothing on the network is exposed. " +
+                "The custom adb keeps running on loopback; Resume reopens it."
         private const val NETWORK_SETTLE_MS = 1_500L
         private const val USB_STATE = "android.hardware.usb.action.USB_STATE"
         private const val SYSTEM_ADB_WAIT_MS = 30_000L

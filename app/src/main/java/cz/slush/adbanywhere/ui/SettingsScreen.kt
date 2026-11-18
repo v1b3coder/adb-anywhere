@@ -95,7 +95,7 @@ fun SettingsScreen(
                     onCheckedChange = onToggleFirewall,
                     description = "Adds a proxy on the VPN port, IP and app allowlists, " +
                         "call policy and an audit log. The Firewall tab appears when this is on. " +
-                        "Pause on Home closes the proxy without stopping the custom adb.",
+                        "Pause on Home closes the VPN port without stopping the custom adb.",
                 )
             }
         }

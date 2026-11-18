@@ -139,10 +139,11 @@ fun FirewallScreen(
         item {
             SectionCard("Status") {
                 if (state.firewall.paused) {
-                    KeyValueRow("Listener", "paused")
+                    KeyValueRow("Listener", "paused, VPN port closed")
                     Text(
-                        "The firewall is paused: the custom adb runs on loopback only and the " +
-                            "VPN port is closed. Resume on Home reopens it without a new setup.",
+                        "The firewall relay is closed, so nothing on the network is exposed. " +
+                            "The custom adb runs on loopback only; Resume on Home reopens the " +
+                            "port without a new setup.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

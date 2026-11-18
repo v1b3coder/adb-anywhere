@@ -602,8 +602,8 @@ calls `adb tcpip` and never moves to another port silently.
 - The bottom bar shows `Firewall` only while the switch is on. If the switch is
   turned off while the tab is open, the UI returns to Home.
 - `FirewallScreen` sections:
-  - **Status**: listener address (or `paused`), active sessions, pending prompts,
-    last error.
+  - **Status**: listener address (or `paused, VPN port closed`), active sessions,
+    pending prompts, last error.
   - **IP allowlist**: switch, list, add dialog (`a.b.c.d` or `a.b.c.d/n`), delete;
     each entry shows its last accepted connection as a relative age.
   - **App allowlist**: switch, selected apps, searchable picker with a warning
@@ -626,7 +626,8 @@ calls `adb tcpip` and never moves to another port silently.
 - `RuleEditor` is a modal screen with field rows, lock toggles, action selector,
   preview and save.
 - The ongoing notification adds one line: `Firewall: 1 session`,
-  `Firewall: 2 sessions`, `Firewall: paused` or `Firewall: VPN is down`. `sessions`
+  `Firewall: 2 sessions`, `Firewall: paused, nothing exposed` or
+  `Firewall: VPN is down`. `sessions`
   is the number of open TCP connections accepted by the relay, not the number of ADB
   calls or authenticated devices. Prompts are foreground dialogs, so the notification
   does not count them. With the firewall on, the notification also carries Pause

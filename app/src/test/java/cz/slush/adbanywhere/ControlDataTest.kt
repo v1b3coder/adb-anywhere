@@ -140,7 +140,7 @@ class ControlDataTest {
             firewallStatusLine(FirewallState(enabled = true)),
         )
         assertEquals(
-            "Firewall: paused",
+            "Firewall: paused, nothing exposed",
             firewallStatusLine(FirewallState(enabled = true, paused = true)),
         )
     }
