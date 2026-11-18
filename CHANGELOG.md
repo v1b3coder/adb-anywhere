@@ -17,6 +17,12 @@ semantic versioning once the project leaves 0.x.
 
 ### Changed
 
+- A daemon that already matches is adopted instead of killed and restarted (D23). A
+  process restart, a boot, an app update that ships the same binary, a re-check and a
+  repeated Start now keep the running daemon, so they no longer open the window in
+  which the old daemon is gone and only the system adb could bring it back — the window
+  that left a phone on mobile data with no reachable adb. A stale binary, a port or mode
+  change, a legacy migration, an explicit Restart and a key revocation still restart it.
 - The lifecycle is one persisted value with three states — started, paused, stopped —
   instead of a start/stop boolean. A Start or Restart keeps a paused firewall closed, the
   watchdog and a network change never reopen it, and a paused app redeploys the daemon

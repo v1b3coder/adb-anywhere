@@ -53,6 +53,28 @@ object SetupPolicy {
     fun retryable(error: Throwable): Boolean = error !is DaemonPortHeldException
 
     /**
+     * D23: whether a daemon that answered the pinned probe is adopted instead of
+     * restarted. Adoption needs nothing about it to change: no explicit restart, no
+     * port or mode change, no foreign holder of the VPN port and no legacy daemon to
+     * migrate. The caller adds the two checks it owns: the probe verified this
+     * process's daemon, and the binary on the device is this build's.
+     *
+     * The kill and the start are one detached script with no way back if the new
+     * daemon fails: outside the daemon's own loopback channel the only recovery is the
+     * system adbd, and mobile data does not have it (§7). Adoption is therefore the
+     * default for a process restart and an update that ships the same binary.
+     */
+    fun adoptionCandidate(
+        forceRestart: Boolean,
+        portsChanged: Boolean,
+        vpnListenerChanged: Boolean,
+        firewallChanged: Boolean,
+        vpnPortBusy: Boolean,
+        legacy: Boolean,
+    ): Boolean = !forceRestart && !portsChanged && !vpnListenerChanged &&
+        !firewallChanged && !vpnPortBusy && !legacy
+
+    /**
      * Whether a pairing reply from the notification is accepted. The reply
      * action is a mutable PendingIntent that any app with notification access
      * can fire, also after the notification is gone, so only a reply to a

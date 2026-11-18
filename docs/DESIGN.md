@@ -151,6 +151,7 @@ These are facts from AOSP `main`, not assumptions.
 | D21 | Test hooks | The end-to-end hooks live in a debug-only receiver protected by `android.permission.DUMP`, which only the shell user holds. The exported launcher activity reads no intent extras |
 | D19 | Ownership | Every value has one owner. The UI shows only the state its component publishes: the System adb card reads the system adbd's state, the Ports card reads the app's ports, and a probe names the owner it found. A persisted config has one writer and one read-modify-write entry point. A platform read runs off the UI thread, and the UI shows an explicit loading state. The UsageStats appop is checked before the app allowlist is enabled, and a revoked appop clears the foreground so the module fails closed. The app's own tooling is not exempt from the call policy |
 | D22 | Lifecycle intent | One persisted value with three states: `Running`, `Paused`, `Stopped` (`Prefs.lifecycle`, device-protected, committed synchronously). It is the only lifecycle intent; `userWantsRunning` and `firewallPaused` are derived from it, and only an explicit Start, Restart, pairing, Pause, Resume or Stop writes it. A settings change, a boot, an update, a sticky restart, a network change, the watchdog and a side-effect intent never do. `Paused` exists in firewall mode only: the patched `adbd` keeps its loopback-only listener, the relay is closed and no endpoint is published. Resume rebinds only the relay, so it needs neither the system adbd nor Wi-Fi; Start and Restart keep a pause instead of reopening the VPN listener. Stop is the full teardown and clears the pause. In firewall mode Home and the ongoing notification carry Pause and Resume as the primary control, with Stop as the secondary CTA |
+| D23 | Daemon adoption | A daemon that answers the pinned probe is adopted, not killed and restarted, when nothing about it has to change: the binary on the device is byte-identical to the one this build ships (SHA-256), the persisted mode and ports match the running listener set, nothing holds the VPN port, no legacy daemon has to be migrated, and the intent is not an explicit restart, revocation or mode change. A process restart, a boot, an update, a re-check and a repeated Start therefore keep the running daemon. The kill and the start are one detached script with no way back if the new daemon fails, and outside the daemon's own loopback channel the only recovery is the system adbd, which mobile data does not have |
 
 ## 6. Architecture
 
@@ -450,7 +451,9 @@ Start:
    its existing listeners, then the Wi-Fi fallback; prove the endpoint (I16).
 4. Deploy the patched `adbd` with the listener set for the current mode and verify
    loopback through the pinned channel (and that the VPN port is bound when the
-   firewall is off).
+   firewall is off). A daemon that already matches is adopted instead of restarted
+   (D23), so a re-check, a boot or an app update that ships the same binary never
+   touches it.
 5. Start the relay and verify the VPN listener (when the firewall is on and not
    paused).
 6. Turn the system wireless debugging off. This is the last step: it removes the
@@ -510,16 +513,20 @@ system adbd has no TCP listener, so there is nothing to monitor or turn off.
    reboot, a sticky restart and the watchdog all respect it, and an intent that
    does not own the lifecycle removes the foreground service again. Only an
    explicit Start, Restart or pairing may turn the system adb on (D5).
-4. Start finds every vendored adbd through `ps` by its `--listen` argument
+4. A daemon that answers the pinned probe is adopted when nothing about it has to
+   change: the same binary hash, the same mode and ports, no legacy migration, no
+   foreign holder, and no explicit restart or revocation (D23). Adopting rewrites the
+   key files and verifies the listeners; it never kills the daemon.
+5. A (re)start finds every vendored adbd through `ps` by its `--listen` argument
    (`/proc` as the fallback), kills it, waits for it to disappear and only then
    starts its own. A detached restart from an earlier process is waited for first.
    This needs no lock and no adbd change; a survivor aborts the start instead of
    leaving two daemons.
-5. Opening the app while it runs re-checks the daemon; it never overrides a stop,
+6. Opening the app while it runs re-checks the daemon; it never overrides a stop,
    never writes `ADB_ENABLED` and never retries a failure that waits for the user.
-6. Stop takes the setup mutex, so a stop during a deployment waits for the
+7. Stop takes the setup mutex, so a stop during a deployment waits for the
    deployment and then stops the daemon; the loopback port confirms the stop.
-7. Key and settings changes are stored immediately and applied on the next start
+8. Key and settings changes are stored immediately and applied on the next start
    while stopped. A settings change never starts the daemon.
 
 ### Pause and resume

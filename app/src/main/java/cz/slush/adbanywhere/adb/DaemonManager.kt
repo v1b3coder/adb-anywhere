@@ -64,6 +64,19 @@ class DaemonManager(private val context: Context, private val prefs: cz.slush.ad
         AppLog.info("adb", "binary installed (abi=$abi, ${bytes.size} bytes)")
     }
 
+    /**
+     * D23: true when the daemon binary on the device is byte-identical to the one this
+     * build ships, so a verified daemon started from it runs this build's code. An
+     * unreadable hash is a mismatch: unknown is never adopted.
+     */
+    fun binaryCurrent(shell: Shell): Boolean {
+        val abi = abi() ?: return false
+        val remote = shell.sha256(binaryPath) ?: return false
+        val bytes = runCatching { context.assets.open("adbd/$abi/adbd").use { it.readBytes() } }
+            .getOrNull() ?: return false
+        return remote == sha256(bytes)
+    }
+
     /** What the daemon must be started with; built by the service from its keys. */
     class Material(
         val daemonKey: AndroidPubKey.Key,

@@ -204,12 +204,10 @@ class ControlService : Service() {
                 // start.  promoteForeground() and the stop cleanup share
                 // lifecycleLock and the stop checks userWantsRunning under it.
                 promoteForeground()
-                // A fresh process or a failed setup can inherit a daemon from a
-                // previous run. Kill it and start this process's own daemon; a
-                // running daemon is already ours and is only re-checked.
-                val forceRestart = ControlBus.state.value.phase in
-                    setOf(Phase.Idle, Phase.Stopped, Phase.Error)
-                scope.launch { setup(forceRestart = forceRestart, userInitiated = true) }
+                // A daemon that survived a previous process is adopted when it is this
+                // build's binary and already has the right listener set; only a stale
+                // binary, a port change or a mode change restarts it (D23).
+                scope.launch { setup(userInitiated = true) }
             }
             // Opening the app re-checks a daemon the user wants running. It is not
             // a Start: it never writes ADB_ENABLED and never clears a failure
@@ -222,9 +220,7 @@ class ControlService : Service() {
                     ControlBus.update { it.copy(phase = Phase.Error, error = prefs.lastError, message = "") }
                 } else {
                     promoteForeground()
-                    val forceRestart = ControlBus.state.value.phase in
-                        setOf(Phase.Idle, Phase.Stopped, Phase.Error)
-                    scope.launch { setup(forceRestart = forceRestart) }
+                    scope.launch { setup() }
                 }
             }
             // Keys and settings are persisted either way; a stopped app applies them
@@ -397,10 +393,10 @@ class ControlService : Service() {
             return false
         }
         AppLog.info("service", "resuming after a process restart")
-        // The daemon that survived the process kill is not this process's own.
-        // awaitRestartScripts() makes the forced restart safe by waiting for a
-        // detached restart from the previous process to finish first.
-        scope.launch { setup(forceRestart = true) }
+        // D23: the daemon that survived the process kill is adopted when it is this
+        // build's binary with the right listener set; setup() restarts it only when
+        // something about it has to change.
+        scope.launch { setup() }
         return true
     }
 
@@ -696,9 +692,20 @@ class ControlService : Service() {
                 val vpnChanged = vpnIp != previous.vpnIp
                 val portsChanged = prefs.loopbackPort != previous.loopbackPort ||
                     prefs.vpnPort != previous.vpnPort
-                val restart = forceRestart || !daemonAlive || portsChanged ||
-                    (exposeVpn && vpnChanged) || firewallChanged || vpnPortBusy ||
-                    legacyShell != null
+                // D23: adopt the verified daemon when nothing about it has to change.
+                // The binary hash comes last, so a restart that is already required
+                // costs no hash of the whole binary.
+                val adopt = daemonAlive &&
+                    SetupPolicy.adoptionCandidate(
+                        forceRestart = forceRestart,
+                        portsChanged = portsChanged,
+                        vpnListenerChanged = exposeVpn && vpnChanged,
+                        firewallChanged = firewallChanged,
+                        vpnPortBusy = vpnPortBusy,
+                        legacy = legacyShell != null,
+                    ) &&
+                    daemon.binaryCurrent(shell)
+                val restart = !adopt
                 // What this attempt starts or restarts is what a later failure
                 // may stop; a daemon it leaves untouched stays.
                 daemonStarted = !daemonAlive || restart
@@ -706,7 +713,7 @@ class ControlService : Service() {
                     "setup",
                     "deploy: adbAlive=$daemonAlive vpnChanged=$vpnChanged " +
                         "portsChanged=$portsChanged firewallChanged=$firewallChanged " +
-                        "vpnPortBusy=$vpnPortBusy restart=$restart",
+                        "vpnPortBusy=$vpnPortBusy adopt=$adopt restart=$restart",
                 )
                 if (daemonAlive && !restart) {
                     // No key was revoked: the daemon reloads the key file on the

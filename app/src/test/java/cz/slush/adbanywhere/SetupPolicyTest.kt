@@ -84,4 +84,39 @@ class SetupPolicyTest {
         assertFalse(SetupPolicy.pairingReplyAccepted(now - SetupPolicy.PAIRING_REPLY_WINDOW_MS - 1, now))
         assertFalse(SetupPolicy.pairingReplyAccepted(now + 60_000, now))
     }
+
+    private fun adoptable(
+        forceRestart: Boolean = false,
+        portsChanged: Boolean = false,
+        vpnListenerChanged: Boolean = false,
+        firewallChanged: Boolean = false,
+        vpnPortBusy: Boolean = false,
+        legacy: Boolean = false,
+    ) = SetupPolicy.adoptionCandidate(
+        forceRestart = forceRestart,
+        portsChanged = portsChanged,
+        vpnListenerChanged = vpnListenerChanged,
+        firewallChanged = firewallChanged,
+        vpnPortBusy = vpnPortBusy,
+        legacy = legacy,
+    )
+
+    /**
+     * D23: a process restart, a boot and an update that ships the same binary adopt the
+     * running daemon. The kill and the start are one detached script with no way back
+     * if the new daemon fails, and on mobile data the only recovery would be the system
+     * adbd, which is not reachable there. Every reason to change the daemon wins.
+     */
+    @Test
+    fun aDaemonIsAdoptedOnlyWhenNothingAboutItChanges() {
+        assertTrue(adoptable())
+        assertFalse(adoptable(forceRestart = true))
+        assertFalse(adoptable(portsChanged = true))
+        assertFalse(adoptable(vpnListenerChanged = true))
+        assertFalse(adoptable(firewallChanged = true))
+        assertFalse(adoptable(vpnPortBusy = true))
+        assertFalse(adoptable(legacy = true))
+        // The caller adds the two checks that need the device: the pinned probe
+        // verified this process's daemon, and the binary hash matches this build.
+    }
 }
