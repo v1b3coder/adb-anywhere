@@ -22,6 +22,14 @@ semantic versioning once the project leaves 0.x.
 
 ### Changed
 
+- The firewall audit log reads like a sentence instead of an event dump: it names the
+  peer, the foreground app that failed the app allowlist (or that the screen is off or
+  the phone is locked), the command or transfer, the reason and the matched rule, with
+  a timestamp. One call is one line — the redundant `call_open` row is gone — and the
+  log appends at the bottom, following new decisions only while it is scrolled to the
+  bottom. The app and adb log tabs re-arm their tail-follow when you return to the
+  bottom, and a connect failure no longer logs `failed: null`.
+
 - A daemon that already matches is adopted instead of killed and restarted (D23). A
   process restart, a boot, an app update that ships the same binary, a re-check and a
   repeated Start now keep the running daemon, so they no longer open the window in

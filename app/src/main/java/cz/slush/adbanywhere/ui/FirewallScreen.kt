@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -56,8 +57,10 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import cz.slush.adbanywhere.data.AutoPause
+import cz.slush.adbanywhere.data.DeveloperKey
 import cz.slush.adbanywhere.firewall.AppEntry
 import cz.slush.adbanywhere.firewall.AuditEvent
+import cz.slush.adbanywhere.firewall.AuditText
 import cz.slush.adbanywhere.firewall.CallRule
 import cz.slush.adbanywhere.firewall.FirewallConfig
 import cz.slush.adbanywhere.firewall.UsageAccess
@@ -72,6 +75,7 @@ fun FirewallScreen(
     state: ControlState,
     config: FirewallConfig,
     audit: List<AuditEvent>,
+    keys: List<DeveloperKey>,
     autoPauseEnabled: Boolean,
     autoPauseTimeoutMs: Long,
     onToggleAutoPause: (Boolean) -> Unit,
@@ -104,6 +108,7 @@ fun FirewallScreen(
     var editing by remember { mutableStateOf<CallRule?>(null) }
     var apps by remember { mutableStateOf<List<AppEntry>?>(null) }
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    val keyLabels = remember(keys) { keys.associate { it.fingerprint to it.label } }
     // The app allowlist needs the UsageStats appop, so the switch is only
     // available when it is granted; a revoked appop fails closed.
     val context = LocalContext.current
@@ -454,8 +459,8 @@ fun FirewallScreen(
                     TextButton(
                         onClick = {
                             onCopyAudit(
-                                audit.takeLast(30).joinToString("\n") { event ->
-                                    "${event.event} ${event.service} ${event.peer}".trim()
+                                audit.takeLast(50).joinToString("\n") { event ->
+                                    AuditText.line(event, keyLabels, config.callRules)
                                 },
                             )
                         },
@@ -467,13 +472,12 @@ fun FirewallScreen(
                     onCheckedChange = onToggleRedactAudit,
                     description = "Redact field values",
                 )
-                audit.takeLast(30).reversed().forEach { event ->
-                    Text(
-                        "${event.event} ${event.service} ${event.peer}".trim(),
-                        style = MaterialTheme.typography.bodySmall,
-                        fontFamily = FontFamily.Monospace,
-                    )
-                }
+                AuditLogList(
+                    events = audit,
+                    keyLabels = keyLabels,
+                    rules = config.callRules,
+                    modifier = Modifier.fillMaxWidth().height(320.dp),
+                )
             }
         }
     }

@@ -96,7 +96,7 @@ class SystemAdb(
             AppLog.warn("system", "127.0.0.1:$port requires pairing")
             return false
         } catch (e: Exception) {
-            AppLog.warn("system", "connect 127.0.0.1:$port failed: ${e.message}")
+            AppLog.warn("system", "connect 127.0.0.1:$port failed: ${e.message ?: e.javaClass.simpleName}")
             return false
         }
         if (!ShellProof.verify(context, Shell(connected))) {

@@ -210,6 +210,7 @@ fun AppRoot(viewModel: AppViewModel) {
                     state = state,
                     config = firewall,
                     audit = audit,
+                    keys = keys,
                     autoPauseEnabled = autoPauseEnabled,
                     autoPauseTimeoutMs = autoPauseTimeoutMs,
                     onToggleAutoPause = viewModel::setAutoPauseEnabled,

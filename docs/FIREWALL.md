@@ -508,18 +508,26 @@ Every event is a JSON line:
 | Event | When |
 |---|---|
 | `connection_open` | TCP accepted |
-| `ip_denied` | Peer outside the allowlist |
-| `app_denied` | Target app not foreground, or screen off |
+| `ip_denied` | Peer rejected before auth: not in the IP allowlist, not routed through the VPN, or a local address. `detail` says which |
+| `app_denied` | The app allowlist refused the peer; `detail` names the foreground package, or says the screen is off, the phone is locked or Usage access is missing |
 | `auth_ok` / `auth_unknown` | The server accepted the transport (`auth_ok`, with the fingerprint of the paired key whose signature the relay verified over the server's token, or empty) or the client offered an unlisted public key (`auth_unknown`) |
-| `call_open` | `A_OPEN` parsed |
-| `call_allowed` / `call_denied` / `call_prompted` / `call_timeout` | Decision |
-| `stream_closed` | Both sides closed; bytes and duration |
-| `proxy_error` | Bind, accept, upstream or relay failure |
+| `call_allowed` / `call_denied` | One decision per `A_OPEN` or sync request, with the service, fields and rule |
+| `call_prompted` / `call_timeout` | The call was held for approval and either answered elsewhere (`call_prompted`) or timed out |
+| `proxy_error` | Bind, accept, upstream or relay failure; `detail` names the cause |
+| `audit_suppressed` | Rate-limited unauthenticated events were dropped; `detail` has the count |
+
+There is no separate `call_open` row: the decision line carries the same
+service, fields and peer, and one call costs one line. The Firewall tab renders the
+log as sentences (peer, foreground app, command or transfer, reason and time),
+oldest first with the newest at the bottom. The list follows new decisions only
+while it is scrolled to the bottom; scrolling up stops the follow until the user
+returns to the end. Copy writes the same human lines with a full timestamp; the
+JSONL file keeps the raw events for support.
 
 Storage is an append-only `audit.jsonl` in device-protected storage, rotated at
 256 KiB with four files. The UI keeps the last 500 events in memory and exposes a
 `StateFlow`. Events a peer causes before ADB key auth (`connection_open`,
-`ip_denied`, `app_denied`, pre-auth `call_open`/`call_denied`, `auth_unknown`,
+`ip_denied`, `app_denied`, pre-auth `call_denied`, `auth_unknown`,
 pre-auth `proxy_error`) share a token bucket of 50 events refilled at one per
 6 s; the rest are counted and the count is recorded as `audit_suppressed` with
 the next event. Anyone the VPN routes can connect, so without the limit an
@@ -624,6 +632,9 @@ calls `adb tcpip` and never moves to another port silently.
   - **Call policy**: switch, rule list, default action, prompt timeout,
     interactive-shell capability, audit log link; each rule shows the last call it
     matched as a relative age.
+  - **Audit log**: redact switch, clear and copy, and a newest-at-the-bottom feed
+    that names the peer, the foreground app that failed the allowlist, the command
+    or transfer and the reason; it follows new decisions only at the bottom.
 - Last-use timestamps are persisted in the firewall configuration, not in the audit
   log. Clearing the audit log does not clear them.
 - `CallPromptOverlay` is a `TYPE_APPLICATION_OVERLAY` window hosted by

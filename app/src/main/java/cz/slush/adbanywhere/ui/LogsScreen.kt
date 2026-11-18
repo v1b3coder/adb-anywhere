@@ -50,16 +50,18 @@ fun LogsScreen(
     val text = if (tab == 0) appLogs else daemonLogs
     val vertical = rememberScrollState()
     val horizontal = rememberScrollState()
-    // Follow the newest entry until the user scrolls up, then stay put.
+    // Follow the newest entry until the user scrolls up, then stay put; returning
+    // to the bottom re-arms it.
     var follow by remember { mutableStateOf(true) }
+    LaunchedEffect(vertical) {
+        snapshotFlow { vertical.isScrollInProgress }.collect { scrolling ->
+            if (!scrolling) follow = vertical.value >= vertical.maxValue - 8
+        }
+    }
+    LaunchedEffect(tab) { follow = true }
     LaunchedEffect(text) {
         snapshotFlow { vertical.maxValue }.collect { max ->
             if (follow) vertical.scrollTo(max)
-        }
-    }
-    LaunchedEffect(vertical) {
-        snapshotFlow { vertical.value }.collect {
-            if (vertical.value < vertical.maxValue - 8) follow = false
         }
     }
 

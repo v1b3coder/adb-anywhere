@@ -288,7 +288,8 @@ class AdbRelay(
         val localId = frame.arg0
         val service = AdbFrameCodec.service(frame)
         val call = AdbCallParser.parse(service)
-        record(AuditEvent(event = "call_open", peer = peer, service = call.service, fields = call.fields))
+        // No separate call_open row: the decision below carries the same service,
+        // fields and peer, and one call should cost one line.
         if (!authenticated) {
             deny(localId, call, "unauthenticated")
             return

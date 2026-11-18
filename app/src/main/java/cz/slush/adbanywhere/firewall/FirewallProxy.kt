@@ -190,20 +190,27 @@ class FirewallProxy(
             if (config.ipAllowlistEnabled) {
                 val allowlist = IpAllowlist(config.ipAllowlist)
                 if (!allowlist.allows(peer, own)) {
-                    preAuth(AuditEvent(event = "ip_denied", peer = peer.hostAddress ?: ""))
+                    preAuth(
+                        AuditEvent(
+                            event = "ip_denied",
+                            peer = peer.hostAddress ?: "",
+                            detail = "not in the IP allowlist",
+                        ),
+                    )
                     runCatching { client.close() }
                     continue
                 }
                 allowlist.matching(peer).forEach { onIpUsed(it.format()) }
             }
             if (config.appAllowlistEnabled) {
-                val foreground = monitor?.state?.value?.foreground
+                val state = monitor?.state?.value
+                val foreground = state?.foreground
                 if (foreground == null || foreground !in config.appAllowlist) {
                     preAuth(
                         AuditEvent(
                             event = "app_denied",
                             peer = peer.hostAddress ?: "",
-                            detail = "target app is not foreground",
+                            detail = appDeniedReason(state, foreground),
                         ),
                     )
                     runCatching { client.close() }
@@ -241,6 +248,16 @@ class FirewallProxy(
 
     /** An event a peer caused before ADB key auth; rate limited by the audit log. */
     private fun preAuth(event: AuditEvent) = audit.record(event, unauthenticated = true)
+
+    /** Why the app allowlist refused a peer, in the audit log's words. */
+    private fun appDeniedReason(state: ForegroundState?, foreground: String?): String = when {
+        foreground != null -> "foreground=$foreground"
+        state == null -> "no foreground app"
+        !state.usageAvailable -> "usage access missing"
+        !state.interactive -> "screen off"
+        state.locked -> "phone locked"
+        else -> "no foreground app"
+    }
 
     private fun markActivity() = activityTicks.update { it + 1 }
 

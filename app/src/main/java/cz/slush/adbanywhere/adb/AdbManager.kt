@@ -49,7 +49,7 @@ class AdbManager(
             AppLog.warn("system", "connect $host:$port requires pairing")
             false
         } catch (e: Exception) {
-            AppLog.warn("system", "connect $host:$port failed: ${e.message}")
+            AppLog.warn("system", "connect $host:$port failed: ${e.message ?: e.javaClass.simpleName}")
             false
         }
     }
@@ -59,7 +59,7 @@ class AdbManager(
         return try {
             pair(host, port, code)
         } catch (e: Exception) {
-            AppLog.error("pair", "pair $host:$port failed: ${e.message}", e)
+            AppLog.error("pair", "pair $host:$port failed: ${e.message ?: e.javaClass.simpleName}", e)
             false
         }
     }
