@@ -76,6 +76,8 @@ fun AppRoot(viewModel: AppViewModel) {
     val appLogs by viewModel.appLog.collectAsStateWithLifecycle()
     val diagnosticLog by viewModel.diagnosticLog.collectAsStateWithLifecycle()
     val turnSystemAdbOffOnStop by viewModel.turnSystemAdbOffOnStop.collectAsStateWithLifecycle()
+    val autoPauseEnabled by viewModel.autoPauseEnabled.collectAsStateWithLifecycle()
+    val autoPauseTimeoutMs by viewModel.autoPauseTimeoutMs.collectAsStateWithLifecycle()
     val appFingerprint by viewModel.appFingerprint.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
@@ -208,6 +210,10 @@ fun AppRoot(viewModel: AppViewModel) {
                     state = state,
                     config = firewall,
                     audit = audit,
+                    autoPauseEnabled = autoPauseEnabled,
+                    autoPauseTimeoutMs = autoPauseTimeoutMs,
+                    onToggleAutoPause = viewModel::setAutoPauseEnabled,
+                    onSetAutoPauseTimeout = viewModel::setAutoPauseTimeout,
                     onToggleIpAllowlist = viewModel::setIpAllowlistEnabled,
                     onAddIp = viewModel::addIp,
                     onRemoveIp = viewModel::removeIp,

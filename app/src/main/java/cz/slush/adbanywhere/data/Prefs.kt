@@ -225,6 +225,18 @@ class Prefs(context: Context) {
         get() = prefs.getBoolean("firewall_redact_audit", false)
         set(value) = prefs.edit().putBoolean("firewall_redact_audit", value).apply()
 
+    /**
+     * D24: close the relay after this long without an adb command. Off by default;
+     * it is the same pause the button takes, so it exists in firewall mode only.
+     */
+    var autoPauseEnabled: Boolean
+        get() = prefs.getBoolean("auto_pause_enabled", false)
+        set(value) = prefs.edit().putBoolean("auto_pause_enabled", value).apply()
+
+    var autoPauseTimeoutMs: Long
+        get() = prefs.getLong("auto_pause_timeout_ms", AutoPause.DEFAULT_MS)
+        set(value) = prefs.edit().putLong("auto_pause_timeout_ms", AutoPause.clamp(value)).apply()
+
     companion object {
         private const val LIFECYCLE = "lifecycle"
         private const val USER_WANTS_RUNNING = "user_wants_running"

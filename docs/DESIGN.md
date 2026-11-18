@@ -152,6 +152,7 @@ These are facts from AOSP `main`, not assumptions.
 | D19 | Ownership | Every value has one owner. The UI shows only the state its component publishes: the System adb card reads the system adbd's state, the Ports card reads the app's ports, and a probe names the owner it found. A persisted config has one writer and one read-modify-write entry point. A platform read runs off the UI thread, and the UI shows an explicit loading state. The UsageStats appop is checked before the app allowlist is enabled, and a revoked appop clears the foreground so the module fails closed. The app's own tooling is not exempt from the call policy |
 | D22 | Lifecycle intent | One persisted value with three states: `Running`, `Paused`, `Stopped` (`Prefs.lifecycle`, device-protected, committed synchronously). It is the only lifecycle intent; `userWantsRunning` and `firewallPaused` are derived from it, and only an explicit Start, Restart, pairing, Pause, Resume or Stop writes it. A settings change, a boot, an update, a sticky restart, a network change, the watchdog and a side-effect intent never do. `Paused` exists in firewall mode only: the patched `adbd` keeps its loopback-only listener, the relay is closed and no endpoint is published. Resume rebinds only the relay, so it needs neither the system adbd nor Wi-Fi; Start and Restart keep a pause instead of reopening the VPN listener. Stop is the full teardown and clears the pause. In firewall mode Home and the ongoing notification carry Pause and Resume as the primary control, with Stop as the secondary CTA |
 | D23 | Daemon adoption | A daemon that answers the pinned probe is adopted, not killed and restarted, when nothing about it has to change: the binary on the device is byte-identical to the one this build ships (SHA-256), the persisted mode and ports match the running listener set, nothing holds the VPN port, no legacy daemon has to be migrated, and the intent is not an explicit restart, revocation or mode change. A process restart, a boot, an update, a re-check and a repeated Start therefore keep the running daemon. The kill and the start are one detached script with no way back if the new daemon fails, and outside the daemon's own loopback channel the only recovery is the system adbd, which mobile data does not have |
+| D24 | Auto pause | An optional idle timeout takes the same Pause as the button after 1 min to 12 h without an authenticated relayed ADB frame. The clock restarts on every such frame and never on the app's own loopback channel, the watchdog or an unauthenticated peer, so only developer activity keeps the VPN port open. The timeout is a duration stored in device-protected prefs, off by default and chosen in the Firewall tab, because Pause exists in firewall mode only. It writes the one lifecycle intent, so a Resume, a Stop or a mode change clears it exactly like a manual pause |
 
 ## 6. Architecture
 
@@ -411,7 +412,8 @@ port.
    loopback-only listener set of the firewall mode, the app holds no VPN listener and
    the port is closed. `paused` is published by the service, so a relay snapshot cannot
    clear it, and it is not `firewallDown`: nothing is broken. Resume is a bind, never a
-   deployment, which is why it works on mobile data.
+   deployment, which is why it works on mobile data. Auto pause is the same state on a
+   timer: it takes the pause path, so every reader of the intent treats it identically.
 
 ### Lifecycle invariants
 
@@ -439,6 +441,7 @@ behavior is still correct.
 | I17 | Unknown is denied, and the relay judges exactly what adbd runs. The relay drops a frame for a stream it does not track or with a mismatched device id; a client close before the device's `A_OKAY` leaves a tombstone and a retired device id never binds again; it parses sync as a byte stream; a sync path with a NUL or non-UTF-8 bytes is malformed and a relative one is denied; every rule sees the normalized path; the daemon refuses a listener it cannot bind instead of retrying | A close naming another stream, two requests in one frame, or a request inside a data phase bypassed the sync policy; a close before the device's answer let a re-opened id inherit a sync stream; a NUL made the relay judge another path than adbd opened | this change |
 | I14 | A fix closes the class, not the instance. Every fix names the class of defect it closes and adds the test for the class, not only for the reported instance. | A fix closed the reported instance and left a smaller instance of the same class: a preference comparison after a port-ownership fix, a whole-config write after a writer-race fix, a nested dialog after a warning-placement fix, and a swallowed exit code after a tooling decision | `0bc537c`, `10cda0a`, `303f9aa`, `5e446cf`, `63067d5` |
 | I18 | The lifecycle intent has one writer and three states. `Prefs.lifecycle` is the only intent and `userWantsRunning`/`firewallPaused` are derived; a settings change, a boot, a sticky restart, the watchdog and a side-effect intent (a log refresh, a prompt answer) never move it, and an intent that does not own it removes the service again instead of leaving a foreground service behind. A pause is cleared only by Resume, a Stop or a mode change | A firewall toggle while stopped started the daemon; a paused app lost its pause at the next Start; a stopped app came back as a foreground service from the Logs tab | this change |
+| I19 | An idle pause is a pause, not a fourth state. The auto-pause timer reads only authenticated relay frames, never the app's own loopback channel, the watchdog or a pre-auth peer, and it takes the same pause path as the button instead of writing the intent itself. It cannot fire while the relay does not listen, and the next relay bind re-arms it | An unauthenticated peer or the app's own key checks could keep the VPN port open forever; a second lifecycle writer could leave a paused app reopened by a watchdog tick | this change |
 
 ### Start and stop order
 
@@ -550,6 +553,12 @@ system adbd has no TCP listener, so there is nothing to monitor or turn off.
    and leaves the relay closed, so Resume is ready without exposing anything. The
    redeploy has the same bootstrap requirement as a started app (§7 Boot): on mobile
    data without a plain listener it waits for Wi-Fi or USB.
+7. Auto pause is the same pause on a timer, chosen in the Firewall tab. The clock
+   restarts with every authenticated relay frame, so the app's own loopback channel,
+   the watchdog and an unauthenticated peer never keep the VPN port open; a session
+   that stays idle for the whole timeout is closed with the relay. The timer writes
+   the one intent through the pause path, so Resume, Stop and a mode change clear it
+   exactly like a manual pause, and a relay that is not listening cannot fire it.
 
 ### First run
 

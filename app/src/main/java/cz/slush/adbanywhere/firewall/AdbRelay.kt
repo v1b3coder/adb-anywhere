@@ -25,6 +25,9 @@
  * - A held stream buffers at most [MAX_HELD_BYTES]; more closes the stream.
  * - Events before authentication go through the audit log's rate limit, so an
  *   unauthenticated peer cannot rotate the audit trail away.
+ * - Only a frame after authentication is activity for the idle pause (D24):
+ *   pre-auth bytes cannot keep the relay open, and the app's loopback channel
+ *   never reaches the relay at all.
  */
 package cz.slush.adbanywhere.firewall
 
@@ -58,6 +61,8 @@ class AdbRelay(
     private val knownKeys: () -> List<KnownKey> = { emptyList() },
     private val authTimeoutMs: Long = 0L,
     private val onPromptFinished: () -> Unit = {},
+    /** An authenticated frame moved; the service times the idle pause from it (D24). */
+    private val onActivity: () -> Unit = {},
     private val onClose: () -> Unit,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -132,6 +137,7 @@ class AdbRelay(
                 // valid, so an unauthenticated peer cannot force a 1 MiB buffer.
                 val maxPayload = if (authenticated) AdbFrameCodec.MAX_PAYLOAD else AdbFrameCodec.PRE_AUTH_MAX_PAYLOAD
                 val frame = AdbFrameCodec.read(clientIn, maxPayload) ?: break
+                if (authenticated) onActivity()
                 when (frame.command) {
                     AdbFrameCodec.A_OPEN -> handleOpen(frame)
                     AdbFrameCodec.A_AUTH -> handleAuth(frame)
@@ -177,6 +183,7 @@ class AdbRelay(
         try {
             while (true) {
                 val frame = AdbFrameCodec.read(serverIn) ?: break
+                if (authenticated) onActivity()
                 when (frame.command) {
                     AdbFrameCodec.A_CNXN -> {
                         authenticated = true

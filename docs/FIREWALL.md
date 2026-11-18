@@ -576,6 +576,13 @@ Lifecycle changes:
   `Running` and binds the relay against the same daemon; it never touches the system
   adbd, so it also works on mobile data. An occupied port or a daemon that is not
   running falls back to the full setup, which names the owner before replacing it.
+- The optional auto pause is that same pause on a timer (DESIGN D24). The relay marks
+  every authenticated relayed frame, the service restarts its wait on each mark and
+  stops the relay through the pause path when the timeout expires. The app's own
+  loopback channel, the watchdog and an unauthenticated peer never mark activity, so
+  they cannot keep the VPN port open. The timeout is a duration from 1 min to 12 h,
+  off by default and set in the Firewall tab; the ongoing notification and Home only
+  show the resulting pause.
 - A firewall mode change clears a pause: the switch is the explicit choice of mode.
   While the app is stopped the switch only stores the mode.
 - `networkChanged()` rebinds the relay when the VPN address changes and stops it
@@ -604,6 +611,10 @@ calls `adb tcpip` and never moves to another port silently.
 - `FirewallScreen` sections:
   - **Status**: listener address (or `paused, VPN port closed`), active sessions,
     pending prompts, last error.
+  - **Auto pause**: switch, one-tap timeouts (5 min, 10 min, 30 min, 1 h, 2 h,
+    4 h) and a custom hours/minutes wheel (1 min to 12 h). It takes the same pause
+    as the button after that long without an authenticated relay frame (DESIGN
+    D24).
   - **IP allowlist**: switch, list, add dialog (`a.b.c.d` or `a.b.c.d/n`), delete;
     each entry shows its last accepted connection as a relative age.
   - **App allowlist**: switch, selected apps, searchable picker with a warning

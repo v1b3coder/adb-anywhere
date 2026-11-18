@@ -6,6 +6,8 @@ package cz.slush.adbanywhere.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -16,6 +18,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
@@ -23,6 +26,7 @@ import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -51,6 +55,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import cz.slush.adbanywhere.data.AutoPause
 import cz.slush.adbanywhere.firewall.AppEntry
 import cz.slush.adbanywhere.firewall.AuditEvent
 import cz.slush.adbanywhere.firewall.CallRule
@@ -61,11 +66,16 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun FirewallScreen(
     state: ControlState,
     config: FirewallConfig,
     audit: List<AuditEvent>,
+    autoPauseEnabled: Boolean,
+    autoPauseTimeoutMs: Long,
+    onToggleAutoPause: (Boolean) -> Unit,
+    onSetAutoPauseTimeout: (Long) -> Unit,
     onToggleIpAllowlist: (Boolean) -> Unit,
     onAddIp: (String) -> String?,
     onRemoveIp: (String) -> Unit,
@@ -90,6 +100,7 @@ fun FirewallScreen(
     var grace by remember { mutableStateOf((config.appGraceMs / 1000).toString()) }
     var timeout by remember { mutableStateOf((config.promptTimeoutMs / 1000).toString()) }
     var showApps by remember { mutableStateOf(false) }
+    var pickerOpen by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<CallRule?>(null) }
     var apps by remember { mutableStateOf<List<AppEntry>?>(null) }
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
@@ -161,6 +172,51 @@ fun FirewallScreen(
                         state.firewall.lastError,
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+        }
+
+        item {
+            SectionCard("Auto pause") {
+                SwitchRow(
+                    checked = autoPauseEnabled,
+                    onCheckedChange = onToggleAutoPause,
+                    title = "Pause when idle",
+                    description = "Closes the VPN port when no adb command arrives for " +
+                        "the chosen time. The custom adb keeps running, so Resume is " +
+                        "immediate.",
+                )
+                if (autoPauseEnabled) {
+                    val selected = AutoPause.minutesOf(autoPauseTimeoutMs)
+                    val custom = selected !in AutoPause.PRESETS_MINUTES
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        AutoPause.PRESETS_MINUTES.forEach { minutes ->
+                            FilterChip(
+                                selected = selected == minutes,
+                                onClick = { onSetAutoPauseTimeout(AutoPause.millisOf(minutes)) },
+                                label = { Text(AutoPause.label(minutes)) },
+                            )
+                        }
+                        FilterChip(
+                            selected = custom,
+                            onClick = { pickerOpen = true },
+                            label = {
+                                Text(if (custom) AutoPause.label(autoPauseTimeoutMs) else "Custom…")
+                            },
+                            leadingIcon = {
+                                Icon(Icons.Outlined.Schedule, contentDescription = null)
+                            },
+                        )
+                    }
+                    Text(
+                        "The clock restarts with every adb command. A session that stays " +
+                            "idle for the whole timeout is closed as well.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
@@ -420,6 +476,17 @@ fun FirewallScreen(
                 }
             }
         }
+    }
+
+    if (pickerOpen) {
+        AutoPausePicker(
+            timeoutMs = autoPauseTimeoutMs,
+            onDismiss = { pickerOpen = false },
+            onConfirm = { timeout ->
+                pickerOpen = false
+                onSetAutoPauseTimeout(timeout)
+            },
+        )
     }
 
     editing?.let { rule ->

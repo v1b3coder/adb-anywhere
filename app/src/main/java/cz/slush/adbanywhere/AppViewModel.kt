@@ -13,6 +13,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import cz.slush.adbanywhere.data.AndroidPubKey
 import cz.slush.adbanywhere.data.AppKeyStore
+import cz.slush.adbanywhere.data.AutoPause
 import cz.slush.adbanywhere.data.DeveloperKey
 import cz.slush.adbanywhere.data.PairingCode
 import cz.slush.adbanywhere.data.Prefs
@@ -47,6 +48,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val diagnosticLog = AppLog.enabled
     private val _turnSystemAdbOffOnStop = MutableStateFlow(prefs.turnSystemAdbOffOnStop)
     val turnSystemAdbOffOnStop: StateFlow<Boolean> = _turnSystemAdbOffOnStop
+    private val _autoPauseEnabled = MutableStateFlow(prefs.autoPauseEnabled)
+    val autoPauseEnabled: StateFlow<Boolean> = _autoPauseEnabled
+    private val _autoPauseTimeoutMs = MutableStateFlow(prefs.autoPauseTimeoutMs)
+    val autoPauseTimeoutMs: StateFlow<Long> = _autoPauseTimeoutMs
 
 
     /** The user's last explicit start or stop. Opening the app never overrides it. */
@@ -124,6 +129,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         AppLog.info("settings", "turn system adb off on stop=$enabled")
         prefs.turnSystemAdbOffOnStop = enabled
         _turnSystemAdbOffOnStop.value = enabled
+    }
+
+    /** D24: close the VPN port after this long without an adb command. */
+    fun setAutoPauseEnabled(enabled: Boolean) {
+        AppLog.info("settings", "auto pause=$enabled")
+        prefs.autoPauseEnabled = enabled
+        _autoPauseEnabled.value = enabled
+        applyIfRunning(ControlService.ACTION_APPLY_AUTO_PAUSE)
+    }
+
+    fun setAutoPauseTimeout(ms: Long) {
+        val timeout = AutoPause.clamp(ms)
+        AppLog.info("settings", "auto pause timeout=${AutoPause.label(timeout)}")
+        prefs.autoPauseTimeoutMs = timeout
+        _autoPauseTimeoutMs.value = timeout
+        applyIfRunning(ControlService.ACTION_APPLY_AUTO_PAUSE)
     }
 
     /**

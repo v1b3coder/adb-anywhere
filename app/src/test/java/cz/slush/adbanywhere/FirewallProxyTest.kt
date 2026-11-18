@@ -248,12 +248,78 @@ class FirewallProxyTest {
         }
     }
 
+    /**
+     * D24: the idle timer is authenticated adb traffic. The bind starts it, a
+     * pre-auth peer cannot hold the relay open, and every frame after auth restarts
+     * it. The app's own loopback channel never reaches this relay.
+     */
+    @Test
+    fun activityStartsAtBindAndCountsOnlyAuthenticatedFrames() = runBlocking {
+        val upstream = ServerSocket(0, 8, java.net.InetAddress.getByName("127.0.0.1"))
+        val accepted = CompletableDeferred<Socket>()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val upstreamJob = scope.launch { accepted.complete(upstream.accept()) }
+        val proxyPort = freePort()
+        val proxy = FirewallProxy(
+            scope = scope,
+            config = { FirewallConfig(enabled = true) },
+            monitor = null,
+            policy = FakePolicy(),
+            audit = AuditLog(null) { false },
+            onState = {},
+        )
+        proxy.start("127.0.0.1", proxyPort, upstream.localPort)
+        val bound = proxy.activity.value
+        assertEquals(1L, bound)
+        try {
+            Socket("127.0.0.1", proxyPort).use { client ->
+                val hello = ByteArrayOutputStream()
+                AdbFrameCodec.write(hello, AdbFrameCodec.A_CNXN, 0x01000001, 4096, "host::".toByteArray())
+                client.getOutputStream().write(hello.toByteArray())
+                client.getOutputStream().flush()
+                val server = withTimeout(3_000) { accepted.await() }
+
+                // Before the device's A_CNXN the peer is unauthenticated: its frame
+                // is refused and must not restart the idle timer.
+                val open = ByteArrayOutputStream()
+                AdbFrameCodec.write(open, AdbFrameCodec.A_OPEN, 7, 0, "shell:ls".toByteArray())
+                client.getOutputStream().write(open.toByteArray())
+                client.getOutputStream().flush()
+                assertEquals(
+                    AdbFrameCodec.A_CLSE,
+                    withTimeout(3_000) { AdbFrameCodec.read(client.getInputStream()) }!!.command,
+                )
+                assertEquals("pre-auth frames are not activity", bound, proxy.activity.value)
+
+                // The device's A_CNXN authenticates the transport and starts the clock.
+                val cnxn = ByteArrayOutputStream()
+                AdbFrameCodec.write(cnxn, AdbFrameCodec.A_CNXN, 0, 0, ByteArray(0))
+                server.getOutputStream().write(cnxn.toByteArray())
+                server.getOutputStream().flush()
+                assertNotNull(withTimeout(3_000) { AdbFrameCodec.read(client.getInputStream()) })
+                val authenticated = proxy.activity.value
+                assertTrue("authentication is activity", authenticated > bound)
+
+                val afterAuth = ByteArrayOutputStream()
+                AdbFrameCodec.write(afterAuth, AdbFrameCodec.A_OPEN, 8, 0, "shell:ls".toByteArray())
+                client.getOutputStream().write(afterAuth.toByteArray())
+                client.getOutputStream().flush()
+                assertNotNull(withTimeout(3_000) { AdbFrameCodec.read(server.getInputStream()) })
+                assertTrue("a relayed command is activity", proxy.activity.value > authenticated)
+            }
+        } finally {
+            proxy.stop()
+            upstreamJob.cancel()
+            scope.cancel()
+            upstream.close()
+        }
+    }
+
     private suspend fun awaitSessions(states: List<FirewallState>, expected: Int) {
         withTimeout(3_000) {
             while (states.lastOrNull()?.activeSessions != expected) delay(10)
         }
     }
-
     private fun freePort(): Int =
         ServerSocket(0).use { it.localPort }
 }

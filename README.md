@@ -92,6 +92,11 @@ works on mobile data. A *Stop* followed by a *Start* has to redeploy the daemon,
 that needs Android's adb once — the reason a Stop on mobile data cannot always be
 undone there.
 
+Auto pause lives in the Firewall tab: after the chosen time without an adb command,
+the app takes the same Pause. The clock restarts with every real command from a
+paired machine, so the app's own loopback channel and the watchdog never keep the
+port open; a session that stays idle for the whole timeout is closed with the relay.
+
 A fresh install waits for Set up or Start; an install that already completed setup
 keeps its last choice across an update. Stop waits for a deployment in progress to
 finish before it stops the daemon, and it reports the loopback port if the daemon is
@@ -106,11 +111,15 @@ daemon. ADB key authentication stays end-to-end.
 
 *Pause* on Home closes the VPN port without stopping the daemon: the app keeps its
 channel to the custom adb, nothing is reachable from the network, and *Resume*
-reopens the port without a new setup. Stopping the app instead tears the daemon
-down, and starting it again may need Android's adb (Wi-Fi or USB).
+reopens the port without a new setup. *Auto pause* in the Firewall tab does the same
+after an idle timeout: no adb command for the chosen time (5 min to 12 h, or a
+custom duration) closes the port on its own. Stopping the app instead tears the
+daemon down, and starting it again may need Android's adb (Wi-Fi or USB).
 
 The Firewall tab has:
 
+- **Auto pause**: closes the VPN port after a chosen time without an adb command;
+  the custom adb and the loopback channel stay up, and Resume brings the port back.
 - **IP allowlist**: only listed IPv4 addresses and CIDR ranges may connect. IPv6
   is not supported.
 - **App allowlist**: external ADB is available only while a selected app is in the

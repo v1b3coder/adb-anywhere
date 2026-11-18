@@ -14,6 +14,11 @@ semantic versioning once the project leaves 0.x.
   so it needs neither Android's adb nor Wi-Fi and works on mobile data — the recovery a
   Stop followed by a Start does not have. In firewall mode Pause and Resume are the main
   action on Home and in the ongoing notification; Stop stays as the secondary CTA.
+- **Auto pause** in the Firewall tab: after the chosen time without an adb command
+  (5 min to 12 h, or a custom duration) the app takes the same Pause as the button.
+  The clock restarts only on authenticated relay traffic, so the app's own loopback
+  channel, the watchdog and an unauthenticated peer cannot keep the VPN port open; a
+  session that stays idle for the whole timeout is closed with the relay.
 
 ### Changed
 

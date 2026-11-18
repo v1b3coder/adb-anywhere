@@ -43,6 +43,7 @@ import cz.slush.adbanywhere.adb.Shell
 import cz.slush.adbanywhere.adb.SystemAdb
 import cz.slush.adbanywhere.data.AndroidPubKey
 import cz.slush.adbanywhere.data.AppKeyStore
+import cz.slush.adbanywhere.data.AutoPause
 import cz.slush.adbanywhere.data.DaemonTlsKey
 import cz.slush.adbanywhere.data.DeveloperKey
 import cz.slush.adbanywhere.data.Endpoint
@@ -74,6 +75,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.dropWhile
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -125,6 +127,7 @@ class ControlService : Service() {
         ConcurrentHashMap<String, CompletableDeferred<PromptResponse?>>()
     private var notificationJob: Job? = null
     private var watchdogJob: Job? = null
+    private var autoPauseJob: Job? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var defaultCallback: ConnectivityManager.NetworkCallback? = null
     private var usbReceiver: android.content.BroadcastReceiver? = null
@@ -308,6 +311,12 @@ class ControlService : Service() {
             // also works on mobile data.
             ACTION_PAUSE_FIREWALL -> scope.launch { pauseFirewall() }
             ACTION_RESUME_FIREWALL -> scope.launch { resumeFirewall() }
+            // The timer reads the relay's own activity, so a new value only has to
+            // restart the wait; a disabled timer cancels it.
+            ACTION_APPLY_AUTO_PAUSE -> {
+                val proxy = synchronized(relayLock) { firewallProxy }
+                if (proxy != null) startAutoPause(proxy) else autoPauseJob?.cancel()
+            }
             ACTION_CLEAR_AUDIT -> {
                 auditLog.clear()
                 AppLog.info("firewall", "audit log cleared")
@@ -1222,10 +1231,40 @@ class ControlService : Service() {
         }
     }
 
+    /**
+     * D24: an idle relay pauses itself. The wait restarts on every authenticated
+     * relayed frame, so the app's loopback channel and the watchdog never keep the
+     * VPN port open, and an unauthenticated peer cannot hold it. The timer takes the
+     * same pause as the button, so the written intent is the only state every reader
+     * (watchdog, network change, reboot) honours.
+     */
+    private fun startAutoPause(proxy: FirewallProxy) {
+        autoPauseJob?.cancel()
+        if (!prefs.autoPauseEnabled) return
+        autoPauseJob = scope.launch {
+            proxy.activity.collectLatest {
+                val timeoutMs = prefs.autoPauseTimeoutMs
+                delay(timeoutMs)
+                // A manual Pause, a Stop, a disabled timer or a relay that was
+                // replaced while this wait ran: nothing left to close.
+                if (!prefs.autoPauseEnabled || !prefs.userWantsRunning || prefs.firewallPaused) {
+                    return@collectLatest
+                }
+                if (!proxy.isListening) return@collectLatest
+                AppLog.info(
+                    "firewall",
+                    "auto pause: no adb command for ${AutoPause.label(timeoutMs)}",
+                )
+                pauseFirewall()
+            }
+        }
+    }
+
     private suspend fun stopStack() = withContext(Dispatchers.IO + NonCancellable) {
         stopFirewall()
         cancelWatchdog()
         watchdogJob?.cancel()
+        autoPauseJob?.cancel()
         val shell = runCatching { daemonShell() }.getOrNull()
         if (shell != null) {
             runCatching { daemon.stop(shell) }.onFailure {
@@ -1325,6 +1364,7 @@ class ControlService : Service() {
             }
             if (bound) {
                 AppLog.info("firewall", "listening on $vpnIp:${prefs.vpnPort}")
+                synchronized(relayLock) { firewallProxy }?.let(::startAutoPause)
                 return
             }
             AppLog.warn(
@@ -1977,6 +2017,7 @@ class ControlService : Service() {
                         }
                         cancelWatchdog()
                         watchdogJob?.cancel()
+                        autoPauseJob?.cancel()
                         // The notification collector must not re-post the
                         // stopped state after the foreground notification is
                         // removed below.
@@ -2375,6 +2416,7 @@ class ControlService : Service() {
         const val ACTION_APPLY_FIREWALL = "cz.slush.adbanywhere.APPLY_FIREWALL"
         const val ACTION_PAUSE_FIREWALL = "cz.slush.adbanywhere.PAUSE_FIREWALL"
         const val ACTION_RESUME_FIREWALL = "cz.slush.adbanywhere.RESUME_FIREWALL"
+        const val ACTION_APPLY_AUTO_PAUSE = "cz.slush.adbanywhere.APPLY_AUTO_PAUSE"
         const val ACTION_STOP = "cz.slush.adbanywhere.STOP"
         private const val PAUSED_MESSAGE =
             "The firewall relay is closed, so nothing on the network is exposed. " +

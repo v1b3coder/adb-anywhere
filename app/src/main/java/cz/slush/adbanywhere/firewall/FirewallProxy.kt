@@ -9,6 +9,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -63,6 +67,12 @@ class FirewallProxy(
     private var localListener = false
     private var lastError = ""
 
+    // D24: every authenticated relayed frame bumps this. The service collects it and
+    // restarts its idle timer on each emission, so the clock is adb traffic, not the
+    // app's loopback channel or the watchdog.
+    private val activityTicks = MutableStateFlow(0L)
+    val activity: StateFlow<Long> = activityTicks.asStateFlow()
+
     val activeSessions: Int get() = synchronized(lock) { connections.size }
     val isListening: Boolean get() = listening
 
@@ -93,6 +103,7 @@ class FirewallProxy(
         listening = true
         stopped = false
         lastError = ""
+        markActivity()
         acceptJob = scope.launch(Dispatchers.IO) { acceptLoop(socket) }
         monitorJob = scope.launch {
             monitor?.state?.collect { onForegroundChanged(it) }
@@ -230,6 +241,8 @@ class FirewallProxy(
 
     /** An event a peer caused before ADB key auth; rate limited by the audit log. */
     private fun preAuth(event: AuditEvent) = audit.record(event, unauthenticated = true)
+
+    private fun markActivity() = activityTicks.update { it + 1 }
 
     private fun onForegroundChanged(state: ForegroundState) {
         if (!config().appAllowlistEnabled) {
@@ -371,11 +384,13 @@ class FirewallProxy(
                     connectionAllowed = { !config().appAllowlistEnabled || appAllowed() },
                     onAuthenticated = {
                         authenticated = true
+                        markActivity()
                         runCatching { client.soTimeout = 0 }
                     },
                     knownKeys = knownKeys,
                     authTimeoutMs = remaining,
                     onPromptFinished = { onPromptFinished() },
+                    onActivity = { markActivity() },
                     onClose = { close() },
                 )
                 this.relay = relay
