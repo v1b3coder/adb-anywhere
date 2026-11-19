@@ -1,0 +1,34 @@
+# Zapstore listing for ADB Anywhere: the app and release events that `zsp` signs
+# and publishes. The APK itself comes from GitHub releases, and its icon from the
+# APK. Media is uploaded to Blossom on publish.
+repository: https://github.com/v1b3coder/adb-anywhere
+
+name: ADB Anywhere
+summary: Wireless ADB over a VPN without root — the app deploys its own daemon and decides which machines may connect.
+description: |
+  Remote wireless ADB that follows your phone: over a VPN, on mobile data, across
+  network changes. Stock Android 12 or newer, no root, no custom ROM.
+
+  Android turns wireless debugging off when Wi-Fi drops, randomises the port after a
+  reboot and listens on every interface. ADB Anywhere keeps a patched AOSP `adbd`
+  running as the `shell` user behind a loopback listener and redeploys it after a
+  reboot once it can reach the phone's own adb. Pair once, then connect from any
+  machine whose key you added:
+
+      adb connect <vpn-ip>:15038
+
+  **The app decides who may connect.** The optional firewall takes the VPN port over
+  from the daemon: the app answers it, applies an allowlist of IPs and of app
+  packages, holds calls for approval on the phone and writes an audit log. ADB key
+  authentication stays end-to-end. *Pause* closes the port while the daemon keeps
+  running on loopback, and an idle timeout can take that same pause for you.
+
+  Needs a VPN that gives the phone a stable IPv4 address your computers can reach
+  (Tailscale or WireGuard), and one Wi-Fi connection for the first pairing. Usage
+  access and "display over other apps" are used only by the firewall's allowlist and
+  its approval card.
+
+  **Experimental.** 0.x releases are previews: expect rough edges, and read the
+  release notes before updating.
+license: MIT
+tags: [developer-tools, adb, remote-access, security, vpn]
