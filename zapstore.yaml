@@ -32,3 +32,7 @@ description: |
   release notes before updating.
 license: MIT
 tags: [developer-tools, adb, remote-access, security, vpn]
+images:
+  - ./docs/store/home.png
+  - ./docs/store/firewall.png
+  - ./docs/store/keys.png
