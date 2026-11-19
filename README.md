@@ -178,7 +178,9 @@ not isolated. The full design and its limits are in
 - The firewall IP allowlist is IPv4-only.
 - The app allowlist needs Usage access. The floating approval card needs Display
   over other apps; without it the app uses a notification and dialog. A locked
-  screen denies a call that needs approval.
+  screen denies a call that needs approval. *Settings → Display → Keep the screen
+  on* stops the display timeout from locking the phone while the app is open; it
+  does not override the power button, and leaving the app releases it.
 - A reboot does not keep the daemon running. The app redeploys it after boot when it
   can reach Android's adb; on mobile data without the plain 5555 listener it waits for
   Wi-Fi or USB. The app shows the recovery steps. A paused app comes back with the

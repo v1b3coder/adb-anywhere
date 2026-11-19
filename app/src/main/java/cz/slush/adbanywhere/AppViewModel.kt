@@ -48,6 +48,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val diagnosticLog = AppLog.enabled
     private val _turnSystemAdbOffOnStop = MutableStateFlow(prefs.turnSystemAdbOffOnStop)
     val turnSystemAdbOffOnStop: StateFlow<Boolean> = _turnSystemAdbOffOnStop
+    private val _keepScreenOn = MutableStateFlow(prefs.keepScreenOn)
+    val keepScreenOn: StateFlow<Boolean> = _keepScreenOn
     private val _autoPauseEnabled = MutableStateFlow(prefs.autoPauseEnabled)
     val autoPauseEnabled: StateFlow<Boolean> = _autoPauseEnabled
     private val _autoPauseTimeoutMs = MutableStateFlow(prefs.autoPauseTimeoutMs)
@@ -122,6 +124,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun setDiagnosticLog(enabled: Boolean) {
         prefs.diagnosticLog = enabled
         AppLog.setEnabled(enabled)
+    }
+
+    /** D25: hold the display awake while the app is on screen. Off is the default. */
+    fun setKeepScreenOn(enabled: Boolean) {
+        AppLog.info("settings", "keep screen on=$enabled")
+        prefs.keepScreenOn = enabled
+        _keepScreenOn.value = enabled
     }
 
     /** D5: opt-in Start/Stop ownership of the system adbd. Off is the default. */

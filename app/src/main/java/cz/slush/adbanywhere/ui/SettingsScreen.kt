@@ -51,10 +51,12 @@ fun SettingsScreen(
     firewallEnabled: Boolean,
     turnSystemAdbOffOnStop: Boolean,
     diagnosticLog: Boolean,
+    keepScreenOn: Boolean,
     appKey: String,
     onToggleFirewall: (Boolean) -> Unit,
     onToggleTurnSystemAdbOffOnStop: (Boolean) -> Unit,
     onToggleDiagnosticLog: (Boolean) -> Unit,
+    onToggleKeepScreenOn: (Boolean) -> Unit,
     onSavePorts: (Int, Int) -> String?,
     onBatteryExemption: (Activity) -> Unit,
     onCopy: (String) -> Unit,
@@ -114,6 +116,20 @@ fun SettingsScreen(
                     Icon(Icons.Outlined.BatterySaver, contentDescription = null)
                     Text("Allow background", modifier = Modifier.padding(start = 8.dp))
                 }
+            }
+        }
+
+        item {
+            SectionCard("Display") {
+                SwitchRow(
+                    checked = keepScreenOn,
+                    onCheckedChange = onToggleKeepScreenOn,
+                    title = "Keep the screen on",
+                    description = "Holds the display awake while this screen is open, so the " +
+                        "display timeout does not lock the phone and the firewall does not " +
+                        "deny calls just because the screen went off. Off by default: it " +
+                        "costs battery, and the power button still locks the phone.",
+                )
             }
         }
 

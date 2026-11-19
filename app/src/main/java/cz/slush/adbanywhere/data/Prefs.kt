@@ -129,6 +129,15 @@ class Prefs(context: Context) {
         set(value) = prefs.edit().putBoolean("diagnostic_log", value).apply()
 
     /**
+     * D25: hold the display awake while the app is on screen. Off by default; it
+     * only sets a window flag, so it ends when the window is no longer visible and
+     * it never overrides a manual lock.
+     */
+    var keepScreenOn: Boolean
+        get() = prefs.getBoolean("keep_screen_on", false)
+        set(value) = prefs.edit().putBoolean("keep_screen_on", value).apply()
+
+    /**
      * True once this build deployed the TLS daemon. A plain-ADB listener on the
      * loopback port is then never treated as a pre-TLS daemon to migrate.
      */

@@ -152,6 +152,10 @@ instead.
   handshake; the second closes a connection whose target app lost the foreground
   while the handshake was in progress.
 - Screen off or keyguard locked means no foreground app: external calls are denied.
+  Settings → Display → *Keep the screen on* keeps the display awake while the app is
+  open, so the display timeout does not lock the phone and this denial does not fire
+  on its own. It is a window flag on the app's own activity: it ends when the user
+  leaves the app, and it never overrides the power button or a manual lock.
 - The package is sampled at `A_OPEN` time. A prompt captures the package that was
   resumed when the call arrived, not the package that is resumed when the user
   answers. The app check is exempt while a prompt is visible, otherwise the act of

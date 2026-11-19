@@ -75,6 +75,7 @@ fun AppRoot(viewModel: AppViewModel) {
     val logs by viewModel.logs.collectAsStateWithLifecycle()
     val appLogs by viewModel.appLog.collectAsStateWithLifecycle()
     val diagnosticLog by viewModel.diagnosticLog.collectAsStateWithLifecycle()
+    val keepScreenOn by viewModel.keepScreenOn.collectAsStateWithLifecycle()
     val turnSystemAdbOffOnStop by viewModel.turnSystemAdbOffOnStop.collectAsStateWithLifecycle()
     val autoPauseEnabled by viewModel.autoPauseEnabled.collectAsStateWithLifecycle()
     val autoPauseTimeoutMs by viewModel.autoPauseTimeoutMs.collectAsStateWithLifecycle()
@@ -239,10 +240,12 @@ fun AppRoot(viewModel: AppViewModel) {
                     firewallEnabled = firewall.enabled,
                     turnSystemAdbOffOnStop = turnSystemAdbOffOnStop,
                     diagnosticLog = diagnosticLog,
+                    keepScreenOn = keepScreenOn,
                     appKey = appFingerprint,
                     onToggleFirewall = viewModel::setFirewallEnabled,
                     onToggleTurnSystemAdbOffOnStop = viewModel::setTurnSystemAdbOffOnStop,
                     onToggleDiagnosticLog = viewModel::setDiagnosticLog,
+                    onToggleKeepScreenOn = viewModel::setKeepScreenOn,
                     onSavePorts = viewModel::setPorts,
                     onBatteryExemption = { viewModel.requestBatteryExemption(it) },
                     onCopy = ::copy,
