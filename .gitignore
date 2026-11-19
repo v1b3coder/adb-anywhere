@@ -22,3 +22,7 @@ captures/
 *.keystore
 keystore.properties
 /signing/
+
+# zsp keeps SIGN_WITH and KEYSTORE_PASSWORD here for the Zapstore wizard.
+.env
+.env.*
