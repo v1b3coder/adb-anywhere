@@ -29,3 +29,4 @@ images:
   - ./docs/store/home.png
   - ./docs/store/firewall.png
   - ./docs/store/keys.png
+metadata_sources: [github]
