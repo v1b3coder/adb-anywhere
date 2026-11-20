@@ -38,6 +38,22 @@ class ControlDataTest {
         assertFalse(ControlState(phase = Phase.Running).needsSetup)
     }
 
+    /**
+     * The pairing steps only describe the pairing that is still ahead. After the
+     * reply they must disappear, or the screen keeps claiming the flow has not
+     * started. A failed pairing stays in NeedsPairing and keeps them.
+     */
+    @Test
+    fun pairingInstructionsOnlyWhilePairingIsAhead() {
+        assertTrue(ControlState().pairingInstructionsVisible)
+        assertTrue(ControlState(phase = Phase.NeedsPairing).pairingInstructionsVisible)
+        assertTrue(ControlState(phase = Phase.Pairing).pairingInstructionsVisible)
+        assertFalse(ControlState(phase = Phase.Deploying).pairingInstructionsVisible)
+        assertFalse(ControlState(phase = Phase.Running).pairingInstructionsVisible)
+        assertFalse(ControlState(phase = Phase.Error).pairingInstructionsVisible)
+        assertFalse(ControlState(phase = Phase.Stopped).pairingInstructionsVisible)
+    }
+
     @Test
     fun firewallDownRequiresEnabledButNotListening() {
         assertFalse(ControlState().firewallDown)

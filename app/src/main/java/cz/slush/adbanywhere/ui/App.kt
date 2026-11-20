@@ -101,6 +101,15 @@ fun AppRoot(viewModel: AppViewModel) {
     LaunchedEffect(firewall.enabled) {
         if (screen == Screen.Firewall && !firewall.enabled) screen = Screen.Home
     }
+    // The setup flow starts on Home and ends there. Once it reaches Running the
+    // steps no longer apply, so the screen closes itself and Home reports the
+    // result instead of leaving the user on instructions for a finished step.
+    LaunchedEffect(state.phase) {
+        if (screen == Screen.Setup && state.phase == Phase.Running) {
+            screen = Screen.Home
+            snackbar.showSnackbar("Paired. ADB Anywhere is running.")
+        }
+    }
 
     fun copy(text: String) {
         if (text.isBlank()) return
@@ -192,6 +201,7 @@ fun AppRoot(viewModel: AppViewModel) {
                                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                         )
                     },
+                    onDone = { screen = Screen.Home },
                 )
                 Screen.Keys -> KeysScreen(
                     keys = keys,

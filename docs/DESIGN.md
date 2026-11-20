@@ -137,7 +137,7 @@ These are facts from AOSP `main`, not assumptions.
 | D6 | Watchdog | Keeps `ADB_WIFI_ENABLED=0`; probes 5555 on every tick and reports the open listener as the §8 residual warning; restarts the patched adbd through the system adbd when reachable; checks the three daemon key files (`adb_keys`, `tls_clients`, `tls_key.pem`) against the app's copy and restores them, and a tick that could not check them is not counted as ok; re-arms its alarm on every tick and backs off after a failure; retries a transient failure indefinitely at the backoff cap, also in a process that never reached Running; a failure that needs the user (a missing VPN, a port change, a missing permission, ADB turned off) waits for Try again, across process restarts too; never writes `ADB_ENABLED` |
 | D7 | Policy | The app enforces policy, not the daemon. The optional relay parses `A_OPEN` and applies the IP allowlist, the foreground-app allowlist and call rules. The patched `adbd` stays policy-free; the VPN ACL is the outer boundary |
 | D8 | UI stack | Kotlin, Jetpack Compose, Material 3; package `cz.slush.adbanywhere` |
-| D9 | Bootstrap pairing | One `RemoteInput` notification: reply with `code:port` from the open dialog. The reply action is a mutable PendingIntent that any app with notification access can fire, also after the notification is gone, so a reply is accepted once and only within 15 minutes of a notification the app posted |
+| D9 | Bootstrap pairing | One `RemoteInput` notification: reply with `code:port` from the open dialog. The reply action is a mutable PendingIntent that any app with notification access can fire, also after the notification is gone, so a reply is accepted once and only within 15 minutes of a notification the app posted. Once the code is accepted the reply notification becomes a `Paired` notice that the service removes when setup ends; a failed pairing returns to `NeedsPairing` with the reason and a re-armed reply notification, because Android's dialog owns the only valid code and port |
 | D10 | Patched adbd transports | TCP only; USB and vsock disabled |
 | D11 | Settings UI | Shows the current ADB state, any warning in the UI and in the persistent foreground notification, and the opt-in "Turn system adb off on Stop" switch. The System adb card shows only the system adbd's own state; the app's loopback channel is shown in the Ports card. The card re-reads when the tab is entered and when the app returns to the foreground, and the read runs off the main thread. The Display card holds the opt-in "Keep the screen on" switch (D25) |
 | D12 | Failure policy | Explicit error and recovery steps; no silent fallback and no random-port redirect |
@@ -587,6 +587,13 @@ system adbd has no TCP listener, so there is nothing to monitor or turn off.
     it and publishes its state.
 13. App sets `ADB_WIFI_ENABLED=0` to stop the system TLS server. This is the last
     step, so the fallback exists until the new path is verified.
+
+The result is reported where the reply was typed: the reply notification becomes a
+`Paired` notice that the service removes when the setup ends, and a failed pairing
+returns to `NeedsPairing` with the reason and a fresh reply notification. The code
+and port live only as long as Android's pairing dialog, so a new reply is the only
+recovery. The Setup screen follows the phase and closes on Home when the daemon
+runs: it never keeps showing the steps of a pairing that is over.
 
 ### Port discovery
 

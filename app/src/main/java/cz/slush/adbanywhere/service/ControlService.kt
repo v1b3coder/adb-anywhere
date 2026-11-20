@@ -221,6 +221,14 @@ class ControlService : Service() {
                 } else if (prefs.failureNeedsUser && ControlBus.state.value.phase in setOf(Phase.Idle, Phase.Error)) {
                     promoteForeground()
                     ControlBus.update { it.copy(phase = Phase.Error, error = prefs.lastError, message = "") }
+                } else if (ControlBus.state.value.phase == Phase.NeedsPairing &&
+                    ControlBus.state.value.error.isNotEmpty()
+                ) {
+                    // A failed pairing stays on screen when the app is opened again.
+                    // The steps below the reason are the only recovery, and a recheck
+                    // would replace them with a setup attempt that cannot pair.
+                    AppLog.info("service", "recheck keeps the pairing failure on screen")
+                    promoteForeground()
                 } else {
                     promoteForeground()
                     scope.launch { setup() }
@@ -1015,20 +1023,48 @@ class ControlService : Service() {
         }
         val paired = system.pair(code)
         if (!paired) {
-            AppLog.error("pair", "pairing failed on 127.0.0.1:${code.port}")
-            fail(
-                "Pairing failed. Check that the code and port are current and that the pairing " +
-                    "dialog is still open, then try again.",
-            )
+            pairingFailed(code.port)
             return
         }
         prefs.paired = true
         AppLog.info("pair", "paired; starting setup")
         resetBackoff()
         ControlBus.update {
-            it.copy(steps = listOf(SetupStep("Pair with Android's wireless debugging", StepStatus.Done, "Paired")))
+            it.copy(
+                steps = listOf(
+                    SetupStep("Pair with Android's wireless debugging", StepStatus.Done, "Paired"),
+                ),
+            )
         }
+        // The reply notification is gone as soon as the code is read, so the
+        // result takes its place in the shade the user is still in. setup()
+        // removes the notice when the flow ends (see updateNotification()).
+        postPairedNotice()
         setup(userInitiated = true)
+    }
+
+    /**
+     * A failed pairing is not a generic setup failure. Android's pairing dialog owns
+     * the only valid code and port and closes with Settings, so the fix is always a
+     * new dialog, a new code and a new reply. The state stays in NeedsPairing, whose
+     * steps are exactly that recovery, and the reply notification is posted again
+     * with the reason, which also arms a new reply (D9).
+     */
+    private fun pairingFailed(port: Int) {
+        AppLog.error("pair", "pairing failed on 127.0.0.1:$port; waiting for a new code")
+        val reason = "Pairing failed. Android closes the pairing dialog when you leave Settings, " +
+            "so the code and the port were only valid for that dialog."
+        ControlBus.update {
+            it.copy(
+                phase = Phase.NeedsPairing,
+                error = reason,
+                message = "",
+                steps = listOf(
+                    SetupStep("Pair with Android's wireless debugging", StepStatus.Failed, "Not paired"),
+                ),
+            )
+        }
+        postPairingNotification(reason)
     }
 
     private fun needsPairing() {
@@ -2049,6 +2085,12 @@ class ControlService : Service() {
                             ServiceCompat.STOP_FOREGROUND_REMOVE,
                         )
                         foregroundStarted = false
+                        // The pairing notices are separate from the foreground
+                        // notification, and their reply action would start a pairing
+                        // the user just stopped.
+                        prefs.pairingArmedAt = 0L
+                        NotificationManagerCompat.from(this@ControlService)
+                            .cancel(Notifications.PAIRING_ID)
                         // startId scopes the stop to this request: a Start that
                         // arrived while the stop was running keeps the service
                         // alive and its setup re-promotes it.
@@ -2185,6 +2227,14 @@ class ControlService : Service() {
             startForeground(state)
             return
         }
+        // The pairing notices describe a flow that is over once the daemon runs or
+        // the setup failed. They are separate from the ongoing notification, which
+        // reports the outcome from then on, so they must not linger next to it.
+        if (state.phase == Phase.Running || state.phase == Phase.Error ||
+            state.phase == Phase.Stopped
+        ) {
+            NotificationManagerCompat.from(this).cancel(Notifications.PAIRING_ID)
+        }
         // The foreground notification is exempt from POST_NOTIFICATIONS; updating it is not.
         postNotification(Notifications.SERVICE_ID, buildServiceNotification(state))
     }
@@ -2288,6 +2338,26 @@ class ControlService : Service() {
             pairReplyPendingIntent(),
         ).addRemoteInput(input).build()
         postPairing("Pair ADB Anywhere", text, action)
+    }
+
+    /**
+     * Replaces the reply notification once the code was accepted. The result belongs
+     * where the user typed the code; the ongoing notification reports the deploy.
+     */
+    private fun postPairedNotice() {
+        val text = "Paired. Setting up the custom adb…"
+        val notification = NotificationCompat.Builder(this, Notifications.CHANNEL_PAIRING)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("Paired")
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
+            .setGroup(Notifications.GROUP_PAIRING)
+            .setContentIntent(contentPendingIntent())
+            .build()
+        postNotification(Notifications.PAIRING_ID, notification)
     }
 
     private fun postPairing(

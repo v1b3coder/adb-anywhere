@@ -52,6 +52,16 @@ data class ControlState(
     val needsSetup: Boolean get() = phase == Phase.NeedsPairing
 
     /**
+     * The pairing steps are instructions for a step that is still ahead. Once the
+     * app is deploying or running, Android's pairing dialog is gone and the same
+     * steps would read as if nothing had happened. A failed pairing stays in
+     * [Phase.NeedsPairing], so its steps stay visible: only a new dialog, a new
+     * code and a new reply can fix it.
+     */
+    val pairingInstructionsVisible: Boolean
+        get() = phase == Phase.Idle || phase == Phase.NeedsPairing || phase == Phase.Pairing
+
+    /**
      * The custom adb can be healthy while the firewall relay is down: the loopback
      * channel works, but developer machines cannot reach the VPN endpoint.  The Home
      * status must not claim the endpoint is reachable in that state. A paused
