@@ -17,6 +17,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.CheckCircle
@@ -25,6 +26,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -34,6 +36,7 @@ import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -55,6 +58,7 @@ fun KeysScreen(
     onRename: (String, String) -> Unit,
     onAdd: (String, String) -> String?,
     onRemoveAll: () -> Unit = {},
+    onCopy: (String) -> Unit = {},
 ) {
     var addOpen by remember { mutableStateOf(false) }
     var removeAll by remember { mutableStateOf(false) }
@@ -79,7 +83,8 @@ fun KeysScreen(
                     fontWeight = FontWeight.SemiBold,
                 )
                 Text(
-                    "Add the public key of each machine that may connect to this phone.",
+                    "Add the standard ADB public key of each machine that may connect. " +
+                        "The next screen shows how to copy ~/.android/adbkey.pub or show it as a QR code.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -125,6 +130,7 @@ fun KeysScreen(
                 if (error == null) addOpen = false
                 error
             },
+            onCopy = onCopy,
         )
     }
 
@@ -221,12 +227,19 @@ private fun RenameKeyDialog(
 private fun AddKeyDialog(
     onDismiss: () -> Unit,
     onAdd: (String, String) -> String?,
+    onCopy: (String) -> Unit,
 ) {
     var tab by remember { mutableIntStateOf(0) }
     var text by remember { mutableStateOf("") }
     var label by remember { mutableStateOf("") }
     var error by remember { mutableStateOf("") }
+    var scanned by remember { mutableStateOf(false) }
     val parsed = remember(text) { AndroidPubKey.parse(text) }
+
+    LaunchedEffect(parsed?.fingerprint) {
+        val detected = parsed?.label.orEmpty()
+        if (label.isBlank() && detected.isNotBlank()) label = detected
+    }
 
     Dialog(onDismissRequest = onDismiss) {
         Surface(
@@ -245,20 +258,45 @@ private fun AddKeyDialog(
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.SemiBold,
                 )
+                Text(
+                    "Add a computer that may connect to this phone.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 TabRow(selectedTabIndex = tab) {
                     Tab(
                         selected = tab == 0,
-                        onClick = { tab = 0 },
+                        onClick = {
+                            tab = 0
+                            scanned = false
+                            error = ""
+                        },
                         text = { Text("Paste key") },
                     )
                     Tab(
                         selected = tab == 1,
-                        onClick = { tab = 1 },
+                        onClick = {
+                            tab = 1
+                            scanned = false
+                            error = ""
+                        },
                         text = { Text("Scan QR") },
                     )
                 }
 
                 if (tab == 0) {
+                    Text(
+                        "On your computer",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    CommandRow("cat ~/.android/adbkey.pub", onCopy)
+                    Text(
+                        "Linux or macOS. If the file is missing, run adb keygen ~/.android/adbkey " +
+                            "first. The .pub file is public; never copy ~/.android/adbkey.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                     OutlinedTextField(
                         value = text,
                         onValueChange = {
@@ -267,13 +305,76 @@ private fun AddKeyDialog(
                         },
                         modifier = Modifier.fillMaxWidth(),
                         label = { Text("Public key") },
-                        placeholder = { Text("Contents of ~/.android/adbkey.pub") },
+                        placeholder = { Text("Paste the command's output") },
                         minLines = 3,
-                        isError = error.isNotEmpty(),
+                        isError = text.isNotBlank() && parsed == null,
                         supportingText = {
-                            Text("Paste the key, its base64 encoding, an ssh-rsa key or a PEM public key.")
+                            Text(
+                                if (text.isNotBlank() && parsed == null) {
+                                    "Not a recognized public key. Paste the output of cat ~/.android/adbkey.pub."
+                                } else {
+                                    "The file contents, an ssh-rsa line or a PEM public key."
+                                },
+                            )
                         },
                     )
+                    if (parsed != null) ParsedKeyCard(parsed)
+                } else if (scanned && parsed != null) {
+                    ParsedKeyCard(
+                        parsed,
+                        title = "Scanned RSA-${parsed.bits} key",
+                        onScanAgain = {
+                            scanned = false
+                            text = ""
+                            label = ""
+                            error = ""
+                        },
+                    )
+                } else {
+                    Text(
+                        "On your computer",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    CommandRow("qrencode -t ansiutf8 < ~/.android/adbkey.pub", onCopy)
+                    Text(
+                        "Linux or macOS. macOS: brew install qrencode; Linux: install qrencode " +
+                            "with your package manager.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    QrScanner(
+                        validate = { AndroidPubKey.parse(it) != null },
+                        onResult = {
+                            text = it
+                            error = ""
+                            scanned = true
+                        },
+                        onInvalid = {
+                            error = "That QR code does not contain an ADB public key. " +
+                                "Make sure it holds the contents of ~/.android/adbkey.pub."
+                        },
+                        onError = { error = it },
+                        onUsePaste = {
+                            tab = 0
+                            scanned = false
+                            error = ""
+                        },
+                    )
+                    Text(
+                        "Point the camera at the QR code. The QR only contains the public key.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        "If the terminal wraps the code, write a PNG and open it:",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    CommandRow("qrencode -o adbkey.png < ~/.android/adbkey.pub", onCopy)
+                }
+
+                if (parsed != null) {
                     OutlinedTextField(
                         value = label,
                         onValueChange = { label = it },
@@ -282,49 +383,6 @@ private fun AddKeyDialog(
                         singleLine = true,
                         placeholder = { Text("My laptop") },
                     )
-                } else {
-                    QrScanner(
-                        onResult = {
-                            text = it
-                            error = ""
-                        },
-                        onError = { error = it },
-                    )
-                    Text(
-                        "Point the camera at the QR code that contains the machine's public key.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-
-                if (parsed != null) {
-                    Surface(
-                        color = MaterialTheme.colorScheme.surfaceContainerLow,
-                        shape = RoundedCornerShape(16.dp),
-                    ) {
-                        Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    Icons.Rounded.CheckCircle,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                )
-                                Text(
-                                    "Valid RSA-${parsed.bits} key",
-                                    modifier = Modifier.padding(start = 8.dp),
-                                    style = MaterialTheme.typography.titleSmall,
-                                )
-                            }
-                            FingerprintText(parsed.fingerprint)
-                            if (parsed.label.isNotBlank()) {
-                                Text(
-                                    "From ${parsed.label}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        }
-                    }
                 }
 
                 if (error.isNotEmpty()) {
@@ -348,6 +406,74 @@ private fun AddKeyDialog(
                         enabled = parsed != null,
                     ) { Text("Add key") }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CommandRow(command: String, onCopy: (String) -> Unit) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        shape = RoundedCornerShape(12.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                command,
+                modifier = Modifier.weight(1f).padding(vertical = 8.dp),
+                fontFamily = FontFamily.Monospace,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            IconButton(onClick = { onCopy(command) }) {
+                Icon(
+                    Icons.Outlined.ContentCopy,
+                    contentDescription = "Copy command",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ParsedKeyCard(
+    parsed: AndroidPubKey.Key,
+    title: String = "Valid RSA-${parsed.bits} key",
+    onScanAgain: (() -> Unit)? = null,
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        shape = RoundedCornerShape(16.dp),
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Rounded.CheckCircle,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+                Text(
+                    title,
+                    modifier = Modifier.padding(start = 8.dp).weight(1f),
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                if (onScanAgain != null) {
+                    TextButton(onClick = onScanAgain) { Text("Scan another") }
+                }
+            }
+            FingerprintText(parsed.fingerprint)
+            if (parsed.label.isNotBlank()) {
+                Text(
+                    "From ${parsed.label}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }

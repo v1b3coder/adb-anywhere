@@ -5,12 +5,17 @@ package cz.slush.adbanywhere.ui
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.os.Handler
+import android.os.Looper
+import android.util.Size
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
@@ -18,6 +23,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -26,6 +32,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -35,6 +42,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -51,12 +59,16 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 @Composable
 fun QrScanner(
     modifier: Modifier = Modifier,
+    validate: (String) -> Boolean = { true },
     onResult: (String) -> Unit,
+    onInvalid: (String) -> Unit = {},
     onError: (String) -> Unit = {},
+    onUsePaste: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     var granted by remember {
@@ -83,19 +95,31 @@ fun QrScanner(
                 "Camera access is needed to scan the key.",
                 style = MaterialTheme.typography.bodyMedium,
             )
-            Button(onClick = { launcher.launch(Manifest.permission.CAMERA) }) {
-                Text("Allow camera")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { launcher.launch(Manifest.permission.CAMERA) }) {
+                    Text("Allow camera")
+                }
+                if (onUsePaste != null) {
+                    TextButton(onClick = onUsePaste) { Text("Paste key instead") }
+                }
             }
         }
         return
     }
 
     val lifecycleOwner = LocalLifecycleOwner.current
+    val mainHandler = remember { Handler(Looper.getMainLooper()) }
     val executor = remember { Executors.newSingleThreadExecutor() }
     val found = remember { AtomicBoolean(false) }
+    val lastInvalid = remember { AtomicReference<String?>(null) }
     val providerRef = remember { mutableStateOf<ProcessCameraProvider?>(null) }
     val previewView = remember {
-        PreviewView(context).apply { scaleType = PreviewView.ScaleType.FILL_CENTER }
+        PreviewView(context).apply {
+            scaleType = PreviewView.ScaleType.FILL_CENTER
+            // SurfaceView is a separate window layer: Compose cannot clip it, so
+            // inside a dialog it drew over the tabs and the text below.
+            implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+        }
     }
 
     // A dismissed dialog must not leave the camera bound to the activity.
@@ -117,6 +141,16 @@ fun QrScanner(
             it.setSurfaceProvider(previewView.surfaceProvider)
         }
         val analysis = ImageAnalysis.Builder()
+            .setResolutionSelector(
+                ResolutionSelector.Builder()
+                    .setResolutionStrategy(
+                        ResolutionStrategy(
+                            Size(1280, 720),
+                            ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER,
+                        ),
+                    )
+                    .build(),
+            )
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .build()
         analysis.setAnalyzer(executor) { image ->
@@ -150,8 +184,17 @@ fun QrScanner(
                         )
                     }.decodeWithState(bitmap)
                 }.getOrNull()
-                if (result != null && found.compareAndSet(false, true)) {
-                    onResult(result.text)
+                if (result != null) {
+                    if (validate(result.text)) {
+                        if (found.compareAndSet(false, true)) {
+                            mainHandler.post {
+                                providerRef.value?.unbindAll()
+                                onResult(result.text)
+                            }
+                        }
+                    } else if (lastInvalid.getAndSet(result.text) != result.text) {
+                        mainHandler.post { onInvalid(result.text) }
+                    }
                 }
             } finally {
                 image.close()
@@ -170,12 +213,14 @@ fun QrScanner(
         }
     }
 
+    val shape = RoundedCornerShape(20.dp)
     Box(
         modifier = modifier
             .fillMaxWidth()
             .height(280.dp)
-            .background(Color.Black, RoundedCornerShape(20.dp))
-            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(20.dp)),
+            .clip(shape)
+            .background(Color.Black)
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, shape),
     ) {
         AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
         Box(

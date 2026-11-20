@@ -3,6 +3,7 @@
 
 # Android / Gradle
 .gradle/
+.kotlin/
 build/
 # Source directories that merely share the name, not build output.
 !adbd/stubs/build/

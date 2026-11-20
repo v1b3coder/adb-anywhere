@@ -199,6 +199,7 @@ fun AppRoot(viewModel: AppViewModel) {
                     onRename = viewModel::renameDeveloperKey,
                     onAdd = viewModel::addDeveloperKey,
                     onRemoveAll = viewModel::removeAllDeveloperKeys,
+                    onCopy = ::copy,
                 )
                 Screen.Logs -> LogsScreen(
                     appLogs = appLogs,

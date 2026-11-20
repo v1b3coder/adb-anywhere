@@ -45,7 +45,7 @@ in [docs/FIREWALL.md](docs/FIREWALL.md). Release notes are in
 - After a reboot the app needs one TCP shell to redeploy the daemon: Wi-Fi wireless
   debugging, the plain 5555 listener (`adb tcpip 5555` over USB), or root. The app does
   not keep ADB alive through the reboot by itself.
-- The computer you connect from has its ADB public key at hand.
+- The computer you connect from has its standard ADB public key at hand.
 - Optional firewall: Usage access for the app allowlist, and Display over other apps
   for the floating approval card. Without overlay permission the prompt falls back
   to a notification and dialog.
@@ -76,8 +76,9 @@ the manual command instead of failing silently.
 5. The app pairs, grants `WRITE_SECURE_SETTINGS`, deploys the patched `adbd`,
    verifies loopback and either the VPN listener or the firewall relay, and turns
    Android's wireless debugging off last.
-6. Add each computer's public key under *Keys* (paste or QR). The app shows the
-   SHA-256 fingerprint before the key is added.
+6. Add each computer's standard ADB public key under *Keys* (paste or QR). The
+   screen shows the command for Linux and macOS, and the app shows the SHA-256
+   fingerprint before the key is added.
 
 After setup, connect from the computer:
 

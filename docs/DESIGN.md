@@ -254,16 +254,19 @@ daemon.
 
 ### Developer machine pairing
 
-The developer machine shows a QR with the raw public key; the app scans it or
-accepts a paste. No companion app is needed.
+The developer machine shows its standard ADB public key as text; the app scans
+its QR or accepts a paste. No companion app is needed.
 
-1. The developer machine runs `qrencode -t ansiutf8 < ~/.android/adbkey.pub`, or
-   any QR generator, and shows the QR.
-2. The app scans the QR, or the user pastes the contents of
-   `~/.android/adbkey.pub`. If the file is binary, the user pastes its base64
-   encoding.
-3. The app decodes the base64 DER, validates it as an RSA public key, and shows
-   the SHA-256 fingerprint.
+1. The app shows the command for the developer machine's OS: `cat
+   ~/.android/adbkey.pub` for a paste, or `qrencode -t ansiutf8 <
+   ~/.android/adbkey.pub` for a QR. The QR carries the same text as the file:
+   Android's 524-byte public key in base64 plus an optional `user@host` comment.
+2. The app scans the QR, or the user pastes the output of
+   `cat ~/.android/adbkey.pub`. It also accepts an OpenSSH `ssh-rsa` line or a
+   PEM public key.
+3. The app parses the key, validates it as RSA-2048, and shows the SHA-256
+   fingerprint. A QR that is not a key leaves the camera scanning and reports
+   the error.
 4. The user confirms the fingerprint and labels the machine.
 5. The app appends the key to the patched adbd key file with the label.
 6. The developer machine runs `adb connect <vpn-name>:<portB>` with its private key.
