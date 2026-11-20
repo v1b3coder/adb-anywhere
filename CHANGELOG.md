@@ -4,6 +4,46 @@ All notable changes to ADB Anywhere are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases use
 semantic versioning once the project leaves 0.x.
 
+## 0.12.0 — 2026-11-20
+
+A locked screen no longer breaks the firewall. The phone locks on its display
+timeout, the keyguard takes the foreground, and a call that needs approval is then
+denied without a prompt. Settings → Display → *Keep the screen on* holds the display
+awake while the app's screen is open, so the timeout cannot get in the way.
+
+### Display
+
+- **Keep the screen on** sets `FLAG_KEEP_SCREEN_ON` on the app's own window: no wake
+  lock, no permission, it ends when you leave the app, and it never overrides the
+  power button. Off by default, stored in device-protected storage like the other
+  settings that must survive a reboot.
+- The screen-off rule stays: with the switch off, a locked screen still denies a
+  call that needs approval. [docs/FIREWALL.md](docs/FIREWALL.md) names the switch as
+  the mitigation next to that rule, and decision D25 in
+  [docs/DESIGN.md](docs/DESIGN.md) records why it is a window flag and not a wake
+  lock.
+
+### Install
+
+- The README now sends people to
+  [Zapstore](https://zapstore.dev/apps/cz.slush.adbanywhere) first, with the GitHub
+  releases as the second path.
+
+### Known limitations
+
+- The firewall IP allowlist is IPv4-only.
+- Per-key policy, audit export and work-profile apps are not implemented yet.
+- The screen switch covers the app's own screen only. With it off and the phone
+  locked, calls that need approval are denied without a prompt.
+- A reboot does not keep the daemon alive. On mobile data the app needs one
+  Wi-Fi connection or USB `adb tcpip` to redeploy it.
+- Some OEMs do not restart wireless debugging on a Wi-Fi network without
+  internet; enable Wireless debugging once in Settings to recover.
+- Another app can keep the daemon from starting by holding its ports. The app
+  reports the port; change the ports in Settings or reboot.
+
+**Full changelog**: https://github.com/v1b3coder/adb-anywhere/compare/v0.11.0...v0.12.0
+
 ## 0.11.0 — 2026-11-18
 
 Pause without a redeploy. The firewall port can now be closed and reopened on
