@@ -271,6 +271,8 @@ class FirewallProxyTest {
         proxy.start("127.0.0.1", proxyPort, upstream.localPort)
         val bound = proxy.activity.value
         assertEquals(1L, bound)
+        // The UI badge reads frames, not the bind: an idle listener has nothing to show.
+        assertEquals(0L, proxy.frames.value)
         try {
             Socket("127.0.0.1", proxyPort).use { client ->
                 val hello = ByteArrayOutputStream()
@@ -290,6 +292,7 @@ class FirewallProxyTest {
                     withTimeout(3_000) { AdbFrameCodec.read(client.getInputStream()) }!!.command,
                 )
                 assertEquals("pre-auth frames are not activity", bound, proxy.activity.value)
+                assertEquals("pre-auth frames are not traffic", 0L, proxy.frames.value)
 
                 // The device's A_CNXN authenticates the transport and starts the clock.
                 val cnxn = ByteArrayOutputStream()
@@ -306,6 +309,7 @@ class FirewallProxyTest {
                 client.getOutputStream().flush()
                 assertNotNull(withTimeout(3_000) { AdbFrameCodec.read(server.getInputStream()) })
                 assertTrue("a relayed command is activity", proxy.activity.value > authenticated)
+                assertEquals("a relayed command is the traffic badge", 1L, proxy.frames.value)
             }
         } finally {
             proxy.stop()

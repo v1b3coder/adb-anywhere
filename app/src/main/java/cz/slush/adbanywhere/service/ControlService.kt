@@ -128,6 +128,7 @@ class ControlService : Service() {
     private var notificationJob: Job? = null
     private var watchdogJob: Job? = null
     private var autoPauseJob: Job? = null
+    private var trafficJob: Job? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var defaultCallback: ConnectivityManager.NetworkCallback? = null
     private var usbReceiver: android.content.BroadcastReceiver? = null
@@ -1303,6 +1304,28 @@ class ControlService : Service() {
         }
     }
 
+    /**
+     * Mirrors the relay's frame activity into the UI state, so Home can show that a
+     * developer machine is talking to the phone. The flag stays on for a short quiet
+     * window, so one command is one pulse and a session that pauses between frames
+     * does not strobe, and it never starts before a frame has been forwarded.
+     */
+    private fun startTrafficMonitor(proxy: FirewallProxy) {
+        trafficJob?.cancel()
+        trafficJob = scope.launch {
+            proxy.frames.dropWhile { it == 0L }.collectLatest {
+                publishTraffic(true)
+                delay(TRAFFIC_LINGER_MS)
+                publishTraffic(false)
+            }
+        }
+    }
+
+    private fun publishTraffic(on: Boolean) {
+        if (ControlBus.state.value.adbTraffic == on) return
+        ControlBus.update { it.copy(adbTraffic = on) }
+    }
+
     private suspend fun stopStack() = withContext(Dispatchers.IO + NonCancellable) {
         stopFirewall()
         cancelWatchdog()
@@ -1407,7 +1430,10 @@ class ControlService : Service() {
             }
             if (bound) {
                 AppLog.info("firewall", "listening on $vpnIp:${prefs.vpnPort}")
-                synchronized(relayLock) { firewallProxy }?.let(::startAutoPause)
+                synchronized(relayLock) { firewallProxy }?.let {
+                    startAutoPause(it)
+                    startTrafficMonitor(it)
+                }
                 return
             }
             AppLog.warn(
@@ -1466,6 +1492,10 @@ class ControlService : Service() {
             relayEpoch++
             firewallProxy?.stop()
             firewallProxy = null
+            // A closed relay has no traffic to show, and the collector that would
+            // clear the flag on silence is gone with it.
+            trafficJob?.cancel()
+            publishTraffic(false)
             foregroundMonitor?.stop()
             hidePromptOverlay()
             prompts.values.forEach { it.cancel() }
@@ -2504,6 +2534,7 @@ class ControlService : Service() {
         private const val MDNS_RETRY_MS = 5_000L
         private const val MDNS_TIMEOUT_MS = 2_000L
         private const val MAX_PROMPTS = 8
+        private const val TRAFFIC_LINGER_MS = 1_500L
         private const val BIND_ATTEMPTS = 10
         private const val BIND_RETRY_MS = 500L
         private const val MAX_BACKOFF_MS = 15 * 60 * 1000L

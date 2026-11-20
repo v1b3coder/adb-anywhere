@@ -69,9 +69,16 @@ class FirewallProxy(
 
     // D24: every authenticated relayed frame bumps this. The service collects it and
     // restarts its idle timer on each emission, so the clock is adb traffic, not the
-    // app's loopback channel or the watchdog.
+    // app's loopback channel or the watchdog. A bind and an authentication tick it too,
+    // so the timer arms before any command.
     private val activityTicks = MutableStateFlow(0L)
     val activity: StateFlow<Long> = activityTicks.asStateFlow()
+
+    // The frames themselves, for the Home badge. Separate from [activity] because it
+    // must not fire on a bind: a relay that has forwarded nothing has no traffic to
+    // show, and a pulse over an idle listener would be a false signal.
+    private val frameTicks = MutableStateFlow(0L)
+    val frames: StateFlow<Long> = frameTicks.asStateFlow()
 
     val activeSessions: Int get() = synchronized(lock) { connections.size }
     val isListening: Boolean get() = listening
@@ -407,7 +414,10 @@ class FirewallProxy(
                     knownKeys = knownKeys,
                     authTimeoutMs = remaining,
                     onPromptFinished = { onPromptFinished() },
-                    onActivity = { markActivity() },
+                    onActivity = {
+                        markActivity()
+                        frameTicks.update { it + 1 }
+                    },
                     onClose = { close() },
                 )
                 this.relay = relay

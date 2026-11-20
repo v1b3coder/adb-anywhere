@@ -41,6 +41,12 @@ data class ControlState(
      */
     val adbStatus: AdbStatus? = null,
     val firewall: FirewallState = FirewallState(),
+    /**
+     * D24's clock, mirrored for the status hero: the relay forwarded an
+     * authenticated ADB frame within the last moment. Only the firewall relay
+     * sees frames, so a direct VPN listener never sets it.
+     */
+    val adbTraffic: Boolean = false,
 ) {
     val running: Boolean get() = phase == Phase.Running
 

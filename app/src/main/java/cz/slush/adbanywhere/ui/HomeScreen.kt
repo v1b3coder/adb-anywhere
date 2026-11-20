@@ -3,6 +3,12 @@
  */
 package cz.slush.adbanywhere.ui
 
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -43,6 +49,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -162,7 +169,28 @@ private fun StatusHero(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
-                    Surface(color = onContainer.copy(alpha = 0.14f), shape = CircleShape) {
+                    // adb traffic pulses the badge, so a live session is visible at a
+                    // glance without reading the audit log. Only the relay sees ADB
+                    // frames, so direct mode has no traffic to show.
+                    val traffic = state.adbTraffic && state.phase == Phase.Running &&
+                        !paused && !firewallDown
+                    val pulse = if (traffic) {
+                        rememberInfiniteTransition(label = "adb-traffic").animateFloat(
+                            initialValue = 0f,
+                            targetValue = 1f,
+                            animationSpec = infiniteRepeatable(
+                                animation = tween(700, easing = FastOutSlowInEasing),
+                                repeatMode = RepeatMode.Reverse,
+                            ),
+                            label = "adb-traffic-pulse",
+                        ).value
+                    } else {
+                        0f
+                    }
+                    Surface(
+                        color = onContainer.copy(alpha = 0.14f + 0.16f * pulse),
+                        shape = CircleShape,
+                    ) {
                         Icon(
                             when {
                                 firewallDown -> Icons.Rounded.ErrorOutline
@@ -174,7 +202,7 @@ private fun StatusHero(
                                 else -> Icons.Rounded.PlayArrow
                             },
                             contentDescription = null,
-                            modifier = Modifier.padding(12.dp).size(30.dp),
+                            modifier = Modifier.padding(12.dp).size(30.dp).scale(1f + 0.12f * pulse),
                             tint = onContainer,
                         )
                     }

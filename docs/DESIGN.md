@@ -418,6 +418,10 @@ port.
    clear it, and it is not `firewallDown`: nothing is broken. Resume is a bind, never a
    deployment, which is why it works on mobile data. Auto pause is the same state on a
    timer: it takes the pause path, so every reader of the intent treats it identically.
+7. Only the relay sees ADB frames, so the Home status badge pulses on ADB traffic in
+   firewall mode only. The pulse reads D24's clock, published by the service as a
+   boolean that stays on for a short quiet window; a direct-mode listener has no
+   observer in the app, and Home stays static there.
 
 ### Lifecycle invariants
 
