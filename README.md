@@ -83,12 +83,12 @@ the manual command instead of failing silently.
 After setup, connect from the computer:
 
 ```sh
-adb connect <vpn-ip>:15038
+adb connect <vpn-ip>:5556
 ```
 
-The VPN port defaults to `15038`; both ports are configurable in
-Settings → Ports. The app's own channel defaults to `127.0.0.1:15037` and is not
-reachable from the network.
+The VPN port defaults to `5556`, one above the standard adb port `5555`; both ports
+are configurable in Settings → Ports. The app's own channel defaults to
+`127.0.0.1:15037` and is not reachable from the network.
 
 ## Start, pause and stop
 

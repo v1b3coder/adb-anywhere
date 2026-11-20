@@ -9,8 +9,12 @@ cd "$(dirname "$0")/.."
 serial=${E2E_SERIAL:-emulator-5560}
 pkg=cz.slush.adbanywhere
 apk=app/build/outputs/apk/debug/app-debug.apk
-relay_port=15038
-relay=127.0.0.1:$relay_port
+# The app's VPN port, on the relay side.
+device_port=5556
+# The host forward gets a port of its own, so it cannot collide with an emulator
+# console that happens to own 5556.
+host_port=15556
+relay=127.0.0.1:$host_port
 host_key=$(cut -d' ' -f1 "$HOME/.android/adbkey.pub")
 tmp=$(mktemp -d)
 failures=0
@@ -18,7 +22,7 @@ failures=0
 cleanup() {
     adb -s "$serial" shell "am broadcast -n $pkg/.service.DebugReceiver -a cz.slush.adbanywhere.DEBUG --ez stop true" >/dev/null 2>&1 || true
     adb disconnect "$relay" >/dev/null 2>&1 || true
-    adb -s "$serial" forward --remove tcp:$relay_port >/dev/null 2>&1 || true
+    adb -s "$serial" forward --remove tcp:$host_port >/dev/null 2>&1 || true
     rm -rf "$tmp"
 }
 trap cleanup EXIT
@@ -155,7 +159,7 @@ scroll_down() {
 relay_connect() {
     # The app restarts the system adbd when it takes the VPN port, which drops
     # the host forward; recreate it before every relay connection.
-    adb -s "$serial" forward tcp:$relay_port tcp:$relay_port >/dev/null 2>&1 || true
+    adb -s "$serial" forward tcp:$host_port tcp:$device_port >/dev/null 2>&1 || true
     adb disconnect "$relay" >/dev/null 2>&1 || true
     adb connect "$relay" >/dev/null 2>&1 || true
     sleep 2
@@ -240,8 +244,8 @@ debug "--es vpnIp 127.0.0.1"
 sleep 3
 debug "--ez firewall true"
 sleep 8
-adb -s "$serial" shell "netstat -ltn 2>/dev/null" | grep -q "127.0.0.1:$relay_port" && ok "relay listening" || bad "relay not listening"
-adb -s "$serial" forward tcp:$relay_port tcp:$relay_port >/dev/null
+adb -s "$serial" shell "netstat -ltn 2>/dev/null" | grep -q "127.0.0.1:$device_port" && ok "relay listening" || bad "relay not listening"
+adb -s "$serial" forward tcp:$host_port tcp:$device_port >/dev/null
 relay_connect
 i=0
 while [ "$i" -lt 20 ]; do

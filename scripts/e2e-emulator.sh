@@ -8,8 +8,12 @@ serial=${E2E_SERIAL:-emulator-5556}
 pkg=cz.slush.adbanywhere
 apk=app/build/outputs/apk/debug/app-debug.apk
 # The loopback listener (15037) is TLS for the app's own key only. A developer
-# machine uses the plain listener, which the debug VPN override puts on loopback.
-host_port=15038
+# machine uses the plain listener, which the debug VPN override puts on loopback
+# at the app's VPN port.
+device_port=5556
+# The host forward gets a port of its own: this script's default serial is
+# emulator-5556, and that emulator's console owns host port 5556.
+host_port=15556
 host_key=$(cut -d' ' -f1 "$HOME/.android/adbkey.pub")
 
 ./gradlew :app:assembleDebug --no-daemon -q
@@ -53,7 +57,7 @@ sleep 4
 # adbd, then connect and run a shell with the developer key that was just
 # added.  This is the same path a developer machine uses on a phone.
 adb -s "$serial" forward --remove tcp:"$host_port" >/dev/null 2>&1 || true
-adb -s "$serial" forward tcp:"$host_port" tcp:"$host_port" >/dev/null
+adb -s "$serial" forward tcp:"$host_port" tcp:"$device_port" >/dev/null
 adb connect 127.0.0.1:"$host_port" >/dev/null
 adb -s 127.0.0.1:"$host_port" shell id | grep -q 'uid='
 adb disconnect 127.0.0.1:"$host_port" >/dev/null

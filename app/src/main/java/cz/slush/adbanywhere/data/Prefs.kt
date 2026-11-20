@@ -251,7 +251,12 @@ class Prefs(context: Context) {
         private const val USER_WANTS_RUNNING = "user_wants_running"
 
         const val DEFAULT_LOOPBACK_PORT = 15037
-        const val DEFAULT_VPN_PORT = 15038
+
+        /**
+         * The VPN listener's default: one above the standard adb port, so it is
+         * as easy to remember as 5555 and still never the system adbd's own.
+         */
+        const val DEFAULT_VPN_PORT = 5556
 
         /** The legacy plain `adb tcpip` listener that the system adbd binds. */
         const val PLAIN_ADB_PORT = 5555

@@ -701,6 +701,11 @@ class ControlService : Service() {
                 val vpnChanged = vpnIp != previous.vpnIp
                 val portsChanged = prefs.loopbackPort != previous.loopbackPort ||
                     prefs.vpnPort != previous.vpnPort
+                // A daemon from an earlier build still listens on the ports it was
+                // started with. It answers the loopback probe but does not hold the
+                // VPN port this build asks for, so it is restarted, not adopted.
+                val vpnListenerMissing = exposeVpn && vpnIp != null &&
+                    !SystemSettings.isPortOpen(vpnIp, prefs.vpnPort)
                 // D23: adopt the verified daemon when nothing about it has to change.
                 // The binary hash comes last, so a restart that is already required
                 // costs no hash of the whole binary.
@@ -709,6 +714,7 @@ class ControlService : Service() {
                         forceRestart = forceRestart,
                         portsChanged = portsChanged,
                         vpnListenerChanged = exposeVpn && vpnChanged,
+                        vpnListenerMissing = vpnListenerMissing,
                         firewallChanged = firewallChanged,
                         vpnPortBusy = vpnPortBusy,
                         legacy = legacyShell != null,
@@ -721,7 +727,8 @@ class ControlService : Service() {
                 AppLog.info(
                     "setup",
                     "deploy: adbAlive=$daemonAlive vpnChanged=$vpnChanged " +
-                        "portsChanged=$portsChanged firewallChanged=$firewallChanged " +
+                        "portsChanged=$portsChanged vpnListenerMissing=$vpnListenerMissing " +
+                        "firewallChanged=$firewallChanged " +
                         "vpnPortBusy=$vpnPortBusy adopt=$adopt restart=$restart",
                 )
                 if (daemonAlive && !restart) {

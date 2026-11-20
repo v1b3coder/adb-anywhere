@@ -69,7 +69,7 @@ part of the supported workflow. Behaviour is tested on a device (see Tests).
 
 ```sh
 adbd --tls-listen tcp:127.0.0.1:15037 \
-     [--listen tcp:<vpn-ip>:15038] \
+     [--listen tcp:<vpn-ip>:5556] \
      --tls-key /data/local/tmp/adb-anywhere/tls_server.pem \
      --tls-clients /data/local/tmp/adb-anywhere/tls_clients \
      --keys /data/local/tmp/adb-anywhere/adb_keys \

@@ -89,6 +89,7 @@ class SetupPolicyTest {
         forceRestart: Boolean = false,
         portsChanged: Boolean = false,
         vpnListenerChanged: Boolean = false,
+        vpnListenerMissing: Boolean = false,
         firewallChanged: Boolean = false,
         vpnPortBusy: Boolean = false,
         legacy: Boolean = false,
@@ -96,6 +97,7 @@ class SetupPolicyTest {
         forceRestart = forceRestart,
         portsChanged = portsChanged,
         vpnListenerChanged = vpnListenerChanged,
+        vpnListenerMissing = vpnListenerMissing,
         firewallChanged = firewallChanged,
         vpnPortBusy = vpnPortBusy,
         legacy = legacy,
@@ -113,6 +115,8 @@ class SetupPolicyTest {
         assertFalse(adoptable(forceRestart = true))
         assertFalse(adoptable(portsChanged = true))
         assertFalse(adoptable(vpnListenerChanged = true))
+        // A daemon from an earlier build listens on the ports it was started with.
+        assertFalse(adoptable(vpnListenerMissing = true))
         assertFalse(adoptable(firewallChanged = true))
         assertFalse(adoptable(vpnPortBusy = true))
         assertFalse(adoptable(legacy = true))
