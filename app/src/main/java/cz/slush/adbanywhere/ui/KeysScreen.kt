@@ -307,6 +307,7 @@ private fun AddKeyDialog(
                         label = { Text("Public key") },
                         placeholder = { Text("Paste the command's output") },
                         minLines = 3,
+                        maxLines = 5,
                         isError = text.isNotBlank() && parsed == null,
                         supportingText = {
                             Text(
