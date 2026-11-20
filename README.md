@@ -3,6 +3,18 @@
 Remote wireless ADB that follows your phone — over VPN, on mobile data, across
 network changes. No root, stock Android 12+.
 
+[![CI](https://github.com/v1b3coder/adb-anywhere/actions/workflows/ci.yml/badge.svg)](https://github.com/v1b3coder/adb-anywhere/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/v1b3coder/adb-anywhere?label=release)](https://github.com/v1b3coder/adb-anywhere/releases/latest)
+[![license](https://img.shields.io/github/license/v1b3coder/adb-anywhere)](LICENSE)
+
+<p>
+  <img src="docs/store/home.png" alt="Home: ADB is reachable through the firewall relay" width="230">
+  <img src="docs/store/firewall.png" alt="Firewall: IP and app allowlists, auto pause" width="230">
+  <img src="docs/store/keys.png" alt="Keys: the machines allowed to connect" width="230">
+</p>
+
+[Get it on Zapstore](https://zapstore.dev/apps/cz.slush.adbanywhere) · [signed APK](https://github.com/v1b3coder/adb-anywhere/releases/latest)
+
 ADB Anywhere exists for one workflow: a real-time programming loop for small
 Android utilities while traveling. The author runs T3 Code on the phone and keeps ADB
 Anywhere in the loop, so the agent can write, deploy and test directly on the same
@@ -40,7 +52,8 @@ in [docs/FIREWALL.md](docs/FIREWALL.md). Release notes are in
 
 ## Install
 
-Download the latest signed APK from the
+Get it from [Zapstore](https://zapstore.dev/apps/cz.slush.adbanywhere), or download
+the latest signed APK from the
 [GitHub releases](https://github.com/v1b3coder/adb-anywhere/releases/latest) and
 install it on the phone. Install a newer release over the current one; no uninstall
 is needed. 0.x releases are previews.
@@ -197,6 +210,13 @@ not isolated. The full design and its limits are in
   needs Android's adb once to redeploy it.
 - Another app can keep the daemon from starting by holding its ports. The app
   reports the port; change the ports in Settings or reboot.
+
+## Build
+
+The Makefile owns every build, test and install command, and `make help` lists
+them. `make check` is the gate CI runs: unit tests, lint and the debug APK. The
+Gradle build compiles the vendored `adbd` for every ABI on `preBuild`, so a local
+build needs the Android NDK; `ADBD_SKIP_BUILD=1` keeps the existing assets.
 
 ## License
 
