@@ -7,7 +7,7 @@
 #   ABI                one adbd ABI for adbd-abi (default arm64-v8a)
 #   ADBD_SKIP_BUILD    1 = use app/src/main/assets/adbd/ as-is, no NDK build
 #   E2E_SERIAL         rooted emulator serial for the e2e targets
-#   PHONE               phone address for install-phone
+#   PHONE               phone address; detected when unset
 #   ADB_INSTALL_FLAGS   install flags for install-phone
 #
 # Every Gradle target builds the daemon on preBuild: adbd/build.sh
@@ -32,16 +32,22 @@
 # The overlay cannot show over the keyguard: keep the phone unlocked and the app
 # in the foreground.
 #
-# `adb install` prints an empty "failed to install" message when the package
-# manager replaces the app and kills it mid-stream. The install still completes;
-# verify with `make phone-version`.
+# The install replaces the app that carries the relay, so the stream always dies
+# with the old process: `adb install` ends with an empty "failed to install" and
+# a non-zero exit even when the install succeeded. That message and that exit
+# code are not a verdict, and nothing may read them as one. The target decides by
+# hashing the installed APK against the build: it waits for the phone to come
+# back and fails only when the installed bytes differ.
 
 SHELL := /bin/sh
 
 ABI ?= arm64-v8a
 ADBD_SKIP_BUILD ?= 0
 E2E_SERIAL ?= emulator-5560
-PHONE ?= 100.64.0.10:5556
+# The phone address is its Tailscale address, so it is not fixed. Detect it when
+# PHONE is unset, and only when adb sees exactly one non-emulator transport: zero
+# or several leave it empty and the targets say so instead of talking to nothing.
+PHONE ?= $(shell set -- $$(adb devices 2>/dev/null | awk '$$2 == "device" && $$1 !~ /^emulator-/ {print $$1}'); [ $$# = 1 ] && echo $$1)
 ADB_INSTALL_FLAGS ?= -r
 PKG := cz.slush.adbanywhere
 APK := app/build/outputs/apk/debug/app-debug.apk
@@ -66,14 +72,14 @@ help:
 	  'make adbd-tests' 'Build the adbd shared-core tests (x86_64)' \
 	  'make e2e' 'Run the control-plane e2e on a rooted emulator' \
 	  'make e2e-firewall' 'Run the firewall e2e on a rooted emulator' \
-	  'make install-phone' 'Build and install on the phone through the relay' \
+	  'make install-phone' 'Build, install on the phone and verify the bytes' \
 	  'make phone-version' 'Show the installed package version and update time' \
 	  'make clean' 'Clean the Gradle build'
 	@printf '\n  %s\n' \
 	  'ABI: $(ABI) (override with ABI=...)' \
 	  'ADBD_SKIP_BUILD: $(ADBD_SKIP_BUILD) (1 = use the assets as-is)' \
 	  'E2E serial: $(E2E_SERIAL) (override with E2E_SERIAL=...)' \
-	  'Phone: $(PHONE) (override with PHONE=host:port)' \
+	  'Phone: $(or $(PHONE),none detected) (override with PHONE=host:port)' \
 	  'Install flags: $(ADB_INSTALL_FLAGS) (override with ADB_INSTALL_FLAGS=...)' \
 	  'phone-version is a shell call and may also ask for approval.'
 
@@ -105,25 +111,13 @@ e2e-firewall:
 	E2E_SERIAL=$(E2E_SERIAL) ./scripts/e2e-firewall-emulator.sh
 
 install-phone: build
-	@echo "Connecting to $(PHONE)..."
-	@adb connect $(PHONE) >/dev/null 2>&1 || true
-	@printf '\n%s\n' \
-	  'The install is an abb_exec call through the firewall relay.' \
-	  'On the phone, approve the card:' \
-	  '  1. Tap Custom filter.' \
-	  '  2. Keep argv[0]=package and argv[1]=install checked.' \
-	  '  3. Uncheck argv[2] and later; -S, size and path vary.' \
-	  '  4. Tap Save rule to whitelist future install calls.' \
-	  'If it is a notification, tap Review first. Keep the phone unlocked.' \
-	  ''
-	-adb -s $(PHONE) install $(ADB_INSTALL_FLAGS) $(APK)
-	@printf '\n%s\n' \
-	  'An empty "failed to install" message is expected: the package manager' \
-	  'kills the app while replacing it and closes the relay stream. The install' \
-	  'still completes. Verify with: make phone-version'
+	@PHONE='$(PHONE)' APK='$(APK)' PKG='$(PKG)' \
+	  ADB_INSTALL_FLAGS='$(ADB_INSTALL_FLAGS)' ./scripts/install-phone.sh
 
 phone-version:
-	adb -s $(PHONE) shell "dumpsys package $(PKG) | grep -E 'versionName|lastUpdateTime' | head -3"
+	@test -n '$(PHONE)' || { echo 'No single phone address; pass PHONE=host:port.'; exit 1; }
+	@adb connect $(PHONE) >/dev/null 2>&1 || true
+	@adb -s $(PHONE) shell "dumpsys package $(PKG) | grep -E 'versionName=|lastUpdateTime='" | sed 's/^ */  /'
 
 clean:
 	./gradlew clean --no-daemon

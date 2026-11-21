@@ -54,6 +54,12 @@ drift is a defect.
 The Makefile owns every command, its variables and the `install-phone` approval
 flow; `make help` lists the targets. Do not copy commands into docs or commits.
 
+Installing replaces the app that carries the relay, so `adb install` always ends
+in a killed stream: an empty "failed to install" and a non-zero exit, even when
+the install succeeded. That output is not a verdict. `make install-phone` waits
+for the phone to come back and proves the build by hashing the installed APK; it
+fails only when the bytes differ. Never debug that message by hand.
+
 - `make check` is the CI gate locally: JVM tests, lint and the debug APK.
 - `make adbd`, `make adbd-abi ABI=...` and `make adbd-tests` build the daemon;
   a local build needs the Android NDK.
