@@ -12,6 +12,21 @@ here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 build=${BUILD_DIR:-$here/build}
 src=$build/src
 
+sdk=${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}}
+# The SDK ships its own cmake and ninja; a CI runner or a service environment
+# starts with neither on PATH, so fall back to the SDK copy before giving up.
+if ! command -v cmake >/dev/null 2>&1; then
+    sdkcmake=$(ls -d "$sdk"/cmake/*/bin 2>/dev/null | sort -V | tail -1 || true)
+    if [ -n "$sdkcmake" ]; then
+        PATH=$sdkcmake:$PATH
+        export PATH
+    fi
+fi
+if ! command -v cmake >/dev/null 2>&1; then
+    echo "cmake not found; install it or put the SDK cmake on PATH" >&2
+    exit 1
+fi
+
 mkdir -p "$build"
 # Gradle and a manual test build may run at the same time; serialise them.
 exec 9>"$build/.lock"
@@ -45,7 +60,6 @@ fi
 
 ndk=${ANDROID_NDK_HOME:-}
 if [ -z "$ndk" ]; then
-    sdk=${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}}
     ndk=$(ls -d "$sdk"/ndk/* 2>/dev/null | sort -V | tail -1 || true)
 fi
 if [ -z "$ndk" ] || [ ! -d "$ndk" ]; then
