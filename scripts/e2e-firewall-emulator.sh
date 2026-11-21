@@ -92,8 +92,7 @@ tap_text() {
     local xy
     xy=$(ui_center "$1")
     if [ -z "$xy" ]; then
-        adb -s "$serial" shell input swipe 540 1800 540 1000 200
-        sleep 1
+        scroll_down
         xy=$(ui_center "$1")
     fi
     [ -n "$xy" ] || return 1
@@ -151,8 +150,15 @@ tap_last_text() {
     adb -s "$serial" shell input tap "$xy"
 }
 
+# A swipe that starts below the display does nothing, and the AVD sizes differ:
+# the old fixed 540 1800 start point left the call rules unreachable from a
+# 720x1280 screen, so take the coordinates from the device.
 scroll_down() {
-    adb -s "$serial" shell input swipe 540 1800 540 800 250
+    local size w h
+    size=$(adb -s "$serial" shell wm size | tr -d '\r' | sed 's/.*: //')
+    w=${size%x*}
+    h=${size#*x}
+    adb -s "$serial" shell input swipe $((w / 2)) $((h * 8 / 10)) $((w / 2)) $((h * 4 / 10)) 250
     sleep 1
 }
 
@@ -471,7 +477,9 @@ done
 [ "$i" -lt 20 ] && ok "firewall on restores the relay" || bad "firewall on restores the relay"
 
 say "audit"
-for event in connection_open call_open call_prompted call_allowed call_denied call_timeout ip_denied app_denied; do
+# No `call_open`: a call records one decision row, not an open plus a decision
+# (AdbRelay.kt, docs/FIREWALL.md). Asserting it can only ever fail.
+for event in connection_open call_prompted call_allowed call_denied call_timeout ip_denied app_denied; do
     audit_has "$event" && ok "$event" || bad "$event"
 done
 
