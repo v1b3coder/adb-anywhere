@@ -8,7 +8,7 @@ cd "$(dirname "$0")/.."
 
 serial=${E2E_SERIAL:-emulator-5560}
 pkg=cz.slush.adbanywhere
-apk=app/build/outputs/apk/debug/app-debug.apk
+apk=app/build/outputs/apk/x86/debug/app-x86-debug.apk
 # The app's VPN port, on the relay side.
 device_port=5556
 # The host forward gets a port of its own, so it cannot collide with an emulator
@@ -214,7 +214,7 @@ finish_call() {
 }
 
 say "build and install"
-./gradlew :app:assembleDebug --no-daemon -q || exit 1
+./gradlew :app:assembleX86Debug --no-daemon -q || exit 1
 adb -s "$serial" install -r "$apk" >/dev/null || exit 1
 
 say "prepare the emulator"

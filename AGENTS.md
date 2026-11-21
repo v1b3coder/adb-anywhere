@@ -44,8 +44,9 @@ drift is a defect.
 - Do not add a second daemon implementation or reimplement protocol code. The daemon
   stays policy-free; filtering lives in the app relay.
 - `adbd/build.sh` applies the patches to `build/src` and builds with the NDK.
-  `syncAdbd` copies the per-ABI binaries into `app/src/main/assets/adbd/`, which is
-  never committed.
+  `syncAdbd` drops the per-ABI binaries into `app/adbd-bin/` and fans each flavor
+  out to `app/src/<flavor>/assets/adbd/`, so an APK carries only its own ABI.
+  Both are generated and never committed.
 - Keep the licenses: the app is MIT, the daemon Apache-2.0; update `NOTICE` when the
   fork moves.
 
@@ -66,8 +67,8 @@ fails only when the bytes differ. Never debug that message by hand.
 - `.github/workflows/ci.yml` runs tests, lint and assemble on every push to `main`
   and every PR; keep it green.
 
-- Never commit `signing/`, keystores, `local.properties` or
-  `app/src/main/assets/adbd/`.
+- Never commit `signing/`, keystores, `local.properties`, `app/adbd-bin/` or
+  `app/src/*/assets/adbd/`.
 - Commits: Conventional Commits with a scope (`fix(firewall):`, `docs(design):`).
   The body states the defect, the fix and the tests run.
 - Release: push a `vMAJOR.MINOR[.PATCH]` tag to `github`; `origin` (Gitea) does

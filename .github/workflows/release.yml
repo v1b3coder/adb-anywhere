@@ -117,7 +117,7 @@ jobs:
           fi
 
       - name: Run unit tests
-        run: ./gradlew :app:testDebugUnitTest -PadbdSkipBuild=true
+        run: ./gradlew :app:testArmDebugUnitTest -PadbdSkipBuild=true
 
       - name: Decode release keystore
         env:
@@ -130,7 +130,7 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           name: ${{ needs.adbd.outputs.artifact }}
-          path: app/src/main/assets/adbd
+          path: app/adbd-bin
 
       - name: Build signed release APK
         env:
@@ -139,7 +139,7 @@ jobs:
           RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
           VERSION_NAME: ${{ steps.version.outputs.VERSION_NAME }}
           VERSION_CODE: ${{ steps.version.outputs.VERSION_CODE }}
-        run: ./gradlew :app:assembleRelease -PversionName="$VERSION_NAME" -PversionCode="$VERSION_CODE" -PadbdSkipBuild=true
+        run: ./gradlew :app:assembleUniversalRelease -PversionName="$VERSION_NAME" -PversionCode="$VERSION_CODE" -PadbdSkipBuild=true
 
       - name: Verify signature and version
         env:
@@ -149,7 +149,7 @@ jobs:
         run: |
           set -euo pipefail
           BT="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
-          APK=app/build/outputs/apk/release/app-release.apk
+          APK=app/build/outputs/apk/universal/release/app-universal-release.apk
           FP="$("$BT/apksigner" verify --print-certs "$APK" | awk '/certificate SHA-256 digest/{print $NF; exit}')"
           echo "Signing certificate SHA-256: $FP"
           if [[ -n "${EXPECTED_CERT_SHA256:-}" && "$FP" != "$EXPECTED_CERT_SHA256" ]]; then
@@ -169,7 +169,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          mv app/build/outputs/apk/release/app-release.apk "dist/adb-anywhere-${VERSION_NAME}.apk"
+          mv app/build/outputs/apk/universal/release/app-universal-release.apk "dist/adb-anywhere-${VERSION_NAME}.apk"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v7

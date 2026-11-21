@@ -47,10 +47,10 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           name: ${{ needs.adbd.outputs.artifact }}
-          path: app/src/main/assets/adbd
+          path: app/adbd-bin
 
       - name: Test, lint and assemble
-        run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug -PadbdSkipBuild=true
+        run: ./gradlew :app:testArmDebugUnitTest :app:lintArmDebug :app:assembleArmDebug -PadbdSkipBuild=true
 
       - name: Upload reports
         if: failure()
@@ -58,6 +58,6 @@ jobs:
         with:
           name: reports
           path: |
-            app/build/reports/lint-results-debug.html
+            app/build/reports/lint-results-armDebug.html
             app/build/reports/tests/
           if-no-files-found: ignore

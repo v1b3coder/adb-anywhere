@@ -9,7 +9,9 @@ build/
 !adbd/stubs/build/
 !adbd/vendor/boringssl/util/build/
 # Built by syncAdbd locally and injected from the CI artifact; never committed.
-app/src/main/assets/adbd/
+# `adbd-bin/` is the drop point, `src/<flavor>/assets/adbd/` is what each APK ships.
+app/adbd-bin/
+app/src/*/assets/adbd/
 local.properties
 *.iml
 .idea/

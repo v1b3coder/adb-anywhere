@@ -26,6 +26,20 @@ val releaseStorePassword = signingValue("storePassword", "RELEASE_KEYSTORE_PASSW
 val releaseKeyAlias = signingValue("keyAlias", "RELEASE_KEY_ALIAS")
 val releaseKeyPassword = signingValue("keyPassword", "RELEASE_KEY_PASSWORD")
 
+/*
+ * One APK per ABI family instead of every ABI in every APK. The phone builds `arm`,
+ * the e2e emulator builds `x86`, and `universal` keeps the release installable on
+ * every device. A flavor carries only its own adbd binary and native libraries, so
+ * the arm APK does not pay for the x86 daemon it can never run.
+ */
+val flavorAbis = mapOf(
+    "arm" to listOf("arm64-v8a"),
+    "x86" to listOf("x86_64"),
+    "universal" to listOf("arm64-v8a", "armeabi-v7a", "x86_64"),
+)
+val adbdBinDir = file("adbd-bin")
+val adbdFlavorAssets: Map<String, File> = flavorAbis.keys.associateWith { file("src/$it/assets/adbd") }
+
 android {
     namespace = "cz.slush.adbanywhere"
     compileSdk = 36
@@ -41,6 +55,20 @@ android {
         manifestPlaceholders["debugReceiverEnabled"] = "false"
     }
 
+    flavorDimensions += "abi"
+    productFlavors {
+        flavorAbis.forEach { (name, abis) ->
+            create(name) {
+                dimension = "abi"
+                // universal is left unfiltered: it keeps every ABI the dependencies
+                // and the adbd assets provide, exactly as the release always shipped.
+                if (name != "universal") {
+                    ndk { abiFilters.addAll(abis) }
+                }
+            }
+        }
+    }
+
     signingConfigs {
         if (releaseKeystore != null) {
             create("release") {
@@ -54,6 +82,9 @@ android {
 
     buildTypes {
         debug {
+            // Still a debug build as far as the app is concerned: BuildConfig.DEBUG
+            // keeps the debug receiver, the VPN override and `run-as` that the e2e
+            // scripts need. Only the code size is optimized, see below.
             manifestPlaceholders["debugReceiverEnabled"] = "true"
         }
         release {
@@ -61,12 +92,23 @@ android {
             if (releaseKeystore != null) {
                 signingConfig = signingConfigs.getByName("release")
             }
-            isMinifyEnabled = false
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro",
-            )
         }
+    }
+
+    /*
+     * Every variant ships an optimized APK: the debug one is the release build
+     * signed with the debug key, so it installs over an existing debug install and
+     * the whole build still fits through the relay. Unshrunk it was 80 MB, almost
+     * all dex: material-icons-extended, CameraX, BouncyCastle and Conscrypt were
+     * packaged whole and none of the unused code was ever removed.
+     */
+    buildTypes.configureEach {
+        isMinifyEnabled = true
+        isShrinkResources = true
+        proguardFiles(
+            getDefaultProguardFile("proguard-android-optimize.txt"),
+            "proguard-rules.pro",
+        )
     }
 
     compileOptions {
@@ -118,7 +160,6 @@ val skipAdbdBuild = providers.gradleProperty("adbdSkipBuild")
     .orElse(false)
 val syncAdbd = tasks.register("syncAdbd") {
     val subproject = adbdDir.get()
-    val assets = file("src/main/assets/adbd")
     // Declared inputs and outputs, so an unchanged tree with the binaries
     // already in place makes this a no-op instead of re-copying the vendor tree,
     // re-applying the patches and re-running cmake on every build. They are only
@@ -134,24 +175,36 @@ val syncAdbd = tasks.register("syncAdbd") {
         inputs.dir(subproject.resolve("tests"))
         inputs.dir(subproject.resolve("vendor"))
     }
-    outputs.dir(assets)
+    outputs.dirs(*adbdFlavorAssets.values.toTypedArray())
     doLast {
-        if (skipAdbdBuild.get()) {
-            logger.lifecycle("adbd build skipped; using assets as-is")
-            return@doLast
+        if (!skipAdbdBuild.get()) {
+            check(subproject.resolve("build.sh").exists()) {
+                "adbd/ not found at ${subproject}; pass -PadbdSkipBuild=true to use adbd-bin/ as-is"
+            }
+            val process = ProcessBuilder("sh", "-c", "cd '${subproject.absolutePath}' && ./build.sh")
+                .inheritIO()
+                .start()
+            check(process.waitFor() == 0) { "adbd build failed" }
+            copy {
+                from(subproject.resolve("build/out")) { include("*/adbd") }
+                into(adbdBinDir)
+            }
+            logger.lifecycle("adbd built into ${adbdBinDir.name}/")
         }
-        check(subproject.resolve("build.sh").exists()) {
-            "adbd/ not found at ${subproject}; pass -PadbdSkipBuild=true to use the assets as-is"
+        flavorAbis.forEach { (flavor, abis) ->
+            val target = adbdFlavorAssets.getValue(flavor)
+            delete(target)
+            abis.forEach { abi ->
+                val binary = adbdBinDir.resolve("$abi/adbd")
+                check(binary.exists()) {
+                    "adbd-bin/$abi/adbd is missing; build the daemon or drop the artifact there"
+                }
+                copy {
+                    from(binary)
+                    into(target.resolve(abi))
+                }
+            }
         }
-        val process = ProcessBuilder("sh", "-c", "cd '${subproject.absolutePath}' && ./build.sh")
-            .inheritIO()
-            .start()
-        check(process.waitFor() == 0) { "adbd build failed" }
-        copy {
-            from(subproject.resolve("build/out")) { include("*/adbd") }
-            into(assets)
-        }
-        logger.lifecycle("adbd synced from ${subproject}")
     }
 }
 

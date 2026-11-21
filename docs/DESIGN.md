@@ -779,7 +779,7 @@ a different mode.
   Wi-Fi↔cellular, USB attach/detach, Doze.
 - Device, firewall: toggle with a live session, `TIME_WAIT` rebind, mode change with
   the daemon already up, Stop→Start, process kill, VPN address change.
-- CI: `./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug`;
+- CI: `./gradlew :app:testArmDebugUnitTest :app:lintArmDebug :app:assembleArmDebug`;
   no device tests in CI.
 
 ## 11. Phasing

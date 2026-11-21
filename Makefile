@@ -5,16 +5,20 @@
 # `make build ADBD_SKIP_BUILD=1`.
 #
 #   ABI                one adbd ABI for adbd-abi (default arm64-v8a)
-#   ADBD_SKIP_BUILD    1 = use app/src/main/assets/adbd/ as-is, no NDK build
+#   ADBD_SKIP_BUILD    1 = use app/adbd-bin/ as-is, no NDK build
 #   E2E_SERIAL         rooted emulator serial for the e2e targets
 #   PHONE               phone address; detected when unset
 #   ADB_INSTALL_FLAGS   install flags for install-phone
 #
 # Every Gradle target builds the daemon on preBuild: adbd/build.sh
-# cross-compiles the vendored AOSP adbd and syncAdbd copies the per-ABI
-# binaries into app/src/main/assets/adbd/, which is never committed. A local
-# build therefore needs the Android NDK; ADBD_SKIP_BUILD=1 skips the build and
-# keeps the assets.
+# cross-compiles the vendored AOSP adbd and syncAdbd drops the per-ABI binaries
+# into app/adbd-bin/, which is never committed. A local build therefore needs the
+# Android NDK; ADBD_SKIP_BUILD=1 skips the build and keeps adbd-bin/.
+#
+# The ABI is a product flavor: `arm` (arm64-v8a) is what build and install-phone
+# produce, `x86` (x86_64) is what the e2e scripts build for the emulator, and
+# `universal` carries every ABI for the release. Each flavor ships only its own
+# adbd binary and native libraries.
 #
 # `make install-phone` builds the debug APK and installs it on the phone through
 # the app's firewall relay. The install is an `abb_exec` call, so the call policy
@@ -50,7 +54,7 @@ E2E_SERIAL ?= emulator-5560
 PHONE ?= $(shell set -- $$(adb devices 2>/dev/null | awk '$$2 == "device" && $$1 !~ /^emulator-/ {print $$1}'); [ $$# = 1 ] && echo $$1)
 ADB_INSTALL_FLAGS ?= -r
 PKG := cz.slush.adbanywhere
-APK := app/build/outputs/apk/debug/app-debug.apk
+APK := app/build/outputs/apk/arm/debug/app-arm-debug.apk
 
 GRADLE := ./gradlew --no-daemon
 ifeq ($(ADBD_SKIP_BUILD),1)
@@ -77,23 +81,23 @@ help:
 	  'make clean' 'Clean the Gradle build'
 	@printf '\n  %s\n' \
 	  'ABI: $(ABI) (override with ABI=...)' \
-	  'ADBD_SKIP_BUILD: $(ADBD_SKIP_BUILD) (1 = use the assets as-is)' \
+	  'ADBD_SKIP_BUILD: $(ADBD_SKIP_BUILD) (1 = use adbd-bin/ as-is)' \
 	  'E2E serial: $(E2E_SERIAL) (override with E2E_SERIAL=...)' \
 	  'Phone: $(or $(PHONE),none detected) (override with PHONE=host:port)' \
 	  'Install flags: $(ADB_INSTALL_FLAGS) (override with ADB_INSTALL_FLAGS=...)' \
 	  'phone-version is a shell call and may also ask for approval.'
 
 build:
-	$(GRADLE) :app:assembleDebug
+	$(GRADLE) :app:assembleArmDebug
 
 test:
-	$(GRADLE) :app:testDebugUnitTest
+	$(GRADLE) :app:testArmDebugUnitTest
 
 lint:
-	$(GRADLE) :app:lintDebug
+	$(GRADLE) :app:lintArmDebug
 
 check:
-	$(GRADLE) :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+	$(GRADLE) :app:testArmDebugUnitTest :app:lintArmDebug :app:assembleArmDebug
 
 adbd:
 	cd adbd && ./build.sh

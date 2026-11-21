@@ -8,7 +8,7 @@
 set -u
 cd "$(dirname "$0")/.."
 
-apk=${APK:-app/build/outputs/apk/debug/app-debug.apk}
+apk=${APK:-app/build/outputs/apk/arm/debug/app-arm-debug.apk}
 pkg=${PKG:-cz.slush.adbanywhere}
 flags=${ADB_INSTALL_FLAGS:--r}
 phone=${PHONE:-}

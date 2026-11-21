@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 
 serial=${E2E_SERIAL:-emulator-5556}
 pkg=cz.slush.adbanywhere
-apk=app/build/outputs/apk/debug/app-debug.apk
+apk=app/build/outputs/apk/x86/debug/app-x86-debug.apk
 # The loopback listener (15037) is TLS for the app's own key only. A developer
 # machine uses the plain listener, which the debug VPN override puts on loopback
 # at the app's VPN port.
@@ -16,7 +16,7 @@ device_port=5556
 host_port=15556
 host_key=$(cut -d' ' -f1 "$HOME/.android/adbkey.pub")
 
-./gradlew :app:assembleDebug --no-daemon -q
+./gradlew :app:assembleX86Debug --no-daemon -q
 adb -s "$serial" install -r "$apk" >/dev/null
 adb -s "$serial" shell "pm grant $pkg android.permission.WRITE_SECURE_SETTINGS" >/dev/null 2>&1 || true
 adb -s "$serial" shell "pm grant $pkg android.permission.POST_NOTIFICATIONS" >/dev/null 2>&1 || true
