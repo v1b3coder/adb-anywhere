@@ -15,11 +15,13 @@
 #   ADB_INSTALL_FLAGS   install flags for install-phone
 #
 # `make emulator AVD=<name>` boots the AVD in the foreground on EMULATOR_PORT,
-# which matches the default E2E_SERIAL. avd-gpu is a host-local wrapper: it finds
-# the hardware-accelerated Xwayland, passes -gpu host and runs the AVD as the
-# desktop user, so it is used whenever it is on PATH. A host without it keeps the
-# SDK emulator with -gpu off; the default GPU path segfaults in its RenderThread
-# on such hosts. AVD_GPU= forces the plain emulator, AVD_GPU=/path pins a wrapper.
+# which matches the default E2E_SERIAL. The repo's AVD is `adb-anywhere-api36`
+# (android-36 google_apis x86_64, 1080x2400); create it with avdmanager when it
+# is missing. avd-gpu is a host-local wrapper: it finds the hardware-accelerated
+# Xwayland, passes -gpu host and runs the AVD as the desktop user, so it is used
+# whenever it is on PATH. A host without it keeps the SDK emulator with -gpu off;
+# the default GPU path segfaults in its RenderThread on such hosts. AVD_GPU=
+# forces the plain emulator, AVD_GPU=/path pins a wrapper.
 #
 # Every Gradle target builds the daemon on preBuild: adbd/build.sh
 # cross-compiles the vendored AOSP adbd and syncAdbd drops the per-ABI binaries
