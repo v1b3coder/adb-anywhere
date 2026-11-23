@@ -42,6 +42,10 @@ class FirewallProxy(
     private val peerRouted: (InetAddress) -> Boolean = { true },
     /** How long a connection may stay unauthenticated, counted from accept(). */
     private val preAuthTimeoutMs: Int = PRE_AUTH_TIMEOUT_MS,
+    private val maxConnections: Int = MAX_CONNECTIONS,
+    private val maxPerPeer: Int = MAX_PER_PEER,
+    /** How long an authenticated transport with no open stream must be quiet before a new connection may replace it. */
+    private val idleEvictionMs: Long = IDLE_EVICTION_MS,
     private val onState: (FirewallState) -> Unit,
 ) {
     private val lock = Any()
@@ -101,7 +105,7 @@ class FirewallProxy(
         // new bind take the port instead of failing for up to a minute.
         socket.reuseAddress = true
         try {
-            socket.bind(InetSocketAddress(vpnIp, port), 8)
+            socket.bind(InetSocketAddress(vpnIp, port), maxConnections)
         } catch (e: Exception) {
             runCatching { socket.close() }
             throw e
@@ -226,9 +230,28 @@ class FirewallProxy(
                 onAppUsed(foreground)
             }
             val peerKey = peer.hostAddress ?: ""
-            if (activeSessions >= MAX_CONNECTIONS ||
-                (synchronized(lock) { perPeer[peerKey] ?: 0 }) >= MAX_PER_PEER
-            ) {
+            if (atLimit(peerKey)) {
+                // A host's adb server can leave an authenticated transport with no
+                // streams behind after a reconnect. Replace that idle transport
+                // instead of refusing every new connection until the app restarts.
+                val now = System.currentTimeMillis()
+                val victim = synchronized(lock) {
+                    connections
+                        .filter { it.peerKey == peerKey && it.evictable(now, idleEvictionMs) }
+                        .minByOrNull { it.lastActivityMs }
+                }
+                if (victim != null) {
+                    preAuth(
+                        AuditEvent(
+                            event = "session_evicted",
+                            peer = peerKey,
+                            detail = "idle session replaced by a new connection",
+                        ),
+                    )
+                    victim.close()
+                }
+            }
+            if (atLimit(peerKey)) {
                 preAuth(
                     AuditEvent(
                         event = "proxy_error",
@@ -255,6 +278,10 @@ class FirewallProxy(
 
     /** An event a peer caused before ADB key auth; rate limited by the audit log. */
     private fun preAuth(event: AuditEvent) = audit.record(event, unauthenticated = true)
+
+    private fun atLimit(peerKey: String): Boolean = synchronized(lock) {
+        connections.size >= maxConnections || (perPeer[peerKey] ?: 0) >= maxPerPeer
+    }
 
     /** Why the app allowlist refused a peer, in the audit log's words. */
     private fun appDeniedReason(state: ForegroundState?, foreground: String?): String = when {
@@ -346,8 +373,12 @@ class FirewallProxy(
         private val client: Socket,
         private val peer: InetAddress,
     ) {
+        val peerKey: String = peer.hostAddress ?: ""
         private val closed = AtomicBoolean(false)
         private val started = System.currentTimeMillis()
+        @Volatile
+        private var activityMs = started
+        val lastActivityMs: Long get() = activityMs
         @Volatile
         private var upstreamSocket: Socket? = null
         @Volatile
@@ -358,8 +389,13 @@ class FirewallProxy(
         @Volatile
         private var authenticated = false
 
+        /** A bare authenticated transport may be replaced; a stream or prompt never is. */
+        fun evictable(now: Long, idleMs: Long): Boolean =
+            authenticated && pendingPrompts == 0 && (relay?.openStreams ?: 0) == 0 &&
+                now - activityMs >= idleMs
+
         fun start() {
-            preAuth(AuditEvent(event = "connection_open", peer = peer.hostAddress ?: ""))
+            preAuth(AuditEvent(event = "connection_open", peer = peerKey))
             // The deadline runs from accept(), not from the first frame: the
             // per-read timeout alone lets a peer trickle one byte at a time
             // through the first A_CNXN and hold a slot indefinitely.
@@ -408,6 +444,7 @@ class FirewallProxy(
                     connectionAllowed = { !config().appAllowlistEnabled || appAllowed() },
                     onAuthenticated = {
                         authenticated = true
+                        activityMs = System.currentTimeMillis()
                         markActivity()
                         runCatching { client.soTimeout = 0 }
                     },
@@ -415,6 +452,7 @@ class FirewallProxy(
                     authTimeoutMs = remaining,
                     onPromptFinished = { onPromptFinished() },
                     onActivity = {
+                        activityMs = System.currentTimeMillis()
                         markActivity()
                         frameTicks.update { it + 1 }
                     },
@@ -437,11 +475,11 @@ class FirewallProxy(
             runCatching { upstreamSocket?.close() }
             synchronized(lock) {
                 connections.remove(this)
-                val count = (perPeer[peer.hostAddress ?: ""] ?: 1) - 1
+                val count = (perPeer[peerKey] ?: 1) - 1
                 if (count <= 0) {
-                    perPeer.remove(peer.hostAddress ?: "")
+                    perPeer.remove(peerKey)
                 } else {
-                    perPeer[peer.hostAddress ?: ""] = count
+                    perPeer[peerKey] = count
                 }
             }
             publish()
@@ -449,9 +487,13 @@ class FirewallProxy(
     }
 
     companion object {
-        private const val MAX_CONNECTIONS = 8
-        private const val MAX_PER_PEER = 2
+        /** Total relay sockets; bounds file descriptors and worst-case held buffers. */
+        const val MAX_CONNECTIONS = 16
+        /** One machine normally needs one ADB transport; 8 leaves room for stale and parallel tools. */
+        const val MAX_PER_PEER = 8
         private const val PRE_AUTH_TIMEOUT_MS = 10_000
+        /** An authenticated transport with no stream is stale after this long. */
+        const val IDLE_EVICTION_MS = 5 * 60 * 1000L
 
         /** A plain upstream for tests: connect and forward the client's A_CNXN. */
         fun plainUpstream(loopbackPort: Int, clientCnxn: ByteArray): Socket {

@@ -23,6 +23,10 @@ semantic versioning once the project leaves 0.x.
 - The scan tab analyzes at 1080p instead of 720p, because a key's QR has about
   97 modules and 720p left too few pixels per module when the code is on a
   screen. The preview also takes tap-to-focus and pinch-to-zoom now.
+- The relay allows 8 sessions per machine, 16 in total, and a new connection
+  replaces the oldest idle authenticated session with no open stream instead of
+  refusing until the app restarts. The Firewall status shows the per-machine
+  cap.
 
 ## 0.13.0 — 2026-11-23
 

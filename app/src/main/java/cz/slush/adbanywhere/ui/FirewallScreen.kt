@@ -63,6 +63,7 @@ import cz.slush.adbanywhere.firewall.AuditEvent
 import cz.slush.adbanywhere.firewall.AuditText
 import cz.slush.adbanywhere.firewall.CallRule
 import cz.slush.adbanywhere.firewall.FirewallConfig
+import cz.slush.adbanywhere.firewall.FirewallProxy
 import cz.slush.adbanywhere.firewall.UsageAccess
 import cz.slush.adbanywhere.service.ControlState
 import kotlinx.coroutines.Dispatchers
@@ -170,7 +171,18 @@ fun FirewallScreen(
                         mono = true,
                     )
                 }
-                KeyValueRow("Sessions", state.firewall.activeSessions.toString())
+                KeyValueRow(
+                    "Sessions",
+                    "${state.firewall.activeSessions} / ${FirewallProxy.MAX_PER_PEER}",
+                )
+                Text(
+                    "Up to ${FirewallProxy.MAX_PER_PEER} per developer machine, " +
+                        "${FirewallProxy.MAX_CONNECTIONS} in total. At the per-machine cap, a new " +
+                        "connection replaces a session that has been idle with no open stream for " +
+                        "${FirewallProxy.IDLE_EVICTION_MS / 60_000} minutes.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 KeyValueRow("Pending prompts", state.firewall.pendingPrompts.toString())
                 if (state.firewall.lastError.isNotEmpty()) {
                     Text(

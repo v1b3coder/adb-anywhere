@@ -512,6 +512,7 @@ Every event is a JSON line:
 | Event | When |
 |---|---|
 | `connection_open` | TCP accepted |
+| `session_evicted` | A new connection from the same peer replaced an authenticated session with no open stream and no pending prompt after five idle minutes |
 | `ip_denied` | Peer rejected before auth: not in the IP allowlist, not routed through the VPN, or a local address. `detail` says which |
 | `app_denied` | The app allowlist refused the peer; `detail` names the foreground package, or says the screen is off, the phone is locked or Usage access is missing |
 | `auth_ok` / `auth_unknown` | The server accepted the transport (`auth_ok`, with the fingerprint of the paired key whose signature the relay verified over the server's token, or empty) or the client offered an unlisted public key (`auth_unknown`) |
@@ -532,8 +533,8 @@ Storage is an append-only `audit.jsonl` in device-protected storage, rotated at
 256 KiB with four files. The UI keeps the last 500 events in memory and exposes a
 `StateFlow`. Events a peer causes before ADB key auth (`connection_open`,
 `ip_denied`, `app_denied`, pre-auth `call_denied`, `auth_unknown`,
-pre-auth `proxy_error`) share a token bucket of 50 events refilled at one per
-6 s; the rest are counted and the count is recorded as `audit_suppressed` with
+pre-auth `proxy_error`, `session_evicted`) share a token bucket of 50 events
+refilled at one per 6 s; the rest are counted and the count is recorded as `audit_suppressed` with
 the next event. Anyone the VPN routes can connect, so without the limit an
 unauthenticated peer could rotate every earlier entry out of the log.
 Authenticated events are never limited. The audit log is always on while the firewall is on; it is separate
@@ -621,8 +622,8 @@ calls `adb tcpip` and never moves to another port silently.
 - The bottom bar shows `Firewall` only while the switch is on. If the switch is
   turned off while the tab is open, the UI returns to Home.
 - `FirewallScreen` sections:
-  - **Status**: listener address (or `paused, VPN port closed`), active sessions,
-    pending prompts, last error.
+  - **Status**: listener address (or `paused, VPN port closed`), active sessions
+    against the 8-per-machine cap, pending prompts, last error.
   - **Auto pause**: switch, one-tap timeouts (5 min, 10 min, 30 min, 1 h, 2 h,
     4 h) and a custom hours/minutes wheel (1 min to 12 h). It takes the same pause
     as the button after that long without an authenticated relay frame (DESIGN
@@ -720,8 +721,12 @@ It does not add:
   bind or accept fails, the setup shows the error, and the app does not fall back
   to another port or to the direct VPN listener.
 
-The relay caps connections at 8 total and 2 per peer, caps a pre-`A_CNXN` payload
-at 4 KiB and any payload at 1 MiB, closes a transport that has not authenticated
+The relay caps connections at 16 total and 8 per peer. When a new connection from
+a peer would exceed its per-peer cap, the relay first closes the oldest
+authenticated session from that peer that has no open stream, no pending prompt
+and has been idle for five minutes. A stream or a prompt is never evicted; if no
+such idle session exists, the new connection is refused. The relay also caps a
+pre-`A_CNXN` payload at 4 KiB and any payload at 1 MiB, closes a transport that has not authenticated
 10 s after accept (an absolute deadline that starts at `accept()`, before the
 first frame, so trickled bytes do not extend it), caps a held stream's queue at
 4 MiB, rate-limits pre-auth audit events, and closes a connection on a malformed
@@ -753,6 +758,9 @@ JVM unit tests:
 - Last-use timestamps round-trip in the configuration JSON and relative ages
   format as `just now`, `2 hours ago`, `3 days ago` or `never`.
 - Relay with in-memory sockets: allow, deny, hold, timeout, close, oversized frame.
+- Proxy connection cap: a new peer connection replaces the oldest idle authenticated
+  session with no open stream; a session with an open stream is never evicted, so
+  the new connection is refused.
 - Relay stream identity and resource bounds (`AdbRelaySecurityTest`): a close
   before the device's `A_OKAY` keeps the id taken and the relay closes the
   device stream itself; a stale `A_OKAY` never binds a retired device id; a NUL

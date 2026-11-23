@@ -118,6 +118,13 @@ class AuditTextTest {
     }
 
     @Test
+    fun anIdleEvictionIsExplained() {
+        val text = AuditText.describe(event("session_evicted"))
+        assertEquals("Replaced an idle session from 100.64.0.13", text.title)
+        assertTrue(text.detail.contains("no open stream"))
+    }
+
+    @Test
     fun aConnectionLimitIsExplained() {
         val text = AuditText.describe(event("proxy_error", detail = "connection limit reached"))
         assertTrue(text.detail.contains("maximum open sessions"))

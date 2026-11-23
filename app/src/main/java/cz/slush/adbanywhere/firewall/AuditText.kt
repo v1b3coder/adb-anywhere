@@ -38,6 +38,10 @@ object AuditText {
                 "Connection from $peer",
                 "A developer machine reached the VPN port.",
             )
+            "session_evicted" -> AuditDescription(
+                "Replaced an idle session from $peer",
+                "The new connection needed the slot; the idle session had no open stream.",
+            )
             "auth_ok" -> AuditDescription(
                 "Authenticated $peer",
                 keyText(event.fingerprint, keyLabels),

@@ -17,7 +17,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -328,6 +330,144 @@ class FirewallProxyTest {
             scope.cancel()
             upstream.close()
         }
+    }
+
+    @Test
+    fun replacesAnIdleSessionAtThePerPeerCap() = runBlocking {
+        val upstream = ServerSocket(0, 8, java.net.InetAddress.getByName("127.0.0.1"))
+        val accepted = Channel<Socket>(Channel.UNLIMITED)
+        val upstreamScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val acceptJob = upstreamScope.launch {
+            while (isActive) accepted.send(upstream.accept())
+        }
+        val proxyPort = freePort()
+        val audit = AuditLog(null) { false }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val states = CopyOnWriteArrayList<FirewallState>()
+        val proxy = FirewallProxy(
+            scope = scope,
+            config = { FirewallConfig(enabled = true) },
+            monitor = null,
+            policy = FakePolicy(),
+            audit = audit,
+            maxConnections = 4,
+            maxPerPeer = 2,
+            idleEvictionMs = 0,
+            onState = { states.add(it) },
+        )
+        proxy.start("127.0.0.1", proxyPort, upstream.localPort)
+        val opened = mutableListOf<Pair<Socket, Socket>>()
+        try {
+            repeat(2) { opened += connectAndAuthenticate(proxyPort, accepted) }
+            awaitSessions(states, 2)
+            val (firstClient, _) = opened[0]
+            val third = connectAndAuthenticate(proxyPort, accepted)
+
+            assertEquals(-1, firstClient.getInputStream().read())
+            assertEquals(2, states.last().activeSessions)
+            assertTrue(audit.entries.value.any { it.event == "session_evicted" })
+            third.first.close()
+        } finally {
+            opened.forEach { (client, server) ->
+                runCatching { client.close() }
+                runCatching { server.close() }
+            }
+            proxy.stop()
+            acceptJob.cancel()
+            upstreamScope.cancel()
+            scope.cancel()
+            upstream.close()
+        }
+    }
+
+    @Test
+    fun doesNotEvictASessionWithAnOpenStream() = runBlocking {
+        val upstream = ServerSocket(0, 8, java.net.InetAddress.getByName("127.0.0.1"))
+        val accepted = Channel<Socket>(Channel.UNLIMITED)
+        val upstreamScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val acceptJob = upstreamScope.launch {
+            while (isActive) accepted.send(upstream.accept())
+        }
+        val proxyPort = freePort()
+        val audit = AuditLog(null) { false }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val states = CopyOnWriteArrayList<FirewallState>()
+        val proxy = FirewallProxy(
+            scope = scope,
+            config = { FirewallConfig(enabled = true) },
+            monitor = null,
+            policy = FakePolicy(),
+            audit = audit,
+            maxConnections = 4,
+            maxPerPeer = 2,
+            idleEvictionMs = 0,
+            onState = { states.add(it) },
+        )
+        proxy.start("127.0.0.1", proxyPort, upstream.localPort)
+        val opened = mutableListOf<Pair<Socket, Socket>>()
+        try {
+            repeat(2) { opened += connectAndAuthenticate(proxyPort, accepted) }
+            opened.forEachIndexed { index, (client, server) ->
+                val open = ByteArrayOutputStream()
+                AdbFrameCodec.write(open, AdbFrameCodec.A_OPEN, 7 + index, 0, "shell:sh".toByteArray())
+                client.getOutputStream().apply {
+                    write(open.toByteArray())
+                    flush()
+                }
+                assertNotNull(withTimeout(3_000) { AdbFrameCodec.read(server.getInputStream()) })
+            }
+
+            val third = Socket("127.0.0.1", proxyPort).apply { soTimeout = 3_000 }
+            val hello = ByteArrayOutputStream()
+            AdbFrameCodec.write(hello, AdbFrameCodec.A_CNXN, 0x01000001, 4096, "host::".toByteArray())
+            third.getOutputStream().apply {
+                write(hello.toByteArray())
+                flush()
+            }
+            assertEquals(-1, third.getInputStream().read())
+            assertEquals(2, states.last().activeSessions)
+            assertTrue(
+                audit.entries.value.any {
+                    it.event == "proxy_error" && it.detail == "connection limit reached"
+                },
+            )
+            third.close()
+        } finally {
+            opened.forEach { (client, server) ->
+                runCatching { client.close() }
+                runCatching { server.close() }
+            }
+            proxy.stop()
+            acceptJob.cancel()
+            upstreamScope.cancel()
+            scope.cancel()
+            upstream.close()
+        }
+    }
+
+    private suspend fun connectAndAuthenticate(
+        proxyPort: Int,
+        accepted: Channel<Socket>,
+    ): Pair<Socket, Socket> {
+        val client = Socket("127.0.0.1", proxyPort).apply { soTimeout = 3_000 }
+        val hello = ByteArrayOutputStream()
+        AdbFrameCodec.write(hello, AdbFrameCodec.A_CNXN, 0x01000001, 4096, "host::".toByteArray())
+        client.getOutputStream().apply {
+            write(hello.toByteArray())
+            flush()
+        }
+        val server = withTimeout(3_000) { accepted.receive() }
+        // plainUpstream already wrote the client's A_CNXN; the daemon answers
+        // with its own, which marks the relay transport authenticated.
+        assertNotNull(withTimeout(3_000) { AdbFrameCodec.read(server.getInputStream()) })
+        val ack = ByteArrayOutputStream()
+        AdbFrameCodec.write(ack, AdbFrameCodec.A_CNXN, 0, 0, ByteArray(0))
+        server.getOutputStream().apply {
+            write(ack.toByteArray())
+            flush()
+        }
+        assertNotNull(withTimeout(3_000) { AdbFrameCodec.read(client.getInputStream()) })
+        return client to server
     }
 
     private suspend fun awaitSessions(states: List<FirewallState>, expected: Int) {

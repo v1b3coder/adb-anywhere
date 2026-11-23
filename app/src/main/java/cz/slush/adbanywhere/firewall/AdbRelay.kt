@@ -106,6 +106,11 @@ class AdbRelay(
     /** Prompts this connection is waiting on; a pending one defers the app-allowlist close. */
     val pendingPrompts: Int get() = prompts.get()
 
+    /** Streams this transport still has open; a bare transport can be replaced when idle. */
+    val openStreams: Int get() = synchronized(lock) {
+        streams.size + reverse.size + pendingReverse.size
+    }
+
     fun start() {
         scope.launch { clientToServer() }
         scope.launch { serverToClient() }
