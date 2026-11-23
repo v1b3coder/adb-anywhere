@@ -161,39 +161,25 @@ fun QrScanner(
             try {
                 val plane = image.planes[0]
                 val buffer = plane.buffer
-                val bytes = ByteArray(buffer.remaining())
-                buffer.get(bytes)
-                val source = PlanarYUVLuminanceSource(
-                    bytes,
-                    image.width,
-                    image.height,
-                    0,
-                    0,
-                    image.width,
-                    image.height,
-                    false,
+                val data = ByteArray(buffer.remaining())
+                buffer.get(data)
+                val text = decodeQrFrame(
+                    width = image.width,
+                    height = image.height,
+                    rowStride = plane.rowStride,
+                    pixelStride = plane.pixelStride,
+                    data = data,
                 )
-                val bitmap = BinaryBitmap(HybridBinarizer(source))
-                val result = runCatching {
-                    MultiFormatReader().apply {
-                        setHints(
-                            mapOf(
-                                DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE),
-                                DecodeHintType.TRY_HARDER to true,
-                            ),
-                        )
-                    }.decodeWithState(bitmap)
-                }.getOrNull()
-                if (result != null) {
-                    if (validate(result.text)) {
+                if (text != null) {
+                    if (validate(text)) {
                         if (found.compareAndSet(false, true)) {
                             mainHandler.post {
                                 providerRef.value?.unbindAll()
-                                onResult(result.text)
+                                onResult(text)
                             }
                         }
-                    } else if (lastInvalid.getAndSet(result.text) != result.text) {
-                        mainHandler.post { onInvalid(result.text) }
+                    } else if (lastInvalid.getAndSet(text) != text) {
+                        mainHandler.post { onInvalid(text) }
                     }
                 }
             } finally {
@@ -231,4 +217,47 @@ fun QrScanner(
                 .border(3.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(24.dp)),
         )
     }
+}
+
+/**
+ * Decodes one analysis frame's Y plane. CameraX reports the HAL row stride,
+ * which is usually wider than the image; a planar source fed with the width
+ * instead reads a sheared image and never finds a code. `qrencode -t ansiutf8`
+ * on a dark terminal draws light modules on black, so inverted codes count too.
+ */
+internal fun decodeQrFrame(
+    width: Int,
+    height: Int,
+    rowStride: Int,
+    pixelStride: Int,
+    data: ByteArray,
+): String? {
+    val luma = if (rowStride == width && pixelStride == 1) {
+        data
+    } else {
+        ByteArray(width * height).also { out ->
+            for (y in 0 until height) {
+                var src = y * rowStride
+                var dst = y * width
+                repeat(width) {
+                    if (src < data.size) out[dst] = data[src]
+                    src += pixelStride
+                    dst++
+                }
+            }
+        }
+    }
+    val source = PlanarYUVLuminanceSource(luma, width, height, 0, 0, width, height, false)
+    val reader = MultiFormatReader().apply {
+        setHints(
+            mapOf(
+                DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE),
+                DecodeHintType.TRY_HARDER to true,
+                DecodeHintType.ALSO_INVERTED to true,
+            ),
+        )
+    }
+    return runCatching {
+        reader.decodeWithState(BinaryBitmap(HybridBinarizer(source))).text
+    }.getOrNull()
 }

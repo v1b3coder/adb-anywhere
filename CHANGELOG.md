@@ -12,6 +12,15 @@ semantic versioning once the project leaves 0.x.
   format, with the fingerprint underneath, so a second phone scans the first
   phone instead of running `qrencode` on the computer.
 
+### Fixes
+
+- The scan tab reads `qrencode -t ansiutf8` output from a terminal. That code is
+  inverted (light modules on black), which ZXing only tries when asked, so it
+  never decoded before.
+- Analysis frames whose Y plane has a row stride wider than the image are
+  repacked per row before decoding. A padded stride used to shear the picture,
+  which on such cameras left the scan tab unable to read any code.
+
 ## 0.13.0 — 2026-11-23
 
 Adding a computer is a copy and a paste, pairing tells you what happened, and

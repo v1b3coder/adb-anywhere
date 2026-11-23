@@ -266,7 +266,8 @@ its QR or accepts a paste. No companion app is needed.
    Android's 524-byte public key in base64 plus an optional `user@host` comment.
 2. The app scans the QR, or the user pastes the output of
    `cat ~/.android/adbkey.pub`. It also accepts an OpenSSH `ssh-rsa` line or a
-   PEM public key.
+   PEM public key. The terminal form is inverted (light modules on black) and is
+   read too.
 3. The app parses the key, validates it as RSA-2048, and shows the SHA-256
    fingerprint. A QR that is not a key leaves the camera scanning and reports
    the error.
@@ -768,7 +769,8 @@ a different mode.
 ## 10. Testing
 
 - Unit: QR payload parser and public-key validation, the saved-key QR round
-  trip, key file writer, label sanitizing, address selection, the VPN routing
+  trip, the analysis-frame conversion (padded row stride, inverted and rotated
+  codes), key file writer, label sanitizing, address selection, the VPN routing
   check, watchdog state machine,
   `ControlState.firewallDown`, the port guard, `AppKeyStore` concurrent first use
   of several instances, the ADB client (plain signing, TLS-only refusal, pin,
