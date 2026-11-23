@@ -11,6 +11,8 @@
 #   AVD_GPU            avd-gpu wrapper; detected on PATH, empty forces the plain emulator
 #   EMULATOR_PORT      console port of the emulator target (default 5560)
 #   EMULATOR_ARGS      extra emulator arguments for the emulator target
+#   EMULATOR_CORES      vCPUs for the emulator target (default 6)
+#   EMULATOR_MEMORY     guest RAM in MB for the emulator target (default 8192)
 #   PHONE               phone address; detected when unset
 #   ADB_INSTALL_FLAGS   install flags for install-phone
 #
@@ -21,7 +23,9 @@
 # Xwayland, passes -gpu host and runs the AVD as the desktop user, so it is used
 # whenever it is on PATH. A host without it keeps the SDK emulator with -gpu off;
 # the default GPU path segfaults in its RenderThread on such hosts. AVD_GPU=
-# forces the plain emulator, AVD_GPU=/path pins a wrapper.
+# forces the plain emulator, AVD_GPU=/path pins a wrapper. The target asks for
+# 6 vCPUs and 8 GB; an AVD's own hw.cpu.ncore and hw.ramSize are lower (4 cores,
+# 2 GB, which the emulator raises to 2.5 GB), so pass the flags on every boot.
 #
 # Every Gradle target builds the daemon on preBuild: adbd/build.sh
 # cross-compiles the vendored AOSP adbd and syncAdbd drops the per-ABI binaries
@@ -67,6 +71,8 @@ export ANDROID_HOME
 AVD ?=
 EMULATOR_PORT ?= 5560
 EMULATOR_ARGS ?= -no-audio -no-boot-anim -no-snapshot
+EMULATOR_CORES ?= 6
+EMULATOR_MEMORY ?= 8192
 AVD_GPU ?= $(shell command -v avd-gpu 2>/dev/null)
 EMULATOR_CMD ?= $(if $(AVD_GPU),$(AVD_GPU) $(AVD),$(ANDROID_HOME)/emulator/emulator -avd $(AVD) -gpu off)
 # The phone address is its Tailscale address, so it is not fixed. Detect it when
@@ -107,6 +113,7 @@ help:
 	  'E2E serial: $(E2E_SERIAL) (override with E2E_SERIAL=...)' \
 	  'AVD: $(or $(AVD),none, pass AVD=<name>) (list: emulator -list-avds)' \
 	  'avd-gpu: $(or $(AVD_GPU),none found) (override with AVD_GPU=...)' \
+	  'Emulator: $(EMULATOR_CORES) cores, $(EMULATOR_MEMORY) MB (override with EMULATOR_CORES=... EMULATOR_MEMORY=...)' \
 	  'Phone: $(or $(PHONE),none detected) (override with PHONE=host:port)' \
 	  'Install flags: $(ADB_INSTALL_FLAGS) (override with ADB_INSTALL_FLAGS=...)' \
 	  'phone-version is a shell call and may also ask for approval.'
@@ -135,7 +142,7 @@ adbd-tests:
 emulator:
 	@test -n '$(AVD)' || { echo 'No AVD; pass AVD=<name>. Available:'; \
 	  $(ANDROID_HOME)/emulator/emulator -list-avds | sed 's/^/  /'; exit 1; }
-	$(EMULATOR_CMD) $(EMULATOR_ARGS) -port $(EMULATOR_PORT)
+	$(EMULATOR_CMD) $(EMULATOR_ARGS) -cores $(EMULATOR_CORES) -memory $(EMULATOR_MEMORY) -port $(EMULATOR_PORT)
 
 e2e:
 	E2E_SERIAL=$(E2E_SERIAL) ./scripts/e2e-emulator.sh
