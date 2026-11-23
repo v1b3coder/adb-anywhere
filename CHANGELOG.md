@@ -6,14 +6,83 @@ semantic versioning once the project leaves 0.x.
 
 ## Unreleased
 
+## 0.13.0 — 2026-11-23
+
+Adding a computer is a copy and a paste, pairing tells you what happened, and
+Home shows a machine at work instead of only a port that is open. The download
+also stops being 66 MB: the release APK is 6.4 MB.
+
+### Adding a computer
+
+- The add-key dialog gives you the command instead of naming a file:
+  `cat ~/.android/adbkey.pub` for the paste path, with a copy button, and the
+  `qrencode` line for both ways to make a code — `-t ansiutf8` in a terminal,
+  `-o adbkey.png` for an image. Both paths end in a review card with the key's
+  fingerprint, so you see what you are about to save before you save it.
+- The scan tab now says how to produce the code at all. A successful scan stops
+  the camera and keeps the parsed key on screen; an invalid code says what is
+  wrong and keeps scanning; a denied camera permission offers the paste path
+  instead of a dead end.
+- The scan preview stays inside its rounded frame instead of drawing over the
+  tabs and the text below it, and reads a full 700-character key from a screen,
+  so a whole `~/.android/adbkey.pub` scans.
+- The pasted key field is capped at five lines. A whole key still scrolls inside
+  it and the review card confirms the value, but the dialog no longer grows past
+  the screen.
+
+### Pairing
+
+- A pair reports itself: a *Paired. Setting up the custom adb…* notice replaces
+  the reply notification and goes away once the daemon runs or setup fails,
+  instead of the screen falling quiet for the length of the setup.
+- The Setup screen keeps one action per phase — pairing, setting up, running,
+  failed. After a successful pair the pairing steps no longer sit there beside a
+  second *Set up now*.
+- A pair that fails stays on the screen with the reason and a retry that asks
+  for a new code, because Android's dialog owns the only valid one.
+
+### Home
+
+- The status badge pulses while the firewall relay forwards an adb frame, so a
+  live session no longer looks like an idle listener. One command is one pulse,
+  a session that pauses between frames does not strobe, and a client that merely
+  connected does not move it. Direct mode has no relay to watch, so it stays
+  still.
+
+### Ports
+
+- The VPN port developer machines connect to is 5556 by default, right beside
+  the standard adb port 5555. The loopback channel keeps 15037, and both ports
+  stay configurable in Settings.
+- An upgrade moves a running daemon onto the new default once, because a daemon
+  carrying the old ports is no longer adopted.
+
 ### Install
 
-- The release APK drops from 66 MB to 6.4 MB. It ships `arm64-v8a` only, which is
-  what every Android 12 device Google certifies runs: the `armeabi-v7a` and
-  `x86_64` binaries were 5.5 MB no phone can execute. Unused BouncyCastle PICNIC
-  tables are gone and the native libraries are compressed in the APK. Decision D26
-  in [docs/DESIGN.md](docs/DESIGN.md) records it, and the release workflow fails
-  when the APK carries more than `arm64-v8a`.
+- The release APK drops from 66 MB to 6.4 MB and ships `arm64-v8a` only, which
+  is what every Android 12 device Google certifies runs. Unused BouncyCastle
+  PICNIC tables are gone and the native libraries are compressed in the APK.
+  Decision D26 in [docs/DESIGN.md](docs/DESIGN.md) records it, and the release
+  workflow fails when the APK carries another ABI; `x86` stays the e2e build and
+  `universal` a local one that installs anywhere.
+- Every release publishes itself to
+  [Zapstore](https://zapstore.dev/apps/cz.slush.adbanywhere) from the tag, so
+  the store no longer lags a release behind GitHub.
+
+### Known limitations
+
+- The firewall IP allowlist is IPv4-only.
+- Per-key policy, audit export and work-profile apps are not implemented yet.
+- The screen switch covers the app's own screen only. With it off and the phone
+  locked, calls that need approval are denied without a prompt.
+- A reboot does not keep the daemon alive. On mobile data the app needs one
+  Wi-Fi connection or USB `adb tcpip` to redeploy it.
+- Some OEMs do not restart wireless debugging on a Wi-Fi network without
+  internet; enable Wireless debugging once in Settings to recover.
+- Another app can keep the daemon from starting by holding its ports. The app
+  reports the port; change the ports in Settings or reboot.
+
+**Full changelog**: https://github.com/v1b3coder/adb-anywhere/compare/v0.12.0...v0.13.0
 
 ## 0.12.0 — 2026-11-20
 
