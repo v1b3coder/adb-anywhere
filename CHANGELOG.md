@@ -20,6 +20,9 @@ semantic versioning once the project leaves 0.x.
 - Analysis frames whose Y plane has a row stride wider than the image are
   repacked per row before decoding. A padded stride used to shear the picture,
   which on such cameras left the scan tab unable to read any code.
+- The scan tab analyzes at 1080p instead of 720p, because a key's QR has about
+  97 modules and 720p left too few pixels per module when the code is on a
+  screen. The preview also takes tap-to-focus and pinch-to-zoom now.
 
 ## 0.13.0 — 2026-11-23
 

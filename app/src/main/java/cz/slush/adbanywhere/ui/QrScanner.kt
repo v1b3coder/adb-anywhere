@@ -8,9 +8,13 @@ import android.content.pm.PackageManager
 import android.os.Handler
 import android.os.Looper
 import android.util.Size
+import android.view.MotionEvent
+import android.view.ScaleGestureDetector
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
@@ -113,6 +117,7 @@ fun QrScanner(
     val found = remember { AtomicBoolean(false) }
     val lastInvalid = remember { AtomicReference<String?>(null) }
     val providerRef = remember { mutableStateOf<ProcessCameraProvider?>(null) }
+    val cameraRef = remember { AtomicReference<Camera?>(null) }
     val previewView = remember {
         PreviewView(context).apply {
             scaleType = PreviewView.ScaleType.FILL_CENTER
@@ -121,10 +126,43 @@ fun QrScanner(
             implementationMode = PreviewView.ImplementationMode.COMPATIBLE
         }
     }
+    // PreviewView handles these gestures only with a CameraController; these use
+    // cases are bound by hand, so zoom and focus are wired here.
+    val zoomGesture = remember {
+        ScaleGestureDetector(
+            context,
+            object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                override fun onScale(detector: ScaleGestureDetector): Boolean {
+                    val camera = cameraRef.get() ?: return false
+                    val zoom = camera.cameraInfo.zoomState.value ?: return false
+                    val ratio = (zoom.zoomRatio * detector.scaleFactor)
+                        .coerceIn(zoom.minZoomRatio, zoom.maxZoomRatio)
+                    camera.cameraControl.setZoomRatio(ratio)
+                    return true
+                }
+            },
+        )
+    }
 
     // A dismissed dialog must not leave the camera bound to the activity.
     DisposableEffect(Unit) {
+        previewView.setOnTouchListener { _, event ->
+            zoomGesture.onTouchEvent(event)
+            if (event.actionMasked == MotionEvent.ACTION_UP) {
+                cameraRef.get()?.let { camera ->
+                    val point = previewView.meteringPointFactory.createPoint(event.x, event.y)
+                    runCatching {
+                        camera.cameraControl.startFocusAndMetering(
+                            FocusMeteringAction.Builder(point).build(),
+                        )
+                    }
+                }
+            }
+            false
+        }
         onDispose {
+            previewView.setOnTouchListener(null)
+            cameraRef.set(null)
             runCatching { providerRef.value?.unbindAll() }
             executor.shutdown()
         }
@@ -145,7 +183,9 @@ fun QrScanner(
                 ResolutionSelector.Builder()
                     .setResolutionStrategy(
                         ResolutionStrategy(
-                            Size(1280, 720),
+                            // The key's QR has ~97 modules; 720p left too few
+                            // pixels per module for a screen.
+                            Size(1920, 1080),
                             ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER,
                         ),
                     )
@@ -188,11 +228,13 @@ fun QrScanner(
         }
         runCatching {
             provider.unbindAll()
-            provider.bindToLifecycle(
-                lifecycleOwner,
-                CameraSelector.DEFAULT_BACK_CAMERA,
-                preview,
-                analysis,
+            cameraRef.set(
+                provider.bindToLifecycle(
+                    lifecycleOwner,
+                    CameraSelector.DEFAULT_BACK_CAMERA,
+                    preview,
+                    analysis,
+                ),
             )
         }.onFailure {
             onError("Camera could not start. Paste the key instead.")

@@ -369,7 +369,8 @@ private fun AddKeyDialog(
                         },
                     )
                     Text(
-                        "Point the camera at the QR code. The QR only contains the public key.",
+                        "Point the camera at the QR code; tap to focus or pinch to zoom. The QR " +
+                            "only contains the public key.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
