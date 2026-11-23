@@ -6,33 +6,12 @@ semantic versioning once the project leaves 0.x.
 
 ## Unreleased
 
-### Adding a computer
-
-- Each key in *Keys* has a QR button that shows its public key in the pairing
-  format, with the fingerprint underneath, so a second phone scans the first
-  phone instead of running `qrencode` on the computer.
-
-### Fixes
-
-- The scan tab reads `qrencode -t ansiutf8` output from a terminal. That code is
-  inverted (light modules on black), which ZXing only tries when asked, so it
-  never decoded before.
-- Analysis frames whose Y plane has a row stride wider than the image are
-  repacked per row before decoding. A padded stride used to shear the picture,
-  which on such cameras left the scan tab unable to read any code.
-- The scan tab analyzes at 1080p instead of 720p, because a key's QR has about
-  97 modules and 720p left too few pixels per module when the code is on a
-  screen. The preview also takes tap-to-focus and pinch-to-zoom now.
-- The relay allows 8 sessions per machine, 16 in total, and a new connection
-  replaces the oldest idle authenticated session with no open stream instead of
-  refusing until the app restarts. The Firewall status shows the per-machine
-  cap.
-
 ## 0.13.0 — 2026-11-23
 
-Adding a computer is a copy and a paste, pairing tells you what happened, and
-Home shows a machine at work instead of only a port that is open. The download
-also stops being 66 MB: the release APK is 6.4 MB.
+Adding a computer is a copy and a paste, or a QR code another phone already has.
+Pairing tells you what happened, Home shows a machine at work instead of only a
+port that is open, and a stuck adb server can no longer lock a phone out. The
+download also stops being 66 MB: the release APK is 6.4 MB.
 
 ### Adding a computer
 
@@ -41,13 +20,19 @@ also stops being 66 MB: the release APK is 6.4 MB.
   `qrencode` line for both ways to make a code — `-t ansiutf8` in a terminal,
   `-o adbkey.png` for an image. Both paths end in a review card with the key's
   fingerprint, so you see what you are about to save before you save it.
-- The scan tab now says how to produce the code at all. A successful scan stops
-  the camera and keeps the parsed key on screen; an invalid code says what is
-  wrong and keeps scanning; a denied camera permission offers the paste path
-  instead of a dead end.
-- The scan preview stays inside its rounded frame instead of drawing over the
-  tabs and the text below it, and reads a full 700-character key from a screen,
-  so a whole `~/.android/adbkey.pub` scans.
+- Every key in *Keys* has a QR button that shows that computer's public key in
+  the pairing format, with the fingerprint underneath, so a second phone scans
+  the first phone instead of running `qrencode` on the computer. The code
+  carries the key's label, and the scanning phone offers it as the name.
+- The scan tab now says how to produce the code at all, and it reads what people
+  actually have: the inverted code a terminal prints with `-t ansiutf8`, a code
+  on another screen at 1080p (a key is about 97 modules, and 720p left too few
+  pixels per module), and the padded analysis frames some cameras hand over,
+  which used to shear the picture. Tap the preview to focus, pinch to zoom.
+- A successful scan stops the camera and keeps the parsed key on screen; an
+  invalid code says what is wrong and keeps scanning; a denied camera permission
+  offers the paste path instead of a dead end. The preview stays inside its
+  rounded frame instead of drawing over the tabs and the text below it.
 - The pasted key field is capped at five lines. A whole key still scrolls inside
   it and the review card confirms the value, but the dialog no longer grows past
   the screen.
@@ -70,6 +55,17 @@ also stops being 66 MB: the release APK is 6.4 MB.
   a session that pauses between frames does not strobe, and a client that merely
   connected does not move it. Direct mode has no relay to watch, so it stays
   still.
+
+### Firewall
+
+- The relay allows 8 sessions per developer machine and 16 in total. At a
+  machine's cap, a new connection replaces that machine's oldest authenticated
+  session that has no open stream, is not waiting on an approval prompt and has
+  been idle for five minutes, so an adb server that left transports behind no
+  longer blocks every reconnect until the app restarts. A session with a host or
+  reverse stream open is never dropped, and with nothing idle the connection is
+  refused as before. The audit log records the eviction as `session_evicted`,
+  and the Firewall screen shows the session count against the per-machine cap.
 
 ### Ports
 
