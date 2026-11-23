@@ -116,6 +116,14 @@ jobs:
             yes | sdkmanager --install "platforms;android-36"
           fi
 
+      # syncAdbd runs on preBuild and needs app/adbd-bin, so the daemon artifact
+      # has to land before any Gradle task, tests included.
+      - name: Fetch adbd binaries
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ needs.adbd.outputs.artifact }}
+          path: app/adbd-bin
+
       - name: Run unit tests
         run: ./gradlew :app:testArmDebugUnitTest -PadbdSkipBuild=true
 
@@ -125,12 +133,6 @@ jobs:
         run: |
           set -euo pipefail
           printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.p12"
-
-      - name: Fetch adbd binaries
-        uses: actions/download-artifact@v7
-        with:
-          name: ${{ needs.adbd.outputs.artifact }}
-          path: app/adbd-bin
 
       - name: Build signed release APK
         env:
