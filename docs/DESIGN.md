@@ -154,6 +154,7 @@ These are facts from AOSP `main`, not assumptions.
 | D23 | Daemon adoption | A daemon that answers the pinned probe is adopted, not killed and restarted, when nothing about it has to change: the binary on the device is byte-identical to the one this build ships (SHA-256), the persisted mode and ports match the running listener set, nothing holds the VPN port, no legacy daemon has to be migrated, and the intent is not an explicit restart, revocation or mode change. A process restart, a boot, an update, a re-check and a repeated Start therefore keep the running daemon. The kill and the start are one detached script with no way back if the new daemon fails, and outside the daemon's own loopback channel the only recovery is the system adbd, which mobile data does not have |
 | D24 | Auto pause | An optional idle timeout takes the same Pause as the button after 1 min to 12 h without an authenticated relayed ADB frame. The clock restarts on every such frame and never on the app's own loopback channel, the watchdog or an unauthenticated peer, so only developer activity keeps the VPN port open. The timeout is a duration stored in device-protected prefs, off by default and chosen in the Firewall tab, because Pause exists in firewall mode only. It writes the one lifecycle intent, so a Resume, a Stop or a mode change clears it exactly like a manual pause |
 | D25 | Keep screen on | An opt-in Settings switch, off by default: `MainActivity` adds `FLAG_KEEP_SCREEN_ON` to its window while the pref is on, so the display timeout does not lock the phone and the firewall does not deny a call just because the screen went off or the keyguard locked. It is a window flag on the app's own activity: it ends when that window is no longer visible, it needs no wake lock, permission or service, it cannot hold the screen on in the background, and it never overrides the power button or a manual lock |
+| D26 | Release artifact | One signed `arm64-v8a` APK per release: every Play-certified Android 12 device is 64-bit, so `armeabi-v7a` and `x86_64` were 5.5 MB of binaries no phone can run. `x86` stays the e2e emulator build and `universal` a local build that installs anywhere. Native libraries are deflated in the APK (extracted at install, so storage is unchanged) and the unused BouncyCastle PICNIC tables are dropped: v0.12.0 shipped 66 MB because it predates the R8 shrink, the same code with a single-ABI release is 6.4 MB. The release workflow fails when the APK's native-code is not `arm64-v8a` alone |
 
 ## 6. Architecture
 
@@ -204,8 +205,10 @@ only changes where the list comes from and skips USB, vsock, and mDNS; the liste
 count itself is free. The large work was the cross-compile, which is now a checked-in
 build script and vendored dependencies, not a per-release patch.
 
-Build targets: `arm64-v8a`, `armeabi-v7a`, `x86_64` (`adbd/build.sh`). Bundle in
-the APK as assets. AOSP `adbd` is Apache 2.0; ship `NOTICE` and the source offer.
+Build targets: `arm64-v8a`, `armeabi-v7a`, `x86_64` (`adbd/build.sh`), bundled in
+the APK as assets. Only `arm64-v8a` reaches a release (D26); the other two feed the
+`x86` emulator build and the local `universal` one. AOSP `adbd` is Apache 2.0; ship
+`NOTICE` and the source offer.
 
 Rejecting a service is not a security control: the daemon runs every service
 as `shell`, so `exec:reboot`, `exec:setprop` or `abb_exec:` reach what `reboot:`,

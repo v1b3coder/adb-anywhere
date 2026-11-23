@@ -4,6 +4,17 @@ All notable changes to ADB Anywhere are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases use
 semantic versioning once the project leaves 0.x.
 
+## Unreleased
+
+### Install
+
+- The release APK drops from 66 MB to 6.4 MB. It ships `arm64-v8a` only, which is
+  what every Android 12 device Google certifies runs: the `armeabi-v7a` and
+  `x86_64` binaries were 5.5 MB no phone can execute. Unused BouncyCastle PICNIC
+  tables are gone and the native libraries are compressed in the APK. Decision D26
+  in [docs/DESIGN.md](docs/DESIGN.md) records it, and the release workflow fails
+  when the APK carries more than `arm64-v8a`.
+
 ## 0.12.0 — 2026-11-20
 
 A locked screen no longer breaks the firewall. The phone locks on its display

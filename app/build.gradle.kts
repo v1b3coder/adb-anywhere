@@ -28,9 +28,10 @@ val releaseKeyPassword = signingValue("keyPassword", "RELEASE_KEY_PASSWORD")
 
 /*
  * One APK per ABI family instead of every ABI in every APK. The phone builds `arm`,
- * the e2e emulator builds `x86`, and `universal` keeps the release installable on
- * every device. A flavor carries only its own adbd binary and native libraries, so
- * the arm APK does not pay for the x86 daemon it can never run.
+ * the e2e emulator builds `x86`, and the release ships `arm`: every Play-certified
+ * Android 12 device is 64-bit, so the other two ABIs were 5.5 MB no phone can run.
+ * `universal` stays as the one APK that installs anywhere, for local use. A flavor
+ * carries only its own adbd binary and native libraries.
  */
 val flavorAbis = mapOf(
     "arm" to listOf("arm64-v8a"),
@@ -61,7 +62,7 @@ android {
             create(name) {
                 dimension = "abi"
                 // universal is left unfiltered: it keeps every ABI the dependencies
-                // and the adbd assets provide, exactly as the release always shipped.
+                // and the adbd assets provide.
                 if (name != "universal") {
                     ndk { abiFilters.addAll(abis) }
                 }
@@ -122,9 +123,19 @@ android {
     }
 
     packaging {
+        jniLibs {
+            // Deflate the native libraries and extract them at install instead of
+            // loading them from the APK. Extraction costs the same app storage as
+            // keeping them uncompressed, and the download is 1.4 MB smaller.
+            useLegacyPackaging = true
+        }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
             excludes += "/META-INF/versions/9/OSGI-INF/MANIFEST.MF"
+            // PICNIC is a post-quantum signature this app never asks bcpkix for.
+            // Its lookup tables are 1.2 MB of root-level resources, which
+            // shrinkResources does not see.
+            excludes += "org/bouncycastle/pqc/crypto/picnic/*"
         }
     }
 

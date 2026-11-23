@@ -56,7 +56,8 @@ Get it from [Zapstore](https://zapstore.dev/apps/cz.slush.adbanywhere), or downl
 the latest signed APK from the
 [GitHub releases](https://github.com/v1b3coder/adb-anywhere/releases/latest) and
 install it on the phone. Install a newer release over the current one; no uninstall
-is needed. 0.x releases are previews.
+is needed. The release APK is `arm64-v8a`, which is what every Android 12 device
+Google certifies runs. 0.x releases are previews.
 
 The app needs `WRITE_SECURE_SETTINGS` for the ADB bootstrap. After the one-time
 pairing it grants the permission over ADB. If an OEM blocks the grant, the app shows

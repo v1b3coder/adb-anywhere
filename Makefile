@@ -28,10 +28,10 @@
 # into app/adbd-bin/, which is never committed. A local build therefore needs the
 # Android NDK; ADBD_SKIP_BUILD=1 skips the build and keeps adbd-bin/.
 #
-# The ABI is a product flavor: `arm` (arm64-v8a) is what build and install-phone
-# produce, `x86` (x86_64) is what the e2e scripts build for the emulator, and
-# `universal` carries every ABI for the release. Each flavor ships only its own
-# adbd binary and native libraries.
+# The ABI is a product flavor: `arm` (arm64-v8a) is what build, install-phone and
+# the release produce, `x86` (x86_64) is what the e2e scripts build for the emulator,
+# and `universal` is a local build that installs on any ABI. Each flavor ships only
+# its own adbd binary and native libraries.
 #
 # `make install-phone` builds the debug APK and installs it on the phone through
 # the app's firewall relay. The install is an `abb_exec` call, so the call policy
