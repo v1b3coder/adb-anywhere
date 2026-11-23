@@ -188,3 +188,27 @@ jobs:
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Zapstore's catalog does not poll this repository, so a release that is not
+      # published here leaves the listing on the previous version. The signing key
+      # is a delegate named in the app's C1 proof: it may publish releases, not
+      # change the listing or who owns the app. zsp reads the APK from the release
+      # above and takes the notes from its body.
+      - name: Publish to Zapstore
+        if: steps.version.outputs.PUBLISH == 'true'
+        env:
+          SIGN_WITH: ${{ secrets.ZAPSTORE_SIGN_WITH }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION_NAME: ${{ steps.version.outputs.VERSION_NAME }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SIGN_WITH:-}" ]; then
+            echo "::error::ZAPSTORE_SIGN_WITH is missing, so $VERSION_NAME would not reach Zapstore"
+            exit 1
+          fi
+          curl -fsSL -o "$RUNNER_TEMP/zsp" \
+            https://github.com/zapstore/zsp/releases/download/v2.0.1/zsp-2.0.1-linux-amd64
+          echo "1ef5373f8ecd9ba63d2c3fab98abb0d31b2244a2aac31b3749fb205c7d5f5b38  $RUNNER_TEMP/zsp" \
+            | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/zsp"
+          "$RUNNER_TEMP/zsp" publish -q

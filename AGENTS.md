@@ -72,7 +72,13 @@ fails only when the bytes differ. Never debug that message by hand.
 - Commits: Conventional Commits with a scope (`fix(firewall):`, `docs(design):`).
   The body states the defect, the fix and the tests run.
 - Release: push a `vMAJOR.MINOR[.PATCH]` tag to `github`; `origin` (Gitea) does
-  not run the workflow. No version-bump commit.
+  not run the workflow. The workflow also publishes the release to Zapstore with
+  `zsp`, under the delegate key in the `ZAPSTORE_SIGN_WITH` secret; that key is
+  named in the app's C1 proof and may publish releases only. No version-bump
+  commit.
+- Zapstore's catalog does not poll this repository, so a release that skips the
+  publish step stays invisible there: `zsp check` reports the version Zapstore
+  still serves.
 
 ## Not part of the build
 
