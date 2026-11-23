@@ -11,7 +11,7 @@ semantic versioning once the project leaves 0.x.
 Adding a computer is a copy and a paste, or a QR code another phone already has.
 Pairing tells you what happened, Home shows a machine at work instead of only a
 port that is open, and a stuck adb server can no longer lock a phone out. The
-download also stops being 66 MB: the release APK is 6.4 MB.
+download also stops being 66 MB: one ABI and R8 take an order of magnitude off.
 
 ### Adding a computer
 
@@ -77,12 +77,12 @@ download also stops being 66 MB: the release APK is 6.4 MB.
 
 ### Install
 
-- The release APK drops from 66 MB to 6.4 MB and ships `arm64-v8a` only, which
-  is what every Android 12 device Google certifies runs. Unused BouncyCastle
-  PICNIC tables are gone and the native libraries are compressed in the APK.
-  Decision D26 in [docs/DESIGN.md](docs/DESIGN.md) records it, and the release
-  workflow fails when the APK carries another ABI; `x86` stays the e2e build and
-  `universal` a local one that installs anywhere.
+- The release APK ships `arm64-v8a` only, which is what every Android 12 device
+  Google certifies runs, and lands an order of magnitude under 0.12.0's 66 MB.
+  Unused BouncyCastle PICNIC tables are gone and the native libraries are
+  compressed in the APK. Decision D26 in [docs/DESIGN.md](docs/DESIGN.md) records
+  it, and the release workflow fails when the APK carries another ABI; `x86`
+  stays the e2e build and `universal` a local one that installs anywhere.
 - Every release publishes itself to
   [Zapstore](https://zapstore.dev/apps/cz.slush.adbanywhere) from the tag, so
   the store no longer lags a release behind GitHub.
