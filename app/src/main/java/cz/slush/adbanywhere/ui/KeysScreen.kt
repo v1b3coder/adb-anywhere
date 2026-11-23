@@ -64,6 +64,7 @@ fun KeysScreen(
     var removeAll by remember { mutableStateOf(false) }
     var removeTarget by remember { mutableStateOf<DeveloperKey?>(null) }
     var renameTarget by remember { mutableStateOf<DeveloperKey?>(null) }
+    var qrTarget by remember { mutableStateOf<DeveloperKey?>(null) }
 
     Box(Modifier.fillMaxSize()) {
         if (keys.isEmpty()) {
@@ -101,6 +102,7 @@ fun KeysScreen(
                 items(keys, key = { it.fingerprint }) { key ->
                     KeyCard(
                         key,
+                        onShowQr = { qrTarget = key },
                         onRename = { renameTarget = key },
                         onRemove = { removeTarget = key },
                     )
@@ -132,6 +134,10 @@ fun KeysScreen(
             },
             onCopy = onCopy,
         )
+    }
+
+    qrTarget?.let { target ->
+        KeyQrDialog(key = target, onDismiss = { qrTarget = null })
     }
 
     renameTarget?.let { target ->

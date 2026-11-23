@@ -6,6 +6,12 @@ semantic versioning once the project leaves 0.x.
 
 ## Unreleased
 
+### Adding a computer
+
+- Each key in *Keys* has a QR button that shows its public key in the pairing
+  format, with the fingerprint underneath, so a second phone scans the first
+  phone instead of running `qrencode` on the computer.
+
 ## 0.13.0 — 2026-11-23
 
 Adding a computer is a copy and a paste, pairing tells you what happened, and

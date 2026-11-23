@@ -274,6 +274,11 @@ its QR or accepts a paste. No companion app is needed.
 5. The app appends the key to the patched adbd key file with the label.
 6. The developer machine runs `adb connect <vpn-name>:<portB>` with its private key.
 
+A key already saved on one phone can be shown again from *Keys* as the same QR
+payload, with the app's label in place of the machine's comment, so a later phone
+scans the first phone instead of running `qrencode` on the computer. The dialog
+shows the payload and the fingerprint; only the public key is involved.
+
 The public key is public; no signature or nonce is needed to add it. The defense is
 the fingerprint confirmation and the label. A malicious QR can only add the key it
 contains, and the user sees the fingerprint before confirming. Replay is harmless
@@ -762,8 +767,9 @@ a different mode.
 
 ## 10. Testing
 
-- Unit: QR payload parser and public-key validation, key file writer, label
-  sanitizing, address selection, the VPN routing check, watchdog state machine,
+- Unit: QR payload parser and public-key validation, the saved-key QR round
+  trip, key file writer, label sanitizing, address selection, the VPN routing
+  check, watchdog state machine,
   `ControlState.firewallDown`, the port guard, `AppKeyStore` concurrent first use
   of several instances, the ADB client (plain signing, TLS-only refusal, pin,
   tunnel, `offersTls`), relay frame parsing, the sync stream parser, the relay's
@@ -828,7 +834,9 @@ port.
 - The relay runs in the app process: a process kill drops external sessions, and a
   pending prompt is lost and denied. The loopback channel and the recovery steps are
   unaffected.
-- QR pairing needs a QR generator on the developer machine; `qrencode` is enough.
+- The first phone's pairing needs a QR generator on the developer machine;
+  `qrencode` is enough. A later phone can scan a key already saved on the first
+  phone instead.
 - The system TLS listener is checked on its last verified port only; a listener
   that came up on a new random port is seen through mDNS on the status card, not
   by the guard.

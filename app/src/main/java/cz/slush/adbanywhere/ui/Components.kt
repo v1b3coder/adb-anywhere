@@ -15,6 +15,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.QrCode2
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Edit
@@ -208,7 +209,7 @@ fun FingerprintText(fingerprint: String, modifier: Modifier = Modifier) {
 }
 
 @Composable
-fun KeyCard(key: DeveloperKey, onRename: () -> Unit, onRemove: () -> Unit) {
+fun KeyCard(key: DeveloperKey, onShowQr: () -> Unit, onRename: () -> Unit, onRemove: () -> Unit) {
     Card(
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
@@ -227,6 +228,13 @@ fun KeyCard(key: DeveloperKey, onRename: () -> Unit, onRemove: () -> Unit) {
                     overflow = TextOverflow.Ellipsis,
                 )
                 FingerprintText(key.fingerprint)
+            }
+            IconButton(onClick = onShowQr) {
+                Icon(
+                    Icons.Outlined.QrCode2,
+                    contentDescription = "Show ${key.label} as a QR code",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             IconButton(onClick = onRename) {
                 Icon(

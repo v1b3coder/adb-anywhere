@@ -79,7 +79,9 @@ the manual command instead of failing silently.
    Android's wireless debugging off last.
 6. Add each computer's standard ADB public key under *Keys* (paste or QR). The
    screen shows the command for Linux and macOS, and the app shows the SHA-256
-   fingerprint before the key is added.
+   fingerprint before the key is added. A key already saved on one phone can be
+   shown as a QR code again, so another phone scans it instead of running
+   `qrencode` on the computer.
 
 After setup, connect from the computer:
 
