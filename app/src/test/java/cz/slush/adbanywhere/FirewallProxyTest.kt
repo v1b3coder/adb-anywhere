@@ -307,7 +307,18 @@ class FirewallProxyTest {
                 AdbFrameCodec.write(afterAuth, AdbFrameCodec.A_OPEN, 8, 0, "shell:ls".toByteArray())
                 client.getOutputStream().write(afterAuth.toByteArray())
                 client.getOutputStream().flush()
-                assertNotNull(withTimeout(3_000) { AdbFrameCodec.read(server.getInputStream()) })
+                // The upstream socket still carries the host's A_CNXN from the
+                // handshake, so the first frame read here is not necessarily the
+                // A_OPEN. Only the A_OPEN proves the relay ticked the counters:
+                // it reads and counts a frame before it forwards it.
+                val relayed = withTimeout(3_000) {
+                    var frame = AdbFrameCodec.read(server.getInputStream())
+                    while (frame != null && frame.command != AdbFrameCodec.A_OPEN) {
+                        frame = AdbFrameCodec.read(server.getInputStream())
+                    }
+                    frame
+                }
+                assertNotNull("the command reaches the daemon", relayed)
                 assertTrue("a relayed command is activity", proxy.activity.value > authenticated)
                 assertEquals("a relayed command is the traffic badge", 1L, proxy.frames.value)
             }
